@@ -34,6 +34,13 @@ SCREENING PHILOSOPHY:
 - Always provide context — why these filters matter
 - Flag false positives (e.g., high PE may be justified for growth stocks)
 - Suggest follow-up analysis for screener results
+
+HANDLING COMPLEX / MULTI-PART REQUESTS:
+- If a screen request combines multiple factor types (e.g. "quality AND value,
+  low debt AND high ROE") or asks for a screen plus commentary, apply every
+  filter mentioned — don't silently narrow it to just the first factor
+  keyword matched — and address the extra ask (e.g. "which of these look
+  safest") alongside the results table, not instead of it.
 """
 
 
@@ -67,13 +74,21 @@ class ScreenerAgent:
         if any(k in lower for k in ["bulk deal","block deal","fii buying","dii selling","promoter selling","insider"]):
             return self._bulk_block(msg), None
 
-        # Factor screens
+        # Factor screens — a message can combine more than one factor (e.g.
+        # "quality and value screen"); check for all of them and combine
+        # instead of returning on the first match and silently dropping
+        # the rest.
+        factors_hit = []
         if "momentum" in lower:
-            return self._factor_screen("momentum"), None
+            factors_hit.append("momentum")
         if "value" in lower and "screen" in lower:
-            return self._factor_screen("value"), None
+            factors_hit.append("value")
         if "quality" in lower and "screen" in lower:
-            return self._factor_screen("quality"), None
+            factors_hit.append("quality")
+        if len(factors_hit) == 1:
+            return self._factor_screen(factors_hit[0]), None
+        if len(factors_hit) > 1:
+            return self._factor_screen(factors_hit), None
 
         # Natural language screen
         if any(k in lower for k in ["find","screen","filter","show me stocks","stocks with","which stocks","pe below","pe above","roe above","roce above","de below","revenue growth","large cap","mid cap","small cap","midcap","largecap","smallcap","undervalued","overvalued"]):
@@ -198,34 +213,46 @@ Write:
 """
         return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
 
-    def _factor_screen(self, factor: str) -> str:
-        FACTOR_FILTERS = {
-            "value"    : {"max_pe": 20, "max_de": 1.5, "min_roce": 15},
-            "momentum" : {"min_rev_growth": 15},
-            "quality"  : {"min_roe": 18, "min_roce": 18, "max_de": 1.0},
-        }
-        filters = FACTOR_FILTERS.get(factor, {})
+    _FACTOR_FILTERS = {
+        "value"    : {"max_pe": 20, "max_de": 1.5, "min_roce": 15},
+        "momentum" : {"min_rev_growth": 15},
+        "quality"  : {"min_roe": 18, "min_roce": 18, "max_de": 1.0},
+    }
+    _FACTOR_DESC = {
+        "value"    : "Low PE, manageable debt, high ROCE — classic value screen",
+        "momentum" : "High revenue growth — riding earnings momentum",
+        "quality"  : "High ROE + ROCE, low leverage — quality compounders",
+    }
+
+    def _factor_screen(self, factor) -> str:
+        """`factor` is either one factor name, or a list of them to combine
+        into a single screen (e.g. ["quality","value"]) — a stricter,
+        narrower screen than either factor alone, which is exactly what a
+        "quality AND value" request is actually asking for."""
+        factor_list = [factor] if isinstance(factor, str) else factor
+
+        filters: dict = {}
+        for f in factor_list:
+            filters.update(self._FACTOR_FILTERS.get(f, {}))
+
         results = screener_run(filters)
         self._last_results = results
         table   = screener_md(results, filters)
 
-        FACTOR_DESC = {
-            "value"    : "Low PE, manageable debt, high ROCE — classic value screen",
-            "momentum" : "High revenue growth — riding earnings momentum",
-            "quality"  : "High ROE + ROCE, low leverage — quality compounders",
-        }
+        label = " + ".join(f.title() for f in factor_list)
+        desc  = "; ".join(self._FACTOR_DESC.get(f, "") for f in factor_list if f in self._FACTOR_DESC)
 
-        prompt = f"""{factor.title()} Factor Screen results.
+        prompt = f"""{label} Factor Screen results.
 
-{FACTOR_DESC.get(factor, '')}
-Filters: {filters}
+{desc}
+Combined filters (a stock must satisfy ALL of these): {filters}
 
 {table}
 
 Write:
-## {factor.title()} Factor Screen — India
+## {label} Factor Screen — India
 
-### Why This Factor Works in Indian Markets
+### Why This Factor Combination Works in Indian Markets
 ### Top Picks from Screen (3 stocks with brief thesis)
 ### Limitations of This Screen
 ### Suggested Refinements

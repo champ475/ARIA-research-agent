@@ -5,7 +5,7 @@ Analyses MF schemes, categories, and comparisons using AMFI data.
 """
 
 from agents.llm_client import LLMClient
-from config import TOKENS_AGENT, TOKENS_FAST
+from config import TOKENS_AGENT, TOKENS_FAST, TOKENS_COMPLEX
 from tools.data.amfi import get_all_nav, search_fund, get_category_funds, get_mf_comparison, format_fund_search_results
 from tools.data.news_fetcher import google_news
 from utils.helpers import now_ist
@@ -29,6 +29,15 @@ ALWAYS:
 - Clarify direct vs regular plan differences (expense ratio ~0.5-1.5% difference)
 - Never recommend specific funds without data — always ground in facts
 
+HANDLING COMPLEX / MULTI-PART QUESTIONS:
+- Many questions bundle several asks (e.g. "split ₹50L across large/mid/small cap
+  and recommend funds in each"). Identify every distinct part first, then make sure
+  the answer covers all of them — don't collapse a multi-category allocation
+  question into a single-category overview.
+- When an amount and multiple categories are both mentioned, give a concrete
+  % split across those categories with brief risk/horizon rationale, not just
+  generic category education.
+
 REGULATORY CONTEXT:
 - SEBI Mutual Fund Regulations, AMFI guidelines
 - Riskometer classification (Low/Moderate/High/Very High)
@@ -51,9 +60,35 @@ class MFAgent:
             self._nav_df = get_all_nav()
         return self._nav_df
 
+    _CATEGORY_KW = ["large cap","mid cap","small cap","flexi cap","elss","liquid",
+                    "hybrid","debt","index","nifty fund","sensex fund","sectoral"]
+
+    def _is_complex(self, lower: str) -> bool:
+        """
+        Multi-category or multi-part MF questions (e.g. "split 50L across
+        large/mid/small cap, recommend funds in each") must not collapse into
+        a single-category template just because one category keyword hit
+        first — that silently drops the rest of the question.
+        """
+        cat_hits = sum(1 for kw in self._CATEGORY_KW if kw in lower)
+        if cat_hits >= 2:
+            return True
+        if any(w in lower for w in ["split", "allocate", "allocation", "diversify", "portfolio of"]):
+            return True
+        if lower.count("?") >= 2:
+            return True
+        conj = sum(lower.count(w) for w in [" and ", " also ", "; "])
+        return conj >= 1 and len(lower) > 60
+
     def process(self, message: str) -> tuple[str, str]:
         msg   = message.strip()
         lower = msg.lower()
+
+        # Multi-category / allocation questions — answer directly across every
+        # category and amount mentioned, before any single-category routing
+        # below gets a chance to hijack the message on its first keyword hit.
+        if self._is_complex(lower):
+            return self._complex_advice(msg, lower), None
 
         # Compare funds — if category keywords present, route to category instead
         if any(k in lower for k in ["compare","vs","versus"]):
@@ -87,6 +122,44 @@ class MFAgent:
 
         # General MF question
         return self._client.chat(msg, max_tokens=TOKENS_AGENT), None
+
+    def _complex_advice(self, msg: str, lower: str) -> str:
+        buckets = [kw for kw in self._CATEGORY_KW if kw in lower]
+        if not buckets:
+            # Generic "split my money" with no named categories — the standard
+            # large/mid/small cap trio is the sensible default to ground the answer in.
+            buckets = ["large cap", "mid cap", "small cap"]
+        # Dedupe while preserving order (e.g. "large cap"/"largecap" both hitting)
+        seen = set()
+        buckets = [b for b in buckets if not (b in seen or seen.add(b))][:4]
+
+        data_blocks = []
+        for cat in buckets:
+            funds = get_category_funds(cat, top_n=6)
+            table = format_fund_search_results(funds)
+            data_blocks.append(f"--- {cat.title()} (top funds by AMFI NAV) ---\n{table}")
+        data_text = "\n\n".join(data_blocks)
+
+        prompt = f"""USER QUESTION: "{msg}"
+
+This is a multi-part allocation question — silently identify every distinct part
+(e.g. how to split an amount across categories, which funds to pick in each,
+SIP vs lumpsum) and make sure your answer covers all of them. Use only the fund
+data below — never invent fund names or NAVs not present in it.
+
+=== FUND DATA ===
+{data_text}
+
+Write a direct, complete answer covering:
+- Recommended % split across the categories mentioned (with brief risk/horizon
+  rationale for the split — why more/less goes to large vs mid vs small cap)
+- 2-3 specific funds to consider per category, drawn only from the data above
+- Direct vs regular plan note
+- Key disclaimers (market risk, not SEBI-registered advice, read scheme docs)
+
+*ARIA MF Analyst | {now_ist()} | Not AMFI/SEBI registered advice*
+"""
+        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_COMPLEX)
 
     def _search(self, msg: str) -> str:
         # Extract fund name from query

@@ -40,6 +40,13 @@ REPORT TYPES:
 3. Sector Thematic (ST): Sector-wide view, top picks, risks
 4. Quick Note (QN): 1-2 page flash, rapid insight
 5. Adaptive: Determine best type from user prompt
+
+HANDLING COMPLEX / MULTI-PART REQUESTS:
+- If the request bundles more than "generate a report" — e.g. it also asks a
+  direct question ("...and should I buy now?") or names more than one company
+  to cover — address every part: the report itself, plus a direct answer to
+  the extra question(s), plus (if multiple companies were named) a short note
+  per company, not just the first one resolved.
 """
 
 
