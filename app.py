@@ -435,7 +435,6 @@ footer { display: none !important; }
     border-bottom: 1px solid #21262d !important;
     margin-bottom: 8px !important;
 }
-.chat-toolbar-title { flex: 1; }
 .sidebar-toggle-btn {
     background: #161b22 !important;
     color: #8b949e !important;
@@ -466,9 +465,11 @@ def _build_chat_tab(user_state: gr.State):
 
     with gr.Row(elem_classes=["chat-shell"]):
         with gr.Column(scale=4, elem_classes=["chat-main"]):
+            # Minimal toolbar — just the sidebar toggle. Branding already
+            # lives in the page header above; a second title here would be
+            # redundant chrome ChatGPT itself doesn't have.
             with gr.Row(elem_classes=["chat-toolbar"]):
                 sidebar_toggle = gr.Button("☰", size="sm", elem_classes=["sidebar-toggle-btn"], min_width=36)
-                gr.Markdown("**💬 ARIA Chat**", elem_classes=["chat-toolbar-title"])
 
             chatbot = gr.Chatbot(
                 label="", show_label=False, height=480,
