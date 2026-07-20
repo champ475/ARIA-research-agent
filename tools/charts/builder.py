@@ -1,12 +1,12 @@
 """
 tools/charts/builder.py
 TradingView-style dark theme Plotly charts.
-Returns self-contained HTML strings for gr.HTML().
+Returns a plotly.graph_objects.Figure, or None on insufficient data — never a string.
+Callers feed these straight into gr.Plot().
 """
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import plotly.io as pio
 import pandas as pd
 import numpy as np
 from tools.analysis.technical import compute_all
@@ -56,13 +56,13 @@ def candlestick(
     company: str = "",
     timeframe: str = "1D",
     indicators: list = None,
-) -> str:
-    """Full TradingView-style candlestick chart with indicators."""
+):
+    """Full TradingView-style candlestick chart with indicators. Returns None on insufficient data."""
     if indicators is None:
         indicators = ["BB", "SMA50", "SMA200", "RSI", "MACD"]
 
     if df.empty or len(df) < 5:
-        return "<p style='color:#ef5350;padding:20px'>Insufficient data for chart.</p>"
+        return None
 
     df = compute_all(df.copy())
 
@@ -171,9 +171,9 @@ def candlestick(
     return fig
 
 
-def sector_heatmap(peers: list[dict], sector: str) -> str:
+def sector_heatmap(peers: list[dict], sector: str):
     if not peers:
-        return "<p style='color:#888'>No peer data.</p>"
+        return None
     syms    = [p["symbol"] for p in peers]
     changes = [p["change"] for p in peers]
     prices  = [f"₹{p['price']}" for p in peers]
@@ -201,12 +201,12 @@ def sector_heatmap(peers: list[dict], sector: str) -> str:
         hovertemplate="%{label}<extra></extra>",
     ))
     fig.update_layout(**_layout(f"{sector} — Peer Heatmap (1D)", height=300))
-    return pio.to_html(fig, full_html=False, include_plotlyjs="cdn", config={"displayModeBar": False, "displaylogo": False})
+    return fig
 
 
-def portfolio_chart(holdings: list[dict]) -> str:
+def portfolio_chart(holdings: list[dict]):
     if not holdings:
-        return ""
+        return None
     syms    = [h["symbol"] for h in holdings]
     values  = [h.get("current_value", 0) for h in holdings]
     pnl     = [h.get("pnl", 0) for h in holdings]
@@ -224,12 +224,12 @@ def portfolio_chart(holdings: list[dict]) -> str:
     fig.update_layout(**_layout("Portfolio Overview", height=340))
     fig.update_xaxes(showgrid=False, row=1, col=2)
     fig.update_yaxes(showgrid=True, gridcolor=GRID, row=1, col=2)
-    return pio.to_html(fig, full_html=False, include_plotlyjs="cdn", config={"displayModeBar": False, "displaylogo": False})
+    return fig
 
 
-def backtest_chart(equity_data: list[float], dates: list, strategy: str, buy_hold: float) -> str:
+def backtest_chart(equity_data: list[float], dates: list, strategy: str, buy_hold: float):
     if not equity_data:
-        return ""
+        return None
     norm_eq = [v / equity_data[0] * 100 for v in equity_data]
     bh_line = [100 + (buy_hold / len(equity_data)) * i for i in range(len(equity_data))]
 
@@ -241,4 +241,4 @@ def backtest_chart(equity_data: list[float], dates: list, strategy: str, buy_hol
     fig.update_layout(**_layout(f"Backtest — {strategy}", height=350))
     fig.update_xaxes(showgrid=True, gridcolor=GRID)
     fig.update_yaxes(showgrid=True, gridcolor=GRID, ticksuffix="%")
-    return pio.to_html(fig, full_html=False, include_plotlyjs="cdn", config={"displayModeBar": False, "displaylogo": False})
+    return fig

@@ -57,6 +57,20 @@ SQLite database with tables: `portfolio`, `watchlist`, `alerts`, `reports`, `scr
 ### Ticker Resolution (`utils/helpers.py`)
 Maps common aliases to NSE symbols (e.g. `"SBI"` → `"SBIN"`, `"HUL"` → `"HINDUNILVR"`). All tickers must be suffixed with `.NS` for NSE or `.BO` for BSE when passed to yfinance.
 
+## Changelog
+
+Log at `C:\Users\arnav\Desktop\Arnav\PROJECTS\CHANGELOG_ARIA.md` (outside repo, survives branch switches).
+
+**Update it for every major update, feature change, or fix.** New entry per change, newest on top, format:
+
+```
+## YYYY-MM-DD HH:MM IST — branch: `<branch-name>`
+### <Title>
+<Description — what changed, why, files touched>
+```
+
+Get branch via `git branch --show-current`, timestamp IST (`pytz` Asia/Kolkata). Skip trivial edits (typos, formatting, comments).
+
 ## Key Constraints
 
 - **Token budgets**: Keep LLM calls within limits defined in `config.py`. Use `TOKENS_FAST` for suggestions, `TOKENS_AGENT` for sub-agent calls, `TOKENS_SYNTHESIS` for full analysis.
