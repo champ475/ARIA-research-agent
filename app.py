@@ -174,7 +174,8 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
     which one(s) an old conversation touched). "+ New chat" detaches from
     the current session without deleting it, so the next message starts a
     fresh thread. `extra_reset` is any extra output components (download
-    buttons etc.) that should hide when switching sessions.
+    buttons etc.) that should hide when switching sessions. Returns the
+    sidebar's Column so the caller can wire a collapse/expand toggle.
     """
     from utils.db import session_list, session_delete, chat_load
 
@@ -208,13 +209,15 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
             result = tuple([current_sid] + no_change)
         return result + (refresh + 1,)
 
-    with gr.Column(scale=1, min_width=190, elem_classes=["chat-sidebar"]):
+    with gr.Column(scale=1, min_width=230, elem_classes=["chat-sidebar"]) as sidebar_col:
         gr.Markdown("**Chats**", elem_classes=["sidebar-title"])
-        new_chat_btn = gr.Button("+ New chat", size="sm", elem_classes=["new-chat-btn"])
+        new_chat_btn = gr.Button("＋ New chat", size="sm", elem_classes=["new-chat-btn"])
         new_chat_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs)
 
-        @gr.render(inputs=[user_state, refresh_state])
-        def _render_sessions(user_id, _refresh):
+        # session_state is in the render inputs so the active chat gets a
+        # highlighted row and the list re-renders the moment it changes.
+        @gr.render(inputs=[user_state, refresh_state, session_state])
+        def _render_sessions(user_id, _refresh, active_sid):
             if not user_id:
                 return
             sessions = session_list(user_id, tab_id)
@@ -223,8 +226,10 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
                 return
             for s in sessions:
                 sid = s["id"]
-                with gr.Row(elem_classes=["session-row"]):
-                    b = gr.Button(s["title"] or "New chat", size="sm", elem_classes=["session-btn"])
+                row_classes = ["session-row"]
+                btn_classes = ["session-btn"] + (["session-btn-active"] if sid == active_sid else [])
+                with gr.Row(elem_classes=row_classes):
+                    b = gr.Button(s["title"] or "New chat", size="sm", elem_classes=btn_classes)
                     d = gr.Button("✕", size="sm", scale=0, min_width=28, elem_classes=["session-del-btn"])
                 b.click(
                     fn=lambda uid=user_id, s=sid: _load_session(uid, s),
@@ -235,6 +240,8 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
                     inputs=[session_state, refresh_state],
                     outputs=load_outputs + [refresh_state],
                 )
+
+    return sidebar_col
 
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -401,6 +408,12 @@ footer { display: none !important; }
     text-overflow: ellipsis;
 }
 .session-btn:hover { background: #161b22 !important; color: #58a6ff !important; }
+.session-btn-active {
+    background: #161b22 !important;
+    color: #58a6ff !important;
+    border-left: 2px solid #58a6ff !important;
+    font-weight: 600 !important;
+}
 .session-del-btn {
     background: transparent !important;
     color: #6e7681 !important;
@@ -409,6 +422,29 @@ footer { display: none !important; }
     padding: 4px !important;
 }
 .session-del-btn:hover { color: #f85149 !important; }
+/* ChatGPT-style chat shell: centered column, sticky toolbar */
+.chat-shell { gap: 0 !important; }
+.chat-main {
+    max-width: 820px !important;
+    margin: 0 auto !important;
+}
+.chat-toolbar {
+    align-items: center !important;
+    gap: 8px !important;
+    padding: 4px 0 8px 0 !important;
+    border-bottom: 1px solid #21262d !important;
+    margin-bottom: 8px !important;
+}
+.chat-toolbar-title { flex: 1; }
+.sidebar-toggle-btn {
+    background: #161b22 !important;
+    color: #8b949e !important;
+    border: 1px solid #30363d !important;
+    border-radius: 8px !important;
+    font-size: 14px !important;
+    padding: 4px 10px !important;
+}
+.sidebar-toggle-btn:hover { color: #58a6ff !important; border-color: #58a6ff66 !important; }
 """
 
 
@@ -423,12 +459,17 @@ def _build_chat_tab(user_state: gr.State):
     """
     tab_id = "chat"
 
-    session_state = gr.State(None)
-    refresh_state = gr.State(0)
+    session_state   = gr.State(None)
+    refresh_state   = gr.State(0)
+    sidebar_open    = gr.State(True)
     suggestions_state = gr.State(CHAT_DEFAULTS)
 
-    with gr.Row():
-        with gr.Column(scale=4):
+    with gr.Row(elem_classes=["chat-shell"]):
+        with gr.Column(scale=4, elem_classes=["chat-main"]):
+            with gr.Row(elem_classes=["chat-toolbar"]):
+                sidebar_toggle = gr.Button("☰", size="sm", elem_classes=["sidebar-toggle-btn"], min_width=36)
+                gr.Markdown("**💬 ARIA Chat**", elem_classes=["chat-toolbar-title"])
+
             chatbot = gr.Chatbot(
                 label="", show_label=False, height=480,
                 render_markdown=True, elem_id=f"chatbot-{tab_id}",
@@ -470,9 +511,15 @@ def _build_chat_tab(user_state: gr.State):
                 send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
                 clear_btn = gr.Button("Clear",   scale=1, min_width=60, elem_classes=["clear-btn"])
 
-        _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
-                             chatbot, chart_panel, suggestions_state, sug_btns,
-                             extra_reset=[pdf_btn, md_btn, csv_btn])
+        sidebar_col = _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
+                                           chatbot, chart_panel, suggestions_state, sug_btns,
+                                           extra_reset=[pdf_btn, md_btn, csv_btn])
+
+    def _toggle_sidebar(is_open):
+        new_state = not is_open
+        return new_state, gr.update(visible=new_state)
+
+    sidebar_toggle.click(_toggle_sidebar, [sidebar_open], [sidebar_open, sidebar_col])
 
     outputs = ([msg_box, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn]
                + sug_btns + [session_state, refresh_state])
