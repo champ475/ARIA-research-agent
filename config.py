@@ -29,7 +29,8 @@ GEMINI_MODEL     = "gemini-2.0-flash"
 PREFERRED_PROVIDER = os.getenv("PREFERRED_PROVIDER", "groq").lower()
 
 # ── Token budgets (tune to stay within daily limits) ─────────────────────────
-TOKENS_SYNTHESIS  = 1500   # full report synthesis
+TOKENS_SYNTHESIS  = 2000   # full report synthesis
+TOKENS_COMPLEX    = 3000   # multi-part questions / comparisons — need more room to cover every sub-ask
 TOKENS_AGENT      = 800    # sub-agent calls
 TOKENS_FAST       = 200    # suggestions, tiny calls
 LLM_TEMPERATURE   = 0.3

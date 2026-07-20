@@ -10,7 +10,7 @@ of routing through rigid per-intent report templates.
 import re
 from concurrent.futures import ThreadPoolExecutor
 from agents.llm_client import LLMClient
-from config import TOKENS_SYNTHESIS, TOKENS_AGENT, TOKENS_FAST
+from config import TOKENS_SYNTHESIS, TOKENS_COMPLEX, TOKENS_AGENT, TOKENS_FAST
 
 from tools.data.fetcher      import get_info, get_ohlcv, get_financials, get_macro, get_options
 from tools.data.pdf_scraper  import get_latest_quarterly_results
@@ -25,19 +25,27 @@ from tools.portfolio            import add as port_add, remove as port_remove, g
 from utils.helpers              import clean_ticker, now_ist, trim_text, resolve_query, extract_all_entities, validate_ticker
 
 SYSTEM = """
-You are ARIA Equity Research — an institutional analyst serving professional traders, portfolio managers, and analysts covering Indian equities (NSE/BSE).
+You are ARIA Equity Research — an institutional-grade financial analyst for Indian equities (NSE/BSE), reasoning and communicating at the level of a senior analyst chatting with a professional trader. Match the rigor, structure, and clarity of a top-tier AI research assistant: think before you answer, never pad with filler, never dodge a hard question.
 
 RESPONSE STYLE:
 - Answer the user's actual question directly and specifically first — never bury it under a generic template.
-- Cite exact numbers, prices, ratios, and indicator values from the data given — never be vague, never invent figures.
+- Cite exact numbers, prices, ratios, and indicator values from the data given — never be vague, never invent figures. If the data needed to answer isn't present in the bundle below, say so explicitly instead of guessing.
 - Only include supporting sections beyond the direct answer when they're relevant to what was actually asked.
 - For broad/generic requests ("analyse X", "tell me about X"), fall back to the full institutional report structure.
+
+HANDLING COMPLEX / MULTI-PART QUESTIONS:
+- Many questions bundle several distinct asks in one message (e.g. "what's the trend, is it a buy, and how does it compare to its sector peers on valuation"). Silently identify every distinct sub-question first, then make sure your answer addresses each one — use short headers or bullets per sub-question when there are 3+ of them so nothing gets skipped.
+- Reason step by step internally (trend → valuation → risk → verdict) before writing the final answer, but only output the conclusions and the numbers that support them — never show raw chain-of-thought.
+- If a question is genuinely ambiguous (no ticker, no clear ask, could mean several different things), ask ONE precise clarifying question instead of guessing and answering the wrong thing.
+- Where reasonable analysts could disagree (e.g. growth-vs-value framing, aggressive vs conservative stop-loss), say so and give your reasoned take — don't hide behind false balance.
 
 TRADE SETUP FORMAT (when relevant):
 - Entry zone: ₹X–X | Stop-loss: ₹X | Target: ₹X | R:R = X:1
 - Always distinguish SHORT-TERM (1Y-based) levels from LONG-TERM (2Y-based) levels — they are different numbers, never conflate them.
 
 MARKET CONTEXT: NSE/BSE, SEBI regulations, FII/DII dynamics, RBI policy, quarterly earnings cycle (Apr/Jul/Oct/Jan), F&O expiry (Thursday), Nifty/Sensex benchmarks.
+
+This is analysis, not investment advice — end responses with a brief reminder of that when giving a directional call (buy/sell/hold, entry/stop/target).
 """
 
 
@@ -105,8 +113,10 @@ class EquityAgent:
             # No ticker in this message — treat as a follow-up on the last stock.
             tickers = [self._last_symbol]
         else:
-            # Nothing to anchor on — plain conversational fallback.
-            return self._chat(msg, max_tokens=TOKENS_AGENT), None
+            # Nothing to anchor on — plain conversational fallback (market concepts,
+            # general finance questions). Still give complex asks room to breathe.
+            budget = TOKENS_COMPLEX if self._is_complex(msg, False) else TOKENS_AGENT
+            return self._chat(msg, max_tokens=budget), None
 
         self._last_symbol = tickers[-1]
         return self._answer(tickers, msg)
@@ -267,6 +277,48 @@ class EquityAgent:
         except Exception as e:
             return f"\n--- Options Chain ---\nUnavailable: {e}\n"
 
+    # ── Complexity & reliability helpers ────────────────────────────────────────
+
+    def _is_complex(self, msg: str, is_compare: bool) -> bool:
+        """
+        Heuristic for whether a question bundles multiple sub-asks and needs
+        more output room + explicit "cover every part" guidance. Comparisons
+        are always complex; otherwise look for multiple question marks or
+        conjunction words joining separate asks.
+        """
+        if is_compare:
+            return True
+        q = msg.lower()
+        if q.count("?") >= 2:
+            return True
+        conj_hits = sum(q.count(w) for w in [" and ", " also ", " as well as ", "; ", " plus "])
+        return conj_hits >= 1 and len(msg) > 45
+
+    _NUM_RE = re.compile(r'-?\d+(?:,\d{3})*(?:\.\d+)?')
+
+    def _grounding_note(self, llm_out: str, data_text: str) -> str:
+        """
+        Lightweight hallucination guardrail: every numeric claim in the answer
+        should trace back to a number that actually appears in the data block
+        fed to the LLM. Not a proof of correctness (numbers can coincidentally
+        match), but catches the common failure mode of an invented figure.
+        Flags for a human glance rather than silently trusting the model.
+        """
+        data_nums = {n.replace(",", "") for n in self._NUM_RE.findall(data_text)}
+        out_nums  = [n.replace(",", "") for n in self._NUM_RE.findall(llm_out)]
+        out_nums  = [n for n in out_nums if len(n.replace(".", "")) >= 2]
+        if not out_nums:
+            return ""
+        unmatched = [n for n in out_nums if n not in data_nums]
+        # Small numbers (ratios, percentages, single digits) are noisy to check —
+        # only flag when a meaningful share of *substantial* figures don't trace back.
+        if len(out_nums) >= 4 and len(unmatched) / len(out_nums) > 0.5:
+            return (
+                "\n\n---\n*⚠️ Some figures above could not be automatically verified "
+                "against the source data bundle — cross-check before acting on them.*"
+            )
+        return ""
+
     # ── Unified answer ─────────────────────────────────────────────────────────
 
     def _answer(self, tickers: list[str], msg: str) -> tuple[str, str]:
@@ -309,6 +361,14 @@ class EquityAgent:
             if is_compare else "Answer for this single stock."
         )
 
+        complex_q = self._is_complex(msg, is_compare)
+        if complex_q:
+            guidance += (
+                " This question has multiple distinct parts — silently list them out, then make "
+                "sure your answer explicitly covers every one before finishing. Use short headers "
+                "or bullets per part if there are 3 or more."
+            )
+
         prompt = (
             f'USER QUESTION: "{msg}"\n\n'
             f"Answer this question directly and specifically FIRST, citing exact numbers from "
@@ -324,7 +384,9 @@ class EquityAgent:
             f"*ARIA Equity Research | {now_ist()} | {self.provider}*"
         )
 
-        llm_out = self._chat(prompt, temperature=0.2, max_tokens=TOKENS_SYNTHESIS)
+        max_tokens = TOKENS_COMPLEX if complex_q else TOKENS_SYNTHESIS
+        llm_out = self._chat(prompt, temperature=0.2, max_tokens=max_tokens)
+        llm_out += self._grounding_note(llm_out, data_text)
 
         chart = None
         extra = ""
