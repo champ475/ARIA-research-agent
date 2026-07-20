@@ -794,4 +794,14 @@ if __name__ == "__main__":
         quiet=False,
         theme=gr.themes.Base(),
         css=CSS,
+        # Force Gradio's built-in dark theme vars regardless of the visitor's
+        # OS/browser color-scheme preference — this app has one deliberate
+        # dark aesthetic, not a light/dark toggle. Without this, users on a
+        # light-mode OS get Gradio's default light component backgrounds
+        # (white Chatbot/Radio/Dataframe boxes) clashing with our dark CSS,
+        # since Gradio only applies its dark theme vars when `.dark` is on
+        # <body> (not <html>), which it otherwise sets from
+        # prefers-color-scheme. Must be an IIFE — Gradio evaluates `js` as a
+        # bare expression, it does not call a bare arrow function for you.
+        js="(() => { document.body.classList.add('dark'); })()",
     )
