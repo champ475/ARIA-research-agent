@@ -494,9 +494,21 @@ Write:
 
     def load_history(self, messages: list[dict]):
         """Resumes a previously saved chat: seeds LLM memory and re-anchors
-        the last-mentioned ticker so follow-up questions still work."""
+        the last-mentioned ticker so follow-up questions still work.
+
+        Only scans USER messages, not assistant replies — a full report is
+        thousands of words containing hundreds of incidental ALL-CAPS-looking
+        tokens ("EXECUTIVE", "SUMMARY", "ANALYST", ...), and validate_ticker()
+        falls through to a live yfinance lookup for anything outside the
+        curated universe. Scanning assistant text turned this into hundreds
+        of synchronous network calls per resume — effectively hanging the
+        chat-history "click to resume" feature. User messages are short
+        ("analyse TCS"), so this stays cheap.
+        """
         self._client.load_history(messages)
         for m in reversed(messages):
+            if m.get("role") != "user":
+                continue
             valid = [t for t in extract_all_entities(m["content"]) if validate_ticker(t)]
             if valid:
                 self._last_symbol = valid[-1]
