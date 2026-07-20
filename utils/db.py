@@ -23,8 +23,24 @@ def init_db():
     c = conn.cursor()
 
     c.executescript("""
+    CREATE TABLE IF NOT EXISTS users (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        email         TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at    TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
+        token       TEXT UNIQUE NOT NULL,
+        expires_at  TEXT NOT NULL,
+        created_at  TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS portfolio (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
         symbol      TEXT NOT NULL,
         qty         REAL NOT NULL,
         avg_price   REAL NOT NULL,
@@ -33,12 +49,15 @@ def init_db():
 
     CREATE TABLE IF NOT EXISTS watchlist (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        symbol      TEXT UNIQUE NOT NULL,
-        added_at    TEXT DEFAULT (datetime('now'))
+        user_id     INTEGER NOT NULL REFERENCES users(id),
+        symbol      TEXT NOT NULL,
+        added_at    TEXT DEFAULT (datetime('now')),
+        UNIQUE(user_id, symbol)
     );
 
     CREATE TABLE IF NOT EXISTS alerts (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
         symbol      TEXT NOT NULL,
         alert_type  TEXT NOT NULL,
         condition   TEXT NOT NULL,
@@ -56,6 +75,7 @@ def init_db():
 
     CREATE TABLE IF NOT EXISTS chat_history (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
         tab         TEXT NOT NULL,
         role        TEXT NOT NULL,
         content     TEXT NOT NULL,
@@ -64,6 +84,7 @@ def init_db():
 
     CREATE TABLE IF NOT EXISTS saved_screeners (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
         name        TEXT NOT NULL,
         filters_json TEXT NOT NULL,
         created_at  TEXT DEFAULT (datetime('now'))
@@ -71,6 +92,7 @@ def init_db():
 
     CREATE TABLE IF NOT EXISTS reports (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
         symbol      TEXT,
         report_type TEXT NOT NULL,
         title       TEXT NOT NULL,
@@ -78,6 +100,8 @@ def init_db():
         created_at  TEXT DEFAULT (datetime('now'))
     );
 
+    -- pdf_cache is a shared, symbol-keyed fetch cache (not per-tenant data),
+    -- so it intentionally has no user_id — same reasoning as cache_meta.
     CREATE TABLE IF NOT EXISTS pdf_cache (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         symbol      TEXT NOT NULL,
@@ -94,65 +118,68 @@ def init_db():
 
 # ── Portfolio helpers ─────────────────────────────────────────────────────────
 
-def portfolio_add(symbol: str, qty: float, avg_price: float):
+def portfolio_add(user_id: int, symbol: str, qty: float, avg_price: float):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO portfolio (symbol, qty, avg_price) VALUES (?,?,?)",
-        (symbol.upper(), qty, avg_price),
+        "INSERT INTO portfolio (user_id, symbol, qty, avg_price) VALUES (?,?,?,?)",
+        (user_id, symbol.upper(), qty, avg_price),
     )
     conn.commit(); conn.close()
 
 
-def portfolio_remove(symbol: str):
+def portfolio_remove(user_id: int, symbol: str):
     conn = get_conn()
-    conn.execute("DELETE FROM portfolio WHERE symbol=?", (symbol.upper(),))
+    conn.execute("DELETE FROM portfolio WHERE user_id=? AND symbol=?", (user_id, symbol.upper()))
     conn.commit(); conn.close()
 
 
-def portfolio_all() -> list[dict]:
+def portfolio_all(user_id: int) -> list[dict]:
     conn = get_conn()
-    rows = conn.execute("SELECT * FROM portfolio").fetchall()
+    rows = conn.execute("SELECT * FROM portfolio WHERE user_id=?", (user_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
 # ── Watchlist helpers ─────────────────────────────────────────────────────────
 
-def watchlist_add(symbol: str):
+def watchlist_add(user_id: int, symbol: str):
     conn = get_conn()
-    conn.execute("INSERT OR IGNORE INTO watchlist (symbol) VALUES (?)", (symbol.upper(),))
+    conn.execute(
+        "INSERT OR IGNORE INTO watchlist (user_id, symbol) VALUES (?,?)",
+        (user_id, symbol.upper()),
+    )
     conn.commit(); conn.close()
 
 
-def watchlist_remove(symbol: str):
+def watchlist_remove(user_id: int, symbol: str):
     conn = get_conn()
-    conn.execute("DELETE FROM watchlist WHERE symbol=?", (symbol.upper(),))
+    conn.execute("DELETE FROM watchlist WHERE user_id=? AND symbol=?", (user_id, symbol.upper()))
     conn.commit(); conn.close()
 
 
-def watchlist_all() -> list[str]:
+def watchlist_all(user_id: int) -> list[str]:
     conn = get_conn()
-    rows = conn.execute("SELECT symbol FROM watchlist").fetchall()
+    rows = conn.execute("SELECT symbol FROM watchlist WHERE user_id=?", (user_id,)).fetchall()
     conn.close()
     return [r["symbol"] for r in rows]
 
 
 # ── Chat history helpers ──────────────────────────────────────────────────────
 
-def chat_save(tab: str, role: str, content: str):
+def chat_save(user_id: int, tab: str, role: str, content: str):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO chat_history (tab, role, content) VALUES (?,?,?)",
-        (tab, role, content),
+        "INSERT INTO chat_history (user_id, tab, role, content) VALUES (?,?,?,?)",
+        (user_id, tab, role, content),
     )
     conn.commit(); conn.close()
 
 
-def chat_load(tab: str, limit: int = 50) -> list[dict]:
+def chat_load(user_id: int, tab: str, limit: int = 50) -> list[dict]:
     conn = get_conn()
     rows = conn.execute(
-        "SELECT role, content FROM chat_history WHERE tab=? ORDER BY ts DESC LIMIT ?",
-        (tab, limit),
+        "SELECT role, content FROM chat_history WHERE user_id=? AND tab=? ORDER BY ts DESC LIMIT ?",
+        (user_id, tab, limit),
     ).fetchall()
     conn.close()
     return [dict(r) for r in reversed(rows)]
@@ -160,22 +187,23 @@ def chat_load(tab: str, limit: int = 50) -> list[dict]:
 
 # ── Report helpers ────────────────────────────────────────────────────────────
 
-def report_save(symbol: str, report_type: str, title: str, content: str) -> int:
+def report_save(user_id: int, symbol: str, report_type: str, title: str, content: str) -> int:
     conn = get_conn()
     cur = conn.execute(
-        "INSERT INTO reports (symbol, report_type, title, content) VALUES (?,?,?,?)",
-        (symbol, report_type, title, content),
+        "INSERT INTO reports (user_id, symbol, report_type, title, content) VALUES (?,?,?,?,?)",
+        (user_id, symbol, report_type, title, content),
     )
     rid = cur.lastrowid
     conn.commit(); conn.close()
     return rid
 
 
-def report_list(limit: int = 20) -> list[dict]:
+def report_list(user_id: int, limit: int = 20) -> list[dict]:
     conn = get_conn()
     rows = conn.execute(
-        "SELECT id, symbol, report_type, title, created_at FROM reports ORDER BY created_at DESC LIMIT ?",
-        (limit,),
+        "SELECT id, symbol, report_type, title, created_at FROM reports "
+        "WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+        (user_id, limit),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -204,17 +232,20 @@ def pdf_cache_set(symbol: str, doc_type: str, text: str, period: str = None, url
 
 # ── Saved screener helpers ────────────────────────────────────────────────────
 
-def screener_save(name: str, filters: dict):
+def screener_save(user_id: int, name: str, filters: dict):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO saved_screeners (name, filters_json) VALUES (?,?)",
-        (name, json.dumps(filters)),
+        "INSERT INTO saved_screeners (user_id, name, filters_json) VALUES (?,?,?)",
+        (user_id, name, json.dumps(filters)),
     )
     conn.commit(); conn.close()
 
 
-def screener_list() -> list[dict]:
+def screener_list(user_id: int) -> list[dict]:
     conn = get_conn()
-    rows = conn.execute("SELECT id, name, filters_json, created_at FROM saved_screeners").fetchall()
+    rows = conn.execute(
+        "SELECT id, name, filters_json, created_at FROM saved_screeners WHERE user_id=?",
+        (user_id,),
+    ).fetchall()
     conn.close()
     return [{"id": r["id"], "name": r["name"], "filters": json.loads(r["filters_json"]), "created_at": r["created_at"]} for r in rows]

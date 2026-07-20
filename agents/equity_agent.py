@@ -1,39 +1,41 @@
 """
 agents/equity_agent.py
 Tab 1: Equity Research Agent
-Full institutional-grade stock analysis with charts.
+Adaptive stock Q&A — always fetches full data (fundamentals, 1Y short-term
+levels, 2Y long-term levels, risk, sentiment, news), always feeds the user's
+verbatim question to the LLM, and lets the LLM decide response shape instead
+of routing through rigid per-intent report templates.
 """
 
 import re
-from concurrent.futures import ThreadPoolExecutor, wait as fut_wait, FIRST_EXCEPTION
+from concurrent.futures import ThreadPoolExecutor
 from agents.llm_client import LLMClient
 from config import TOKENS_SYNTHESIS, TOKENS_AGENT, TOKENS_FAST
 
-from tools.data.fetcher      import get_info, get_ohlcv, get_financials, get_shareholders, get_macro, get_sector_peers, search_ticker, get_options, get_recommendations
-from tools.data.nse_scraper  import get_bulk_deals, get_block_deals, get_corporate_actions, format_bulk_deals
-from tools.data.pdf_scraper  import get_latest_quarterly_results, get_annual_report_text
-from tools.data.news_fetcher import company_news, acquisition_news, funding_news, regulatory_news, market_news
-from tools.analysis.technical   import compute_all, snapshot, support_resistance, detect_patterns, indicator_breakdown, compute_rr
+from tools.data.fetcher      import get_info, get_ohlcv, get_financials, get_macro, get_options
+from tools.data.pdf_scraper  import get_latest_quarterly_results
+from tools.data.news_fetcher import company_news, market_news
+from tools.analysis.technical   import compute_all, snapshot, support_resistance, indicator_breakdown, compute_rr
 from tools.analysis.fundamental import compute, to_text, calc_breakdown
 from tools.analysis.sentiment   import analyse
 from tools.analysis.risk        import assess
 from tools.analysis.backtester  import ma_crossover_backtest, rsi_backtest, format_backtest
-from tools.charts.builder       import candlestick, sector_heatmap
+from tools.charts.builder       import candlestick
 from tools.portfolio            import add as port_add, remove as port_remove, get_live, to_markdown as port_md
-from utils.helpers              import clean_ticker, now_ist, trim_text, parse_intent, resolve_ticker
+from utils.helpers              import clean_ticker, now_ist, trim_text, resolve_query, extract_all_entities, validate_ticker
 
 SYSTEM = """
 You are ARIA Equity Research — an institutional analyst serving professional traders, portfolio managers, and analysts covering Indian equities (NSE/BSE).
 
 RESPONSE STYLE:
-- Conversational/concept → concise, 2-5 sentences
-- Technical/fundamental → deep, cite every data point provided
-- Full analysis → institutional-grade with explicit levels, ratios, trade setups
-- Always quote exact prices, ratios, and indicator values from the data given
-- Never be vague — specific numbers always beat ranges
+- Answer the user's actual question directly and specifically first — never bury it under a generic template.
+- Cite exact numbers, prices, ratios, and indicator values from the data given — never be vague, never invent figures.
+- Only include supporting sections beyond the direct answer when they're relevant to what was actually asked.
+- For broad/generic requests ("analyse X", "tell me about X"), fall back to the full institutional report structure.
 
-TRADE SETUP FORMAT (always include):
-- Entry zone: ₹X–X | Stop-loss: ₹X | Target 1: ₹X | Target 2: ₹X | R:R = X:1
+TRADE SETUP FORMAT (when relevant):
+- Entry zone: ₹X–X | Stop-loss: ₹X | Target: ₹X | R:R = X:1
+- Always distinguish SHORT-TERM (1Y-based) levels from LONG-TERM (2Y-based) levels — they are different numbers, never conflate them.
 
 MARKET CONTEXT: NSE/BSE, SEBI regulations, FII/DII dynamics, RBI policy, quarterly earnings cycle (Apr/Jul/Oct/Jan), F&O expiry (Thursday), Nifty/Sensex benchmarks.
 """
@@ -41,12 +43,23 @@ MARKET CONTEXT: NSE/BSE, SEBI regulations, FII/DII dynamics, RBI policy, quarter
 
 class EquityAgent:
 
-    def __init__(self):
+    def __init__(self, user_id: int):
         self._client = LLMClient(system_prompt=SYSTEM)
         self._last_symbol = None
+        self._user_id = user_id
 
     @property
     def provider(self): return self._client.provider
+
+    def _chat(self, prompt: str, **kwargs) -> str:
+        """Wraps LLMClient.chat() so every synthesis prompt is visible in the terminal."""
+        print(f"[LLM SYNTHESIS] prompt sent to LLM ({len(prompt)} chars):\n{prompt}\n[LLM SYNTHESIS] --- end prompt ---")
+        return self._client.chat(prompt, **kwargs)
+
+    def _ask(self, prompt: str, **kwargs) -> str:
+        """Wraps LLMClient.ask() so every stateless prompt is visible in the terminal."""
+        print(f"[LLM SYNTHESIS] prompt sent to LLM ({len(prompt)} chars):\n{prompt}\n[LLM SYNTHESIS] --- end prompt ---")
+        return self._client.ask(prompt, **kwargs)
 
     def process(self, message: str) -> tuple[str, str]:
         """Returns (markdown_text, chart_html)."""
@@ -58,91 +71,60 @@ class EquityAgent:
         if self._is_port_remove(lower): return self._port_remove(msg), None
         if self._is_port_view(lower):   return self._port_view()
 
-        # Backtesting
+        # Backtesting — equity-curve data, a genuinely different shape from a
+        # stock Q&A answer, kept as its own path.
         if "backtest" in lower:
             ticker = self._ticker(msg)
             if ticker: return self._backtest(ticker, msg), None
+            return self._ask_ticker(), None
 
-        # Options
-        if any(k in lower for k in ["option","options chain","call","put","oi","open interest"]):
-            ticker = self._ticker(msg)
-            if ticker: return self._options(ticker), None
-
-        # Chart only
-        if any(k in lower for k in ["chart","candlestick","show price","price chart","ohlc"]):
-            ticker = self._ticker(msg)
-            if ticker: return self._chart_only(ticker, msg)
-
-        # Technical only
-        if any(k in lower for k in ["technical","rsi","macd","moving average","bollinger",
-                                     "support","resistance","supertrend","vwap","indicator"]):
-            ticker = self._ticker(msg)
-            if ticker: return self._technical(ticker, msg)
-
-        # Fundamental only
-        if any(k in lower for k in ["fundamental","valuation","pe","roe","roce","dcf","financials","earnings","balance sheet"]):
-            ticker = self._ticker(msg)
-            if ticker: return self._fundamental(ticker), None
-
-        # News only
-        if any(k in lower for k in ["news","latest","acquisition","merger","funding","deal","announced"]):
-            ticker = self._ticker(msg)
-            if ticker: return self._news(ticker), None
-
-        # Market overview
+        # Market overview — macro feed, no ticker involved, kept separate.
         if any(k in lower for k in ["market overview","market today","nifty","sensex","fii","dii","macro"]):
             return self._market_overview(), None
 
-        # Compare
-        if any(k in lower for k in ["compare","vs","versus"]):
-            tickers = self._multi_tickers(msg)
-            if len(tickers) >= 2: return self._compare(tickers[:3]), None
+        # Everything else: resolve ticker(s) for the message, then let the LLM
+        # answer the actual question using the full data bundle. See
+        # utils/helpers.py resolve_query() / extract_all_entities() for the
+        # resolution logic (deterministic-first, LLM fallback on ambiguity).
+        entities = extract_all_entities(msg)
+        valid    = [t for t in entities if validate_ticker(t)]
+        print(f"[PARSE] entities found in message: {entities} | valid: {valid}")
 
-        # Full analysis
-        if any(k in lower for k in ["analyse","analyze","analysis","research","report","deep dive",
-                                     "tell me about","should i buy","should i invest","full report"]):
-            ticker = self._ticker(msg)
-            if ticker: return self._full_analysis(ticker), self._get_chart(ticker)
-            return self._ask_ticker(), None
+        det = resolve_query(msg, client=self._client, last_symbol=self._last_symbol)
 
-        # Last resort: if the message itself contains a valid ticker, run full analysis.
-        # Use resolve_ticker directly (not _ticker) to avoid matching _last_symbol
-        # for purely conversational messages that contain no ticker.
-        ticker, _ = resolve_ticker(msg)
-        if ticker:
-            self._last_symbol = ticker
-            return self._full_analysis(ticker), self._get_chart(ticker)
+        if len(valid) >= 2:
+            # Explicit multi-ticker mention in one message (e.g. "TCS or HDFC Bank")
+            tickers = valid[:3]
+        elif det["intent"] == "compare" and det["ticker"] and self._last_symbol and det["ticker"] != self._last_symbol:
+            # e.g. "analyse TCS" then "compare with HDFC bank" — pull in the
+            # previously discussed stock instead of silently dropping it.
+            tickers = [self._last_symbol, det["ticker"]]
+        elif det["ticker"]:
+            tickers = [det["ticker"]]
+        elif self._last_symbol:
+            # No ticker in this message — treat as a follow-up on the last stock.
+            tickers = [self._last_symbol]
+        else:
+            # Nothing to anchor on — plain conversational fallback.
+            return self._chat(msg, max_tokens=TOKENS_AGENT), None
 
-        # No ticker in message — if a prior symbol exists, treat as follow-up
-        if self._last_symbol:
-            return self._technical(self._last_symbol, msg)
+        self._last_symbol = tickers[-1]
+        return self._answer(tickers, msg)
 
-        # Pure conversational fallback (concepts, general questions)
-        return self._client.chat(msg, max_tokens=TOKENS_AGENT), None
-
-    # ── Ticker resolution (intent-first) ─────────────────────────────────────
+    # ── Ticker resolution ──────────────────────────────────────────────────────
 
     def _ticker(self, msg: str) -> str | None:
         """
-        Intent-first ticker resolution.
-        Never returns a stop-word as a ticker (e.g., CHART, WEEKLY, REPORT).
-        Falls back to yfinance search for unknown company names.
+        Hybrid ticker resolution: deterministic first, LLM fallback only on
+        ambiguity (see utils.helpers.resolve_query for exact trigger conditions).
+        Never returns an unvalidated ticker. Falls back to the last resolved
+        symbol for follow-up queries with no ticker of their own.
         """
-        ticker, source = resolve_ticker(msg)
-        if ticker:
-            self._last_symbol = ticker
-            return ticker
-        # Last symbol context (for follow-up queries)
+        result = resolve_query(msg, client=self._client, last_symbol=self._last_symbol)
+        if result["ticker"]:
+            self._last_symbol = result["ticker"]
+            return result["ticker"]
         return self._last_symbol
-
-    def _multi_tickers(self, msg: str) -> list[str]:
-        from utils.helpers import STOP_WORDS
-        found = re.findall(r'\b([A-Z][A-Z0-9\-&]{1,12})\b', msg.upper())
-        result = []
-        for t in found:
-            if t not in STOP_WORDS and len(t) >= 2:
-                result.append(clean_ticker(t))
-        return result
 
     def _timeframe(self, msg: str) -> tuple[str, str, str]:
         q = msg.lower()
@@ -154,475 +136,208 @@ class EquityAgent:
         if any(k in q for k in ["2 year","2y"]):                return "2y","1d","2Y"
         return "1y","1d","1D"
 
-    # ── Full analysis ──────────────────────────────────────────────────────────
+    # ── Data bundle ────────────────────────────────────────────────────────────
 
-    def _full_analysis(self, sym: str) -> str:
-        try:
-            info  = get_info(sym)
-            comp  = info.get("longName") or info.get("shortName") or sym
-            if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-                return f"⚠️ Could not find data for **{sym}**. Please verify the NSE ticker symbol.\n\nTry: `analyse Reliance` or `analyse HDFCBANK`"
-
-            # Parallel I/O: all remaining fetches are independent of each other
-            with ThreadPoolExecutor(max_workers=8) as exe:
-                f_ohlcv  = exe.submit(get_ohlcv, sym, "1y", "1d")
-                f_fins   = exe.submit(get_financials, sym)
-                f_macro  = exe.submit(get_macro)
-                f_shrs   = exe.submit(get_shareholders, sym)
-                f_qtext  = exe.submit(get_latest_quarterly_results, sym)
-                f_news   = exe.submit(company_news, sym, comp)
-                f_acq    = exe.submit(acquisition_news, comp)
-
-            df    = f_ohlcv.result()
-            fins  = f_fins.result()
-            macro = f_macro.result()
-            shrs  = f_shrs.result()
-            q_text = f_qtext.result()
-            news  = f_news.result()
-            acq   = f_acq.result()
-
-            df_ta = compute_all(df.copy()) if not df.empty else df
-            ta    = snapshot(df_ta)
-            sr    = support_resistance(df_ta)
-            fund  = compute(info, fins)
-            if ta.get("current_price"):
-                fund["price"] = ta["current_price"]
-
-            sent  = analyse(news)
-            risk  = assess(fund, ta, sent["score"], macro)
-
-            q_note = trim_text(q_text, 120) if q_text and "No " not in q_text else "Not available via scraper"
-
-            fib  = ta.get("fib", {})
-            pats = ta.get("patterns", [])
-            price = fund.get("price")
-
-            # Pre-compute R:R for trade setups
-            # Short-term: use S1 as stop, R1 as target
-            s1 = sr.get("S1"); r1 = sr.get("R1")
-            st_rr = compute_rr(price, s1, r1, price) if all(x for x in [price, s1, r1]) else {"valid": False, "error": "Insufficient level data"}
-
-            # Swing: use S2 as stop, R2 as target
-            s2 = sr.get("S2"); r2 = sr.get("R2")
-            sw_rr = compute_rr(price, s2, r2, price) if all(x for x in [price, s2, r2]) else {"valid": False, "error": "Insufficient level data"}
-
-            # Pre-compute ALL values as plain variables — avoids f-string double-quote
-            # conflicts that crash on Python 3.11 (PEP 701 only fixes this in 3.12+)
-            news_titles = "\n".join(f"- {n['title']}" for n in news[:6])
-            acq_titles  = "\n".join(f"- {n['title']}" for n in acq[:4])
-            fund_text   = to_text(fund)
-            risk_score  = risk.get("score", "N/A")
-            risk_level  = risk.get("level", "N/A")
-            sent_label  = sent.get("label", "N/A")
-            sent_score_v= f'{sent.get("score", 0.0):+.3f}'
-            risk_flags  = "; ".join(risk.get("flags", [])[:4]) or "None"
-
-            # TA pre-computed
-            ta_rsi   = ta.get("RSI");      ta_macd  = ta.get("MACD")
-            ta_sig   = ta.get("MACD_Signal"); ta_hist = ta.get("MACD_Hist")
-            ta_adx   = ta.get("ADX");      ta_dip   = ta.get("ADX_DI+"); ta_dim = ta.get("ADX_DI-")
-            ta_atr   = ta.get("ATR");      ta_s20   = ta.get("SMA_20")
-            ta_s50   = ta.get("SMA_50");   ta_s100  = ta.get("SMA_100"); ta_s200 = ta.get("SMA_200")
-            ta_e9    = ta.get("EMA_9");    ta_e20   = ta.get("EMA_20");  ta_e50  = ta.get("EMA_50")
-            ta_bbu   = ta.get("BB_Upper"); ta_bbm   = ta.get("BB_Mid");  ta_bbl  = ta.get("BB_Lower"); ta_bbw = ta.get("BB_Width")
-            ta_sk    = ta.get("Stoch_K");  ta_sd    = ta.get("Stoch_D"); ta_vwap = ta.get("VWAP")
-            ta_st    = ta.get("Supertrend"); ta_vr  = ta.get("Volume_Ratio")
-            ta_stdir = "BULLISH" if (ta.get("Supertrend_Dir") or 0) > 0 else "BEARISH"
-            fib_d    = fib  # already computed above
-            fib_618  = fib_d.get("0.618"); fib_500 = fib_d.get("0.500"); fib_382 = fib_d.get("0.382")
-            pats_str = "; ".join(pats) if pats else "No significant signals"
-
-            # Dynamic swing levels
-            swings      = sr.get("swing_highs", [])
-            swing_res   = ", ".join(f"₹{v}" for v in swings) if swings else "None detected"
-            swing_sup   = ", ".join(f"₹{v}" for v in sr.get("swing_lows", [])) if sr.get("swing_lows") else "None detected"
-
-            # SR pre-computed
-            sr_r2 = sr.get("R2"); sr_r1 = sr.get("R1"); sr_piv = sr.get("Pivot")
-            sr_s1 = sr.get("S1"); sr_s2 = sr.get("S2")
-
-            # R:R pre-computed
-            rr_st_formula = st_rr.get("formula", "R:R calculation unavailable")
-            rr_sw_formula = sw_rr.get("formula", "R:R calculation unavailable")
-            rr_st_rr  = st_rr.get("rr", "N/A"); rr_sw_rr = sw_rr.get("rr", "N/A")
-            rr_st_v   = "Valid" if st_rr.get("valid") else str(st_rr.get("error","Invalid setup"))
-            rr_sw_v   = "Valid" if sw_rr.get("valid") else str(sw_rr.get("error","Invalid setup"))
-
-            # Fund scorecard values
-            sc_pe     = fund.get("pe");       sc_pb    = fund.get("pb")
-            sc_ev     = fund.get("ev_ebitda"); sc_roe   = fund.get("roe")
-            sc_roce   = fund.get("roce");      sc_npm   = fund.get("net_margin")
-
-            # Build explainability blocks
-            ind_block  = indicator_breakdown(ta)
-            calc_block = calc_breakdown(fund)
-
-            prompt = (
-                f"Write a COMPLETE institutional research report for {comp} ({sym}.NS).\n"
-                f"Use EVERY metric below. Do not hide any numbers.\n\n"
-                f"=== FUNDAMENTAL DATA ===\n"
-                f"{fund_text}\n\n"
-                f"=== TECHNICAL DATA ===\n"
-                f"Price {price} | RSI {ta_rsi} | MACD {ta_macd} / Signal {ta_sig} / Hist {ta_hist}\n"
-                f"ADX {ta_adx} (DI+ {ta_dip} / DI- {ta_dim}) | ATR {ta_atr}\n"
-                f"SMA 20={ta_s20} 50={ta_s50} 100={ta_s100} 200={ta_s200}\n"
-                f"EMA 9={ta_e9} 20={ta_e20} 50={ta_e50}\n"
-                f"BB Upper={ta_bbu} Mid={ta_bbm} Lower={ta_bbl} Width={ta_bbw}\n"
-                f"Stoch K={ta_sk} D={ta_sd} | VWAP={ta_vwap}\n"
-                f"Supertrend={ta_st} ({ta_stdir}) | Volume Ratio={ta_vr}x avg\n"
-                f"S2={s2} S1={s1} Pivot={sr_piv} R1={r1} R2={r2}\n"
-                f"Swing Resistances (price structure): {swing_res}\n"
-                f"Swing Supports (price structure): {swing_sup}\n"
-                f"Fib 61.8%={fib_618} 50%={fib_500} 38.2%={fib_382}\n"
-                f"Signals: {pats_str}\n\n"
-                f"=== PRE-COMPUTED TRADE SETUPS ===\n"
-                f"Short-term (CMP={price} Stop=S1={s1} Target=R1={r1}):\n"
-                f"{rr_st_formula}\n\n"
-                f"Swing (CMP={price} Stop=S2={s2} Target=R2={r2}):\n"
-                f"{rr_sw_formula}\n\n"
-                f"=== RISK & SENTIMENT ===\n"
-                f"Risk Score: {risk_score}/100 — {risk_level}\n"
-                f"Sentiment: {sent_label} (score: {sent_score_v})\n"
-                f"Risk Flags: {risk_flags}\n\n"
-                f"=== QUARTERLY RESULTS ===\n"
-                f"{q_note}\n\n"
-                f"=== RECENT NEWS ===\n"
-                f"{news_titles}\n\n"
-                f"Write the report with these EXACT headers:\n\n"
-                f"# {comp} ({sym}.NS) — Institutional Research Report\n\n"
-                f"## Executive Summary\n"
-                f"(4-5 sentences: business, thesis, catalyst, risk — every sentence must cite a number)\n\n"
-                f"## Investment Scorecard\n"
-                f"| Dimension | Rating | Score | Key Metrics |\n"
-                f"|---|---|---|---|\n"
-                f"| Valuation | X | X/10 | P/E {sc_pe}, P/B {sc_pb}, EV/EBITDA {sc_ev} |\n"
-                f"| Fundamentals | X | X/10 | ROE {sc_roe}, ROCE {sc_roce}%, Net Margin {sc_npm} |\n"
-                f"| Technicals | X | X/10 | RSI {ta_rsi}, ADX {ta_adx}, Supertrend {ta_stdir} |\n"
-                f"| Sentiment | X | X/10 | {sent_label} score {sent_score_v} |\n"
-                f"| Risk | X | X/10 | Score {risk_score}/100 |\n"
-                f"| **Overall** | | **X/10** | |\n\n"
-                f"## Fundamental Deep Dive\n"
-                f"(All ratios, DCF scenarios, D/E calculation detail, revenue trend)\n\n"
-                f"## Technical Analysis\n"
-                f"**Pivot Levels:**\n"
-                f"| Level | Price | Formula |\n|---|---|---|\n"
-                f"| R2 | {sr_r2} | Pivot+(H-L) |\n"
-                f"| R1 | {sr_r1} | 2xPivot-Low |\n"
-                f"| Pivot | {sr_piv} | (H+L+C)/3 |\n"
-                f"| S1 | {sr_s1} | 2xPivot-High |\n"
-                f"| S2 | {sr_s2} | Pivot-(H-L) |\n\n"
-                f"**Trade Setups:**\n"
-                f"| Setup | Entry | Stop | Target | R:R | Status |\n|---|---|---|---|---|---|\n"
-                f"| Short-term | {price} | {s1} | {r1} | {rr_st_rr}:1 | {rr_st_v} |\n"
-                f"| Swing | {price} | {s2} | {r2} | {rr_sw_rr}:1 | {rr_sw_v} |\n\n"
-                f"(Discuss all indicators — trend, momentum, volume, Supertrend, Fibonacci)\n\n"
-                f"## News & Sentiment\n(Key events with price impact, sentiment breakdown)\n\n"
-                f"## Risk Assessment\nRisk Score: {risk_score}/100 — {risk_level}\n"
-                f"(Discuss each flag, probability, mitigation)\n\n"
-                f"## Catalysts\n(3-4 specific events that could move stock ±10% in 6 months)\n\n"
-                f"## Verdict\n"
-                f"**Rating:** BUY/ACCUMULATE/HOLD/REDUCE/SELL | **Conviction:** High/Medium/Low\n"
-                f"**12M Target:** X | **Stop-Loss:** {s1} | **Position:** X% of portfolio\n\n"
-                f"*ARIA Equity Research | {now_ist()} | {self.provider}*\n"
-                f"*Data: yfinance NSE, Google News RSS, NSE PDF scraper | Not SEBI-registered advice*"
-            )
-            # Get LLM analysis
-            llm_output = self._client.chat(prompt, temperature=0.2, max_tokens=TOKENS_SYNTHESIS)
-
-            # Append explainability blocks AFTER LLM output
-            return llm_output + "\n\n---\n\n" + ind_block + "\n\n" + calc_block
-
-        except Exception as e:
-            import traceback
-            return f"⚠️ Analysis error for **{sym}**: `{e}`\n\nPlease check the ticker symbol. Use NSE format e.g. HDFCBANK, TATAMOTORS, ATHERENERG"
-
-    def _get_chart(self, sym: str):
-        try:
-            info = get_info(sym)
-            comp = info.get("longName") or sym
-            df   = get_ohlcv(sym, "1y", "1d")
-            df_ta= compute_all(df.copy())
-            return candlestick(df_ta, sym, comp, "1D")
-        except Exception:
+    def _fetch_bundle(self, sym: str) -> dict | None:
+        """
+        Fetch + compute everything needed to answer any question about `sym`:
+        fundamentals, 1Y technicals/levels (short-term), 2Y technicals/levels
+        (long-term — genuinely separate data, not the same pivot set reused),
+        risk, sentiment, quarterly results, recent news. Returns None if the
+        ticker has no real market data.
+        """
+        info = get_info(sym)
+        comp = info.get("longName") or info.get("shortName") or sym
+        if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
             return None
 
-    # ── Partial analyses ───────────────────────────────────────────────────────
+        with ThreadPoolExecutor(max_workers=6) as exe:
+            f_ohlcv_1y = exe.submit(get_ohlcv, sym, "1y", "1d")
+            f_ohlcv_2y = exe.submit(get_ohlcv, sym, "2y", "1d")
+            f_fins     = exe.submit(get_financials, sym)
+            f_macro    = exe.submit(get_macro)
+            f_qtext    = exe.submit(get_latest_quarterly_results, sym)
+            f_news     = exe.submit(company_news, sym, comp)
 
-    def _chart_only(self, sym: str, msg: str) -> tuple[str, str]:
-        try:
-            info = get_info(sym)
-            if not info or (not info.get("regularMarketPrice") and not info.get("currentPrice")):
-                return f"⚠️ No data for **{sym}**. Check NSE ticker (e.g. ATHERENERG for Ather Energy).", None
-            comp   = info.get("longName") or sym
-            period, interval, tflabel = self._timeframe(msg)
-            df     = get_ohlcv(sym, period, interval)
-            if df is None or df.empty:
-                return f"⚠️ No price history for {sym} ({period}/{interval}).", None
-            df_ta  = compute_all(df.copy())
-            ta     = snapshot(df_ta)
-            sr     = support_resistance(df_ta)
-            chart  = candlestick(df_ta, sym, comp, tflabel)
+        df_1y  = f_ohlcv_1y.result()
+        df_2y  = f_ohlcv_2y.result()
+        fins   = f_fins.result()
+        macro  = f_macro.result()
+        q_text = f_qtext.result()
+        news   = f_news.result()
 
-            price = ta.get("current_price")
-            s1 = sr.get("S1"); r1 = sr.get("R1")
-            s2 = sr.get("S2"); r2 = sr.get("R2")
+        df_ta_1y = compute_all(df_1y.copy()) if not df_1y.empty else df_1y
+        df_ta_2y = compute_all(df_2y.copy()) if not df_2y.empty else df_2y
+        ta_1y = snapshot(df_ta_1y)
+        ta_2y = snapshot(df_ta_2y) if not df_ta_2y.empty else {}
+        sr_1y = support_resistance(df_ta_1y)
+        sr_2y = support_resistance(df_ta_2y) if not df_ta_2y.empty else {}
 
-            rr_short = compute_rr(price, s1, r1, price) if all(x is not None for x in [price, s1, r1]) else None
-            rr_swing = compute_rr(price, s2, r2, price) if all(x is not None for x in [price, s2, r2]) else None
+        fund = compute(info, fins)
+        price = ta_1y.get("current_price") or fund.get("price")
+        if price:
+            fund["price"] = price
 
-            def _fv(v): return f"₹{v:.2f}" if isinstance(v, float) else "N/A"
-            pats = "\n".join(f"- {p}" for p in ta.get("patterns", [])[:6]) or "- No significant signals"
+        sent = analyse(news)
+        risk = assess(fund, ta_1y, sent["score"], macro)
+        q_note = trim_text(q_text, 120) if q_text and "No " not in q_text else "Not available via scraper"
 
-            rr_block = ""
-            if rr_short and rr_short.get("valid"):
-                rr_block += f"\n**Short-term R:R:** `{rr_short.get('formula','')}`"
-            elif rr_short:
-                rr_block += f"\n**Short-term R:R:** ⚠️ {rr_short.get('error','Invalid setup')}"
-            if rr_swing and rr_swing.get("valid"):
-                rr_block += f"\n**Swing R:R:** `{rr_swing.get('formula','')}`"
+        s1 = sr_1y.get("S1"); r1 = sr_1y.get("R1")
+        st_rr = compute_rr(price, s1, r1, price) if all(x for x in [price, s1, r1]) else {"valid": False, "error": "Insufficient level data"}
 
-            text = (
-                f"### {comp} ({sym}.NS) — {tflabel}\n"
-                f"| Indicator | Value | Indicator | Value |\n"
-                f"|-----------|-------|-----------|-------|\n"
-                f"| CMP | {_fv(price)} | RSI (14) | {ta.get('RSI','N/A')} |\n"
-                f"| SMA 50 | {_fv(ta.get('SMA_50'))} | SMA 200 | {_fv(ta.get('SMA_200'))} |\n"
-                f"| MACD | {ta.get('MACD','N/A')} | Signal | {ta.get('MACD_Signal','N/A')} |\n"
-                f"| ADX | {ta.get('ADX','N/A')} | ATR | {ta.get('ATR','N/A')} |\n"
-                f"| VWAP | {_fv(ta.get('VWAP'))} | Vol Ratio | {ta.get('Volume_Ratio','N/A')}x |\n"
-                f"| BB Upper | {_fv(ta.get('BB_Upper'))} | BB Lower | {_fv(ta.get('BB_Lower'))} |\n"
-                f"\n**Pivot Levels** (formula: Pivot=(H+L+C)/3)\n"
-                f"S2 ₹{s2} | S1 ₹{s1} | Pivot ₹{sr.get('Pivot')} | R1 ₹{r1} | R2 ₹{r2}\n"
-                f"\n**Active Signals:**\n{pats}"
-                f"{rr_block}\n"
-                f"\n*Data: yfinance NSE (.NS) | Chart: Plotly candlestick with volume, RSI, MACD*"
-            )
-            return text, chart
-        except Exception as e:
-            return f"⚠️ Chart error for {sym}: `{e}`\n\nVerify ticker is listed on NSE.", None
+        # NOTE: support_resistance()'s classic pivot formula (Pivot=(H+L+C)/3)
+        # only reads the LAST row of the input df — it is insensitive to
+        # whether 1Y or 2Y of history was fetched, so sr_2y's S2/R2 would be
+        # nearly identical to sr_1y's. For a genuinely different long-term
+        # view, use the 2Y swing highs/lows instead — swing_levels() scans the
+        # entire input range, so a 2Y df produces materially wider structural
+        # levels than a 1Y df.
+        sw2_res = sr_2y.get("swing_highs", [])
+        sw2_sup = sr_2y.get("swing_lows", [])
+        lt_target = max(sw2_res) if sw2_res else sr_2y.get("R2") or sr_1y.get("R2")
+        lt_stop   = min(sw2_sup) if sw2_sup else sr_2y.get("S2") or sr_1y.get("S2")
+        lt_rr = compute_rr(price, lt_stop, lt_target, price) if all(x for x in [price, lt_stop, lt_target]) else {"valid": False, "error": "Insufficient level data"}
 
-    def _technical(self, sym: str, msg: str) -> tuple[str, str]:
-        try:
-            info          = get_info(sym)
-            comp          = info.get("longName") or sym
-            period, interval, tflabel = self._timeframe(msg)
-            df            = get_ohlcv(sym, period, interval)
-            df_ta         = compute_all(df.copy())
-            ta            = snapshot(df_ta)
-            sr            = support_resistance(df_ta)
-            fib           = ta.get("fib", {})
-            pats          = ta.get("patterns", [])
-            chart         = candlestick(df_ta, sym, comp, tflabel)
+        return {
+            "sym": sym, "comp": comp, "price": price, "fund": fund,
+            "ta_1y": ta_1y, "sr_1y": sr_1y, "ta_2y": ta_2y, "sr_2y": sr_2y,
+            "lt_stop": lt_stop, "lt_target": lt_target,
+            "risk": risk, "sent": sent, "q_note": q_note, "news": news,
+            "st_rr": st_rr, "lt_rr": lt_rr, "df_ta_1y": df_ta_1y,
+        }
 
-            price = ta.get("current_price")
-            s1 = sr.get("S1"); r1 = sr.get("R1")
-            s2 = sr.get("S2"); r2 = sr.get("R2")
-            rr_short = compute_rr(price, s1, r1, price) if all(x is not None for x in [price,s1,r1]) else {"valid":False,"error":"level data missing"}
-            rr_swing = compute_rr(price, s2, r2, price) if all(x is not None for x in [price,s2,r2]) else {"valid":False,"error":"level data missing"}
+    def _bundle_text(self, b: dict) -> str:
+        """Render one ticker's data bundle into the text block fed to the LLM."""
+        fund = b["fund"]; ta = b["ta_1y"]; sr = b["sr_1y"]; sr2 = b["sr_2y"]
+        risk = b["risk"]; sent = b["sent"]
+        fib  = ta.get("fib", {})
+        pats = ta.get("patterns", [])
+        news_titles = "\n".join(f"- {n['title']}" for n in b["news"][:6]) or "No recent news"
+        pats_str = "; ".join(pats) if pats else "No significant signals"
+        stdir = "BULLISH" if (ta.get("Supertrend_Dir") or 0) > 0 else "BEARISH"
 
-            # Pre-compute all values to avoid f-string double-quote conflicts (Python 3.11)
-            t_open   = ta.get("open");    t_high  = ta.get("high");   t_low   = ta.get("low")
-            t_rsi    = ta.get("RSI");     t_macd  = ta.get("MACD");   t_sig   = ta.get("MACD_Signal"); t_hist = ta.get("MACD_Hist")
-            t_adx    = ta.get("ADX");     t_dip   = ta.get("ADX_DI+"); t_dim  = ta.get("ADX_DI-")
-            t_atr    = ta.get("ATR");     t_sk    = ta.get("Stoch_K"); t_sd   = ta.get("Stoch_D")
-            t_s9     = ta.get("SMA_9");   t_s20   = ta.get("SMA_20"); t_s50  = ta.get("SMA_50"); t_s100 = ta.get("SMA_100"); t_s200 = ta.get("SMA_200")
-            t_e9     = ta.get("EMA_9");   t_e20   = ta.get("EMA_20"); t_e50  = ta.get("EMA_50")
-            t_bbu    = ta.get("BB_Upper"); t_bbm  = ta.get("BB_Mid"); t_bbl  = ta.get("BB_Lower"); t_bbw = ta.get("BB_Width")
-            t_vwap   = ta.get("VWAP");    t_st    = ta.get("Supertrend"); t_std = ta.get("Supertrend_Dir")
-            t_vr     = ta.get("Volume_Ratio"); t_vsma = ta.get("Volume_SMA20")
-            t_stdir  = "BULL" if (t_std or 0) > 0 else "BEAR"
-            p_pivot  = sr.get("Pivot");   p_s20   = sr.get("Support_20"); p_r20 = sr.get("Resist_20")
-            sw_res   = ", ".join(f"₹{v}" for v in sr.get("swing_highs", [])) or "None detected"
-            sw_sup   = ", ".join(f"₹{v}" for v in sr.get("swing_lows",  [])) or "None detected"
-            fib_786  = fib.get("0.786");  fib_618 = fib.get("0.618"); fib_500 = fib.get("0.500"); fib_382 = fib.get("0.382"); fib_236 = fib.get("0.236")
-            pats_str = chr(10).join(pats) if pats else "No significant signals"
-            rr_short_f = rr_short.get("formula","unavailable")
-            rr_swing_f = rr_swing.get("formula","unavailable")
-            rr_short_rp = rr_short.get("risk_pts","?"); rr_short_rwd = rr_short.get("reward_pts","?"); rr_short_rr = rr_short.get("rr","?")
-            rr_swing_rp = rr_swing.get("risk_pts","?"); rr_swing_rwd = rr_swing.get("reward_pts","?"); rr_swing_rr = rr_swing.get("rr","?")
-            rr_short_v  = "✅" if rr_short.get("valid") else "❌ "+str(rr_short.get("error",""))
-            rr_swing_v  = "✅" if rr_swing.get("valid") else "❌ "+str(rr_swing.get("error",""))
+        lines = [
+            f"=== {b['comp']} ({b['sym']}.NS) ===",
+            f"CMP ₹{b['price']}",
+            "",
+            "--- Fundamentals ---",
+            to_text(fund),
+            "",
+            "--- Technicals (1Y / SHORT-TERM) ---",
+            f"RSI {ta.get('RSI')} | MACD {ta.get('MACD')}/{ta.get('MACD_Signal')} | ADX {ta.get('ADX')} | "
+            f"Supertrend {stdir} | ATR {ta.get('ATR')}",
+            f"SMA 20/50/100/200: {ta.get('SMA_20')}/{ta.get('SMA_50')}/{ta.get('SMA_100')}/{ta.get('SMA_200')}",
+            f"1Y Pivot levels: S2={sr.get('S2')} S1={sr.get('S1')} Pivot={sr.get('Pivot')} R1={sr.get('R1')} R2={sr.get('R2')}",
+            f"Fibonacci (52w): 61.8%={fib.get('0.618')} 50%={fib.get('0.500')} 38.2%={fib.get('0.382')}",
+            f"Signals: {pats_str}",
+            f"SHORT-TERM trade setup (1Y-based, Stop=S1, Target=R1): {b['st_rr'].get('formula', 'unavailable')}",
+            "",
+            "--- Technicals (2Y / LONG-TERM) ---",
+            (f"2Y structural swing levels — Resistance(s): {sr2.get('swing_highs') or 'none detected'} | "
+             f"Support(s): {sr2.get('swing_lows') or 'none detected'}"
+             if sr2 else "2Y data unavailable"),
+            f"LONG-TERM trade setup (2Y structural swing high/low — NOT the same-day pivot formula, "
+            f"Stop={b.get('lt_stop')}, Target={b.get('lt_target')}): {b['lt_rr'].get('formula', 'unavailable')}",
+            "",
+            "--- Risk & Sentiment ---",
+            f"Risk Score: {risk.get('score','N/A')}/100 — {risk.get('level','N/A')}",
+            f"Risk Flags: {'; '.join(risk.get('flags', [])[:4]) or 'None'}",
+            f"Sentiment: {sent.get('label','N/A')} (score {sent.get('score',0.0):+.3f})",
+            "",
+            "--- Quarterly Results ---",
+            b["q_note"],
+            "",
+            "--- Recent News ---",
+            news_titles,
+        ]
+        return "\n".join(lines)
 
-            prompt = f"""DEEP TECHNICAL ANALYSIS for {comp} ({sym}.NS) — {tflabel}
-You MUST reference every indicator value below in your analysis.
-
-=== ALL INDICATOR VALUES ===
-CMP ₹{price} | Open ₹{t_open} | High ₹{t_high} | Low ₹{t_low}
-RSI(14)={t_rsi} | MACD={t_macd} / Signal={t_sig} / Hist={t_hist}
-ADX={t_adx} | DI+={t_dip} | DI-={t_dim}
-ATR(14)={t_atr} | Stoch K={t_sk} / D={t_sd}
-SMA 9={t_s9} | 20={t_s20} | 50={t_s50} | 100={t_s100} | 200={t_s200}
-EMA 9={t_e9} | 20={t_e20} | 50={t_e50}
-BB Upper={t_bbu} | Mid={t_bbm} | Lower={t_bbl} | Width={t_bbw}
-VWAP={t_vwap} | Supertrend={t_st} ({t_stdir})
-Volume Ratio={t_vr}x | Volume SMA20={t_vsma}
-
-=== PIVOT LEVELS (formula: Pivot=(H+L+C)/3) ===
-S2={s2} | S1={s1} | Pivot={p_pivot} | R1={r1} | R2={r2}
-20D Support={p_s20} | 20D Resistance={p_r20}
-Swing Resistances (structural): {sw_res}
-Swing Supports (structural): {sw_sup}
-
-=== FIBONACCI (52-week range) ===
-78.6%=₹{fib_786} | 61.8%=₹{fib_618} | 50%=₹{fib_500} | 38.2%=₹{fib_382} | 23.6%=₹{fib_236}
-
-=== ACTIVE SIGNALS ===
-{pats_str}
-
-=== PRE-COMPUTED R:R (correct formula: Reward/Risk = (Target-Entry)/(Entry-Stop)) ===
-Short-term (Entry=₹{price} Stop=₹{s1} Target=₹{r1}): {rr_short_f}
-Swing (Entry=₹{price} Stop=₹{s2} Target=₹{r2}): {rr_swing_f}
-
-Write this EXACT structure:
-
-## Technical Analysis — {comp} ({sym}.NS) | {tflabel}
-
-### 1. Trend Analysis
-(Primary and secondary trend. Price vs SMA 20/50/100/200. Supertrend direction. ADX strength interpretation.)
-
-### 2. Momentum Analysis
-(RSI: value + interpretation + any divergence. MACD: crossover status + histogram direction. Stochastic: K/D cross.)
-
-### 3. Volatility & Volume Analysis
-(BB width — squeeze or expansion? ATR as % of price. Volume ratio — is trend backed by volume?)
-
-### 4. Key Levels Map
-| Level | Price (₹) | Basis | Significance |
-|-------|----------|-------|-------------|
-| R2 | {r2} | Pivot formula | Strong resistance |
-| R1 | {r1} | Pivot formula | First resistance |
-| VWAP | {ta.get("VWAP")} | Volume-weighted | Intraday fair value |
-| Pivot | {sr.get("Pivot")} | (H+L+C)/3 | Key pivot |
-| CMP | {price} | Live price | — |
-| S1 | {s1} | Pivot formula | First support |
-| S2 | {s2} | Pivot formula | Strong support |
-| Swing Resistances | {sw_res} | Price structure | Historic supply zones |
-| Swing Supports | {sw_sup} | Price structure | Historic demand zones |
-
-### 5. Trade Setups (R:R = (Target−Entry)/(Entry−Stop))
-| Setup | Entry (₹) | Stop (₹) | Target (₹) | Risk (₹) | Reward (₹) | R:R | Valid? |
-|-------|-----------|---------|-----------|---------|-----------|-----|--------|
-| Short-term | {price} | {s1} | {r1} | {rr_short_rp} | {rr_short_rwd} | {rr_short_rr}:1 | {rr_short_v} |
-| Swing | {price} | {s2} | {r2} | {rr_swing_rp} | {rr_swing_rwd} | {rr_swing_rr}:1 | {rr_swing_v} |
-
-### 6. Overall Signal
-**Technical Signal:** 🟢 STRONG BUY / 🟢 BUY / 🟡 NEUTRAL / 🔴 SELL / 🔴 STRONG SELL
-**Conviction:** High / Medium / Low
-**What would invalidate this setup:** [specific price level]
-"""
-            llm_out = self._client.chat(prompt, temperature=0.2, max_tokens=TOKENS_SYNTHESIS)
-            return llm_out + "\n\n---\n\n" + indicator_breakdown(ta), chart
-
-        except Exception as e:
-            return f"⚠️ Technical error: {e}", None
-
-    def _fundamental(self, sym: str) -> str:
-        try:
-            info  = get_info(sym)
-            comp  = info.get("longName") or sym
-            fins  = get_financials(sym)
-            fund  = compute(info, fins)
-            q_text= get_latest_quarterly_results(sym)
-            q_note= trim_text(q_text, 120) if q_text and "No " not in q_text else ""
-            prompt = f"""Deep fundamental analysis for {comp} ({sym}.NS).
-
-{to_text(fund)}
-{"Latest quarterly results summary: " + q_note if q_note else ""}
-
-Write:
-## Fundamental Analysis — {comp}
-### Valuation (vs sector peers, historical avg)
-### Profitability & Quality
-### Growth (revenue, earnings, FCF trends)
-### Balance Sheet Health
-### DCF Scenarios & Analyst Consensus
-### Red Flags & Positives
-### Fundamental Rating: BUY/HOLD/SELL with reasoning
-"""
-            result = self._client.chat(prompt, temperature=0.25, max_tokens=TOKENS_AGENT)
-            return result + "\n\n---\n\n" + calc_breakdown(fund)
-        except Exception as e:
-            return f"⚠️ Fundamental error: {e}"
-
-    def _news(self, sym: str) -> str:
-        try:
-            info = get_info(sym)
-            comp = info.get("longName") or sym
-            news = company_news(sym, comp)
-            acq  = acquisition_news(comp)
-            fund_n = funding_news(comp)
-            reg  = regulatory_news(comp)
-            sent = analyse(news[:12])
-            bulk = get_bulk_deals(sym)
-            ca   = get_corporate_actions(sym)
-
-            bulk_text  = format_bulk_deals(bulk, sym) if not bulk.empty else ""
-            ca_text    = ("\n**Corporate Actions (last 5):**\n" + ca.head(5).to_string(index=False)) if not ca.empty else ""
-            news_lines = "\n".join(f"- {n['title']}" for n in news[:8])
-            acq_lines  = "\n".join(f"- {n['title']}" for n in acq[:4])
-            fund_lines = "\n".join(f"- {n['title']}" for n in fund_n[:4])
-            reg_lines  = "\n".join(f"- {n['title']}" for n in reg[:4])
-
-            prompt = f"""News & events analysis for {comp} ({sym}.NS).
-
-SENTIMENT: {sent['label']} (score: {sent['score']:+.3f})
-{sent['text']}
-
-COMPANY NEWS (recent):
-{news_lines}
-
-ACQUISITIONS/M&A:
-{acq_lines}
-
-FUNDING/INVESTMENT:
-{fund_lines}
-
-REGULATORY:
-{reg_lines}
-
-{bulk_text}
-{ca_text}
-
-Write:
-## News & Corporate Events — {comp}
-### Sentiment Overview
-### Key Corporate Events (with stock impact)
-### M&A & Strategic Activity
-### Regulatory & Compliance
-### Bulk/Block Deal Activity
-### Sentiment Conclusion: POSITIVE/NEUTRAL/NEGATIVE
-"""
-            return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
-        except Exception as e:
-            return f"⚠️ News error: {e}"
-
-    def _options(self, sym: str) -> str:
+    def _options_block(self, sym: str) -> str:
         try:
             opt = get_options(sym)
             if not opt["available"]:
-                return f"⚠️ No options data for **{sym}**."
-            calls = opt["calls"][["strike","lastPrice","bid","ask","volume","openInterest","impliedVolatility"]].head(10)
-            puts  = opt["puts"][["strike","lastPrice","bid","ask","volume","openInterest","impliedVolatility"]].head(10)
-            prompt = f"""Options chain analysis for {sym} (Expiry: {opt['expiry']}).
-
-CALLS (top 10 by OI):
-{calls.to_string()}
-
-PUTS (top 10 by OI):
-{puts.to_string()}
-
-Write:
-## Options Chain Analysis — {sym} | Expiry {opt['expiry']}
-### Max Pain & OI Levels
-### PCR & Sentiment
-### Implied Volatility Analysis
-### Key Price Levels from Options
-### Strategy Suggestions (with strikes)
-### Net Signal: Bullish/Bearish/Neutral
-"""
-            return self._client.chat(prompt, temperature=0.25, max_tokens=TOKENS_AGENT)
+                return "\n--- Options Chain ---\nNo options data available.\n"
+            calls = opt["calls"][["strike","lastPrice","openInterest","impliedVolatility"]].head(8)
+            puts  = opt["puts"][["strike","lastPrice","openInterest","impliedVolatility"]].head(8)
+            return (
+                f"\n--- Options Chain (Expiry {opt['expiry']}) ---\n"
+                f"CALLS (top 8 by OI):\n{calls.to_string(index=False)}\n\n"
+                f"PUTS (top 8 by OI):\n{puts.to_string(index=False)}\n"
+            )
         except Exception as e:
-            return f"⚠️ Options error: {e}"
+            return f"\n--- Options Chain ---\nUnavailable: {e}\n"
+
+    # ── Unified answer ─────────────────────────────────────────────────────────
+
+    def _answer(self, tickers: list[str], msg: str) -> tuple[str, str]:
+        """
+        Answers any question about 1+ tickers: fetches the full data bundle for
+        each, always includes the verbatim user question in the prompt, and
+        lets the LLM decide response shape (direct answer first, full report
+        structure only for generic asks) instead of routing to a rigid template.
+        """
+        bundles = []
+        errors  = []
+        with ThreadPoolExecutor(max_workers=max(len(tickers), 1)) as exe:
+            futs = {exe.submit(self._fetch_bundle, t): t for t in tickers}
+            for fut in futs:
+                t = futs[fut]
+                try:
+                    b = fut.result()
+                    if b: bundles.append(b)
+                    else: errors.append(f"{t}: no market data")
+                except Exception as e:
+                    errors.append(f"{t}: {e}")
+
+        if not bundles:
+            detail = "; ".join(errors) if errors else "unknown error"
+            return f"⚠️ Could not fetch data for {', '.join(tickers)}.\n\nDetails: {detail}\n\nVerify tickers are valid NSE symbols.", None
+
+        order = {t: i for i, t in enumerate(tickers)}
+        bundles.sort(key=lambda b: order.get(b["sym"], 99))
+        is_compare = len(bundles) > 1
+
+        options_block = ""
+        if not is_compare and any(k in msg.lower() for k in ["option","options chain","call","put","oi","open interest"]):
+            options_block = self._options_block(bundles[0]["sym"])
+
+        data_text = "\n\n".join(self._bundle_text(b) for b in bundles)
+
+        guidance = (
+            "This is a COMPARISON — weigh both stocks against each other on every dimension "
+            "relevant to the question, then give a clear preference."
+            if is_compare else "Answer for this single stock."
+        )
+
+        prompt = (
+            f'USER QUESTION: "{msg}"\n\n'
+            f"Answer this question directly and specifically FIRST, citing exact numbers from "
+            f"the data below — never invent numbers, never give vague ranges. {guidance}\n"
+            f"Then add ONLY the supporting sections that are relevant to what was actually "
+            f"asked — skip sections that don't help answer this specific question.\n"
+            f"If the question is broad/generic (e.g. \"analyse X\", \"tell me about X\"), use "
+            f"the full structure instead: Executive Summary, Investment Scorecard, Fundamental "
+            f"Deep Dive, Technical Analysis (clearly separate SHORT-TERM/1Y levels from "
+            f"LONG-TERM/2Y levels — they are different numbers, never conflate them), News & "
+            f"Sentiment, Risk Assessment, Catalysts, Verdict.\n\n"
+            f"=== DATA ===\n{data_text}\n{options_block}\n"
+            f"*ARIA Equity Research | {now_ist()} | {self.provider}*"
+        )
+
+        llm_out = self._chat(prompt, temperature=0.2, max_tokens=TOKENS_SYNTHESIS)
+
+        chart = None
+        extra = ""
+        if not is_compare:
+            period, interval, tflabel = self._timeframe(msg)
+            df_chart = get_ohlcv(bundles[0]["sym"], period, interval)
+            df_ta_chart = compute_all(df_chart.copy()) if not df_chart.empty else bundles[0]["df_ta_1y"]
+            chart = candlestick(df_ta_chart, bundles[0]["sym"], bundles[0]["comp"], tflabel)
+            extra = "\n\n---\n\n" + indicator_breakdown(bundles[0]["ta_1y"]) + "\n\n" + calc_breakdown(bundles[0]["fund"])
+
+        return llm_out + extra, chart
+
+    # ── Backtest & market overview (kept separate — different data shapes) ─────
 
     def _backtest(self, sym: str, msg: str) -> str:
         try:
@@ -665,75 +380,26 @@ Write:
 ### Trade Ideas from News
 ### Risk Events This Week
 """
-            return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+            return self._chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
         except Exception as e:
             return f"⚠️ Market overview error: {e}"
-
-    def _compare(self, tickers: list) -> str:
-        def _fetch_one(sym):
-            info  = get_info(sym)
-            if not info or (not info.get("regularMarketPrice") and not info.get("currentPrice")):
-                raise ValueError(f"{sym}: no price data")
-            fins  = get_financials(sym)
-            fund  = compute(info, fins)
-            df    = get_ohlcv(sym, "6mo", "1d")
-            df_ta = compute_all(df.copy()) if not df.empty else df
-            ta    = snapshot(df_ta)
-            return (sym, info.get("longName", sym), fund, ta)
-
-        data   = []
-        errors = []
-        with ThreadPoolExecutor(max_workers=len(tickers)) as exe:
-            futures = {exe.submit(_fetch_one, sym): sym for sym in tickers}
-            for fut in futures:
-                sym = futures[fut]
-                try:
-                    data.append(fut.result())
-                except Exception as e:
-                    errors.append(f"{sym}: {e}")
-
-        if not data:
-            err_detail = "; ".join(errors) if errors else "unknown error"
-            return f"⚠️ Could not fetch data for any ticker.\n\nDetails: {err_detail}\n\nVerify tickers are valid NSE symbols."
-
-        metrics = [("P/E","pe"),("P/B","pb"),("EV/EBITDA","ev_ebitda"),("ROE","roe"),
-                   ("ROCE","roce"),("Net Margin","net_margin"),("Rev Growth","rev_growth"),
-                   ("D/E","de"),("Mkt Cap","mktcap_fmt"),("Target","target_mean")]
-        hdr = "| Metric | " + " | ".join(f"**{n}**" for _,n,_,_ in data) + " |"
-        sep = "|--------|" + "--------|" * len(data)
-        rows = [hdr, sep]
-        for label, key in metrics:
-            vals = [str(f.get(key,"N/A")) for _,_,f,_ in data]
-            rows.append(f"| {label} | " + " | ".join(vals) + " |")
-        rows.append("| RSI | " + " | ".join(str(ta.get("RSI","N/A")) for _,_,_,ta in data) + " |")
-        rows.append("| vs SMA200 | " + " | ".join(
-            "🟢" if (ta.get("current_price") or 0) > (ta.get("SMA_200") or 0) else "🔴"
-            for _,_,_,ta in data) + " |")
-
-        names = " vs ".join(n for _,n,_,_ in data)
-        rows_str = "\n".join(rows)
-        prompt = f"""Compare: {names}\n\n{rows_str}\n\nWrite:
-## Comparison: {names}
-### Valuation Battle | ### Profitability & Quality | ### Technical Setup | ### Risk Profile | ### Verdict
-"""
-        return self._client.chat(prompt, temperature=0.25, max_tokens=TOKENS_AGENT)
 
     # ── Portfolio ──────────────────────────────────────────────────────────────
 
     def _port_add(self, msg: str) -> str:
         m = re.search(r'\b([A-Z]{2,12})\b.*?(\d+(?:\.\d+)?)\s*(?:shares?|qty)?\s*(?:at|@|for|₹|rs)?\s*(\d+(?:\.\d+)?)', msg.upper())
         if m:
-            return port_add(clean_ticker(m.group(1)), float(m.group(2)), float(m.group(3)))
+            return port_add(self._user_id, clean_ticker(m.group(1)), float(m.group(2)), float(m.group(3)))
         return "⚠️ Format: `add TCS 10 shares at 3500`"
 
     def _port_remove(self, msg: str) -> str:
         m = re.search(r'\b([A-Z]{2,12})\b', msg.upper())
-        return port_remove(clean_ticker(m.group(1))) if m else "⚠️ Specify ticker to remove."
+        return port_remove(self._user_id, clean_ticker(m.group(1))) if m else "⚠️ Specify ticker to remove."
 
     def _port_view(self) -> tuple[str, str]:
         from tools.charts.builder import portfolio_chart
-        holdings, summary = get_live()
-        chart = portfolio_chart(holdings) if holdings else ""
+        holdings, summary = get_live(self._user_id)
+        chart = portfolio_chart(holdings)
         return port_md(holdings, summary), chart
 
     def _is_port_add(self, l):    return ("portfolio" in l or "holding" in l) and any(k in l for k in ["add","bought","buy"])
@@ -752,7 +418,7 @@ Write:
         )
         try:
             import json
-            raw = self._client.ask(prompt, temperature=0.8, max_tokens=TOKENS_FAST)
+            raw = self._ask(prompt, temperature=0.8, max_tokens=TOKENS_FAST)
             raw = raw.strip().strip("```json").strip("```").strip()
             sug = json.loads(raw)
             if isinstance(sug, list): return [str(s) for s in sug[:4]]

@@ -5,18 +5,18 @@ from utils.db import portfolio_add, portfolio_remove, portfolio_all
 from config import NSE_SUFFIX
 
 
-def add(symbol: str, qty: float, avg_price: float) -> str:
-    portfolio_add(symbol, qty, avg_price)
+def add(user_id: int, symbol: str, qty: float, avg_price: float) -> str:
+    portfolio_add(user_id, symbol, qty, avg_price)
     return f"✅ Added {qty} shares of **{symbol.upper()}** @ ₹{avg_price:.2f} to portfolio."
 
 
-def remove(symbol: str) -> str:
-    portfolio_remove(symbol)
+def remove(user_id: int, symbol: str) -> str:
+    portfolio_remove(user_id, symbol)
     return f"✅ Removed **{symbol.upper()}** from portfolio."
 
 
-def get_live() -> tuple[list[dict], dict]:
-    rows   = portfolio_all()
+def get_live(user_id: int) -> tuple[list[dict], dict]:
+    rows   = portfolio_all(user_id)
     result = []
     total_inv = total_val = 0.0
 

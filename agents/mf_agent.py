@@ -38,9 +38,10 @@ REGULATORY CONTEXT:
 
 class MFAgent:
 
-    def __init__(self):
+    def __init__(self, user_id: int):
         self._client = LLMClient(system_prompt=SYSTEM)
         self._nav_df = None
+        self._user_id = user_id
 
     @property
     def provider(self): return self._client.provider

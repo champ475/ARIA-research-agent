@@ -45,10 +45,11 @@ REPORT TYPES:
 
 class ReportAgent:
 
-    def __init__(self):
+    def __init__(self, user_id: int):
         self._client      = LLMClient(system_prompt=SYSTEM)
         self._history     = []  # saved reports list
         self._last_symbol = None
+        self._user_id     = user_id
 
     @property
     def provider(self): return self._client.provider
@@ -254,7 +255,7 @@ Investors should conduct their own due diligence before making investment decisi
 """
             report_text = self._client.chat(prompt, temperature=0.2, max_tokens=TOKENS_SYNTHESIS)
             # Save to DB
-            report_save(sym, "Initiating Coverage", f"IC — {comp} ({sym}.NS)", report_text)
+            report_save(self._user_id, sym, "Initiating Coverage", f"IC — {comp} ({sym}.NS)", report_text)
             # Save to file
             md_path, pdf_path = self._save_files(sym, "IC", report_text)
             return report_text, md_path, pdf_path
@@ -306,7 +307,7 @@ Recent news context: {'; '.join(n['title'] for n in news[:4])}
 *ARIA Research | {now_ist()} | Not SEBI-registered advice*
 """
             report_text = self._client.chat(prompt, temperature=0.2, max_tokens=TOKENS_AGENT)
-            report_save(sym, "Result Update", f"RU — {comp} Q-Results", report_text)
+            report_save(self._user_id, sym, "Result Update", f"RU — {comp} Q-Results", report_text)
             md_path, pdf_path = self._save_files(sym, "RU", report_text)
             return report_text, md_path, pdf_path
 
@@ -377,7 +378,7 @@ RECENT HEADLINES:
 *ARIA Research | {now_ist()} | Not SEBI-registered advice*
 """
         report_text = self._client.chat(prompt, temperature=0.25, max_tokens=TOKENS_AGENT)
-        report_save("", "Sector Thematic", f"Thematic — {sector} Sector", report_text)
+        report_save(self._user_id, "", "Sector Thematic", f"Thematic — {sector} Sector", report_text)
         try:
             md_path, pdf_path = self._save_files("SECTOR", "ST", report_text)
         except Exception:
@@ -415,7 +416,7 @@ Recent news: {'; '.join(n['title'] for n in news[:3])}
 *ARIA Research | Not SEBI-registered advice*
 """
             report_text = self._client.chat(prompt, temperature=0.3, max_tokens=600)
-            report_save(sym, "Quick Note", f"QN — {comp}", report_text)
+            report_save(self._user_id, sym, "Quick Note", f"QN — {comp}", report_text)
             md_path, pdf_path = self._save_files(sym, "QN", report_text)
             return report_text, md_path, pdf_path
         except Exception as e:
@@ -424,7 +425,7 @@ Recent news: {'; '.join(n['title'] for n in news[:3])}
     # ── Report management ──────────────────────────────────────────────────────
 
     def _list_reports(self) -> str:
-        reports = report_list(20)
+        reports = report_list(self._user_id, 20)
         if not reports:
             return "No reports saved yet. Generate one with: `IC report for TCS`"
         lines = ["## Saved Reports\n", "| # | Type | Title | Date |", "|---|------|-------|------|"]

@@ -39,9 +39,10 @@ SCREENING PHILOSOPHY:
 
 class ScreenerAgent:
 
-    def __init__(self):
+    def __init__(self, user_id: int):
         self._client = LLMClient(system_prompt=SYSTEM)
         self._last_results: list[dict] = []
+        self._user_id = user_id
 
     @property
     def provider(self): return self._client.provider
@@ -166,9 +167,10 @@ Write:
         return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
 
     def _bulk_block(self, msg: str) -> str:
-        # Try to find a symbol in message
-        from utils.helpers import resolve_ticker
-        sym, _ = resolve_ticker(msg)
+        # Try to find a symbol in message (hybrid: deterministic first, LLM
+        # fallback only on ambiguity — same resolver as EquityAgent)
+        from utils.helpers import resolve_query
+        sym = resolve_query(msg, client=self._client)["ticker"]
 
         bulk  = get_bulk_deals(sym)
         block = get_block_deals(sym)
@@ -235,11 +237,11 @@ Write:
         m    = re.search(r'save\s+(?:as\s+)?["\']?([a-zA-Z0-9\s]+)["\']?', msg, re.I)
         name = m.group(1).strip() if m else "My Screener"
         filters = parse_query(msg)
-        screener_save(name, filters)
+        screener_save(self._user_id, name, filters)
         return f"✅ Screener saved as **{name}** with filters: {filters}"
 
     def _list_screeners(self) -> str:
-        saved = screener_list()
+        saved = screener_list(self._user_id)
         if not saved:
             return "No saved screeners yet. Run a screen and say `save screener as <name>`."
         lines = ["## Saved Screeners\n", "| Name | Filters | Created |", "|------|---------|---------|"]

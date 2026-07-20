@@ -7,6 +7,7 @@ import os
 import gradio as gr
 from utils.db    import init_db
 from utils.helpers import now_ist
+from utils.auth import signup, login, AuthError
 
 # ── Init DB on startup ────────────────────────────────────────────────────────
 init_db()
@@ -19,19 +20,22 @@ LOADING_HTML = (
 )
 
 # ── Lazy agent loader ─────────────────────────────────────────────────────────
+# Keyed by (user_id, tab) so each analyst gets an isolated agent instance —
+# conversation history and portfolio/watchlist/report calls never cross tenants.
 _agents = {}
 
-def get_agent(tab: str):
-    if tab not in _agents:
+def get_agent(user_id: int, tab: str):
+    key = (user_id, tab)
+    if key not in _agents:
         if tab == "equity":
-            from agents.equity_agent   import EquityAgent;   _agents[tab] = EquityAgent()
+            from agents.equity_agent   import EquityAgent;   _agents[key] = EquityAgent(user_id)
         elif tab == "report":
-            from agents.report_agent   import ReportAgent;   _agents[tab] = ReportAgent()
+            from agents.report_agent   import ReportAgent;   _agents[key] = ReportAgent(user_id)
         elif tab == "mf":
-            from agents.mf_agent       import MFAgent;       _agents[tab] = MFAgent()
+            from agents.mf_agent       import MFAgent;       _agents[key] = MFAgent(user_id)
         elif tab == "screener":
-            from agents.screener_agent import ScreenerAgent; _agents[tab] = ScreenerAgent()
-    return _agents[tab]
+            from agents.screener_agent import ScreenerAgent; _agents[key] = ScreenerAgent(user_id)
+    return _agents[key]
 
 
 # ── Timeframe keyword map (appended to message when non-default) ──────────────
@@ -62,7 +66,7 @@ TAB_PLACEHOLDERS = {
 
 # ── Core respond function ─────────────────────────────────────────────────────
 
-def respond(tab: str, message: str, history: list, suggestions: list):
+def respond(user_id: int, tab: str, message: str, history: list, suggestions: list):
     """
     Generator: first yield shows loading dots, second yield delivers the real response.
     Yields: (cleared_input, updated_history, chart_update, new_suggestions, *btn_updates)
@@ -84,7 +88,7 @@ def respond(tab: str, message: str, history: list, suggestions: list):
     new_sugg  = suggestions
     text      = ""
     try:
-        agent       = get_agent(tab)
+        agent       = get_agent(user_id, tab)
         text, chart = agent.process(clean)
         if chart is not None:
             chart_fig = chart
@@ -109,7 +113,7 @@ def respond(tab: str, message: str, history: list, suggestions: list):
     yield ("", updated_history, chart_update, new_sugg) + btn_updates
 
 
-def respond_report(message: str, history: list, suggestions: list):
+def respond_report(user_id: int, message: str, history: list, suggestions: list):
     """
     Generator: first yield shows loading dots, second yield delivers the real response.
     Like respond() but handles the report agent's 4-tuple output and populates
@@ -136,7 +140,7 @@ def respond_report(message: str, history: list, suggestions: list):
     md_update  = no_file
     text       = ""
     try:
-        agent = get_agent("report")
+        agent = get_agent(user_id, "report")
         text, chart, pdf_path, md_path = agent.process(clean)
         if chart is not None:
             chart_fig = chart
@@ -165,9 +169,10 @@ def respond_report(message: str, history: list, suggestions: list):
     yield ("", updated_history, chart_update, new_sugg, pdf_update, md_update) + btn_updates
 
 
-def clear_tab(tab: str):
-    if tab in _agents:
-        _agents[tab].reset()
+def clear_tab(user_id: int, tab: str):
+    key = (user_id, tab)
+    if key in _agents:
+        _agents[key].reset()
     sugg = TAB_DEFAULTS[tab]
     return ([], gr.update(value=None, visible=False), sugg) + _make_btn_updates(sugg)
 
@@ -317,7 +322,7 @@ footer { display: none !important; }
 
 # ── Build tab UI (reused for mf tab) ─────────────────────────────────────────
 
-def _build_tab(tab_id: str):
+def _build_tab(tab_id: str, user_state: gr.State):
     defaults = TAB_DEFAULTS[tab_id]
     placeholder = TAB_PLACEHOLDERS[tab_id]
 
@@ -358,21 +363,21 @@ def _build_tab(tab_id: str):
     outputs = [msg_box, chatbot, chart_panel, suggestions_state] + sug_btns
 
     # Respond handler
-    def _respond(msg, hist, sugg):
-        yield from respond(tab_id, msg, hist, sugg)
+    def _respond(user_id, msg, hist, sugg):
+        yield from respond(user_id, tab_id, msg, hist, sugg)
 
-    def _clear():
-        result = clear_tab(tab_id)
+    def _clear(user_id):
+        result = clear_tab(user_id, tab_id)
         # result = ([], no_chart, sugg) + btn_updates
         hist, chart, sugg = result[0], result[1], result[2]
         btns = result[3:]
         return [hist, chart, sugg] + list(btns)
 
     # Wire events
-    msg_box.submit(_respond,  [msg_box, chatbot, suggestions_state], outputs)
-    send_btn.click(_respond,  [msg_box, chatbot, suggestions_state], outputs)
+    msg_box.submit(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
+    send_btn.click(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
     clear_btn.click(
-        _clear, [],
+        _clear, [user_state],
         [chatbot, chart_panel, suggestions_state] + sug_btns,
     )
 
@@ -387,7 +392,7 @@ def _build_tab(tab_id: str):
     return chatbot, chart_panel, sug_btns, msg_box
 
 
-def _build_equity_tab():
+def _build_equity_tab(user_state: gr.State):
     """Equity tab: standard layout + timeframe selector radio."""
     tab_id      = "equity"
     defaults    = TAB_DEFAULTS[tab_id]
@@ -429,23 +434,23 @@ def _build_equity_tab():
 
     outputs = [msg_box, chatbot, chart_panel, suggestions_state] + sug_btns
 
-    def _respond(msg, hist, sugg, tf):
+    def _respond(user_id, msg, hist, sugg, tf):
         # Append timeframe keyword so agent's _timeframe() can parse it
         kw = _TF_KEYWORDS.get(tf, "")
         if kw and kw not in msg.lower():
             msg = msg.strip() + " " + kw
-        yield from respond(tab_id, msg, hist, sugg)
+        yield from respond(user_id, tab_id, msg, hist, sugg)
 
-    def _clear():
-        result = clear_tab(tab_id)
+    def _clear(user_id):
+        result = clear_tab(user_id, tab_id)
         hist, chart, sugg = result[0], result[1], result[2]
         btns = result[3:]
         return [hist, chart, sugg] + list(btns)
 
-    msg_box.submit(_respond,  [msg_box, chatbot, suggestions_state, tf_radio], outputs)
-    send_btn.click(_respond,  [msg_box, chatbot, suggestions_state, tf_radio], outputs)
+    msg_box.submit(_respond,  [user_state, msg_box, chatbot, suggestions_state, tf_radio], outputs)
+    send_btn.click(_respond,  [user_state, msg_box, chatbot, suggestions_state, tf_radio], outputs)
     clear_btn.click(
-        _clear, [],
+        _clear, [user_state],
         [chatbot, chart_panel, suggestions_state] + sug_btns,
     )
 
@@ -457,7 +462,7 @@ def _build_equity_tab():
         )
 
 
-def _build_report_tab():
+def _build_report_tab(user_state: gr.State):
     """Report tab: identical to _build_tab but adds PDF + Markdown download components."""
     tab_id      = "report"
     defaults    = TAB_DEFAULTS[tab_id]
@@ -496,20 +501,20 @@ def _build_report_tab():
 
     outputs = [msg_box, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn] + sug_btns
 
-    def _respond(msg, hist, sugg):
-        yield from respond_report(msg, hist, sugg)
+    def _respond(user_id, msg, hist, sugg):
+        yield from respond_report(user_id, msg, hist, sugg)
 
-    def _clear():
-        result = clear_tab(tab_id)
+    def _clear(user_id):
+        result = clear_tab(user_id, tab_id)
         hist, chart, sugg = result[0], result[1], result[2]
         btns = result[3:]
         no_dl = gr.update(value=None, visible=False)
         return [hist, chart, sugg, no_dl, no_dl] + list(btns)
 
-    msg_box.submit(_respond,  [msg_box, chatbot, suggestions_state], outputs)
-    send_btn.click(_respond,  [msg_box, chatbot, suggestions_state], outputs)
+    msg_box.submit(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
+    send_btn.click(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
     clear_btn.click(
-        _clear, [],
+        _clear, [user_state],
         [chatbot, chart_panel, suggestions_state, pdf_btn, md_btn] + sug_btns,
     )
 
@@ -521,7 +526,7 @@ def _build_report_tab():
         )
 
 
-def _build_screener_tab():
+def _build_screener_tab(user_state: gr.State):
     """Screener tab: standard layout + CSV export download button."""
     tab_id      = "screener"
     defaults    = TAB_DEFAULTS[tab_id]
@@ -560,7 +565,7 @@ def _build_screener_tab():
 
     outputs = [msg_box, chatbot, chart_panel, suggestions_state, csv_btn] + sug_btns
 
-    def _respond(msg, hist, sugg):
+    def _respond(user_id, msg, hist, sugg):
         """Same as respond() but also updates the CSV download button after a screen runs."""
         if not msg.strip():
             yield ("", hist, gr.update(), sugg, gr.update()) + tuple(gr.update() for _ in range(4))
@@ -577,7 +582,7 @@ def _build_screener_tab():
         new_sugg = sugg
         csv_update = gr.update(visible=False)
         try:
-            agent = get_agent("screener")
+            agent = get_agent(user_id, "screener")
             text, _ = agent.process(clean)
             new_sugg = agent.generate_suggestions(text, clean)
             csv_path = agent.export_csv()
@@ -599,16 +604,16 @@ def _build_screener_tab():
         ]
         yield ("", updated_hist, gr.update(visible=False), new_sugg, csv_update) + _make_btn_updates(new_sugg)
 
-    def _clear():
-        result = clear_tab(tab_id)
+    def _clear(user_id):
+        result = clear_tab(user_id, tab_id)
         hist, chart, sugg = result[0], result[1], result[2]
         btns = result[3:]
         return [hist, chart, sugg, gr.update(value=None, visible=False)] + list(btns)
 
-    msg_box.submit(_respond,  [msg_box, chatbot, suggestions_state], outputs)
-    send_btn.click(_respond,  [msg_box, chatbot, suggestions_state], outputs)
+    msg_box.submit(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
+    send_btn.click(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
     clear_btn.click(
-        _clear, [],
+        _clear, [user_state],
         [chatbot, chart_panel, suggestions_state, csv_btn] + sug_btns,
     )
 
@@ -622,13 +627,13 @@ def _build_screener_tab():
 
 # ── Watchlist helpers ─────────────────────────────────────────────────────────
 
-def _fetch_watchlist_table() -> list[list]:
+def _fetch_watchlist_table(user_id: int) -> list[list]:
     """Return rows for the watchlist dataframe: Symbol, Name, Price, Change%, RSI, 52W High, 52W Low."""
     from utils.db import watchlist_all
     from tools.data.fetcher import get_info, get_ohlcv
     from tools.analysis.technical import compute_all, snapshot
 
-    symbols = watchlist_all()
+    symbols = watchlist_all(user_id)
     if not symbols:
         return []
 
@@ -662,18 +667,18 @@ def _fetch_watchlist_table() -> list[list]:
     return rows
 
 
-def _build_watchlist_tab():
+def _build_watchlist_tab(user_state: gr.State):
     """Watchlist tab: add/remove symbols, live price table with RSI, refresh button."""
-    from utils.db import watchlist_add, watchlist_remove, watchlist_all
+    from utils.db import watchlist_add, watchlist_remove
     from utils.helpers import clean_ticker
 
     COLS = ["Symbol", "Name", "Price", "Change %", "RSI", "52W High", "52W Low"]
 
     gr.Markdown("## 📌 Watchlist\nTrack live prices and key indicators for your saved symbols.")
 
-    # Price table
+    # Price table (populated on login via app.load, since it needs user_id)
     wl_table = gr.Dataframe(
-        value=_fetch_watchlist_table(),
+        value=[],
         headers=COLS,
         datatype=["str"] * len(COLS),
         interactive=False,
@@ -693,76 +698,143 @@ def _build_watchlist_tab():
         rem_btn  = gr.Button("➖ Remove",  variant="secondary", scale=1, min_width=80)
         ref_btn  = gr.Button("🔄 Refresh", variant="secondary", scale=1, min_width=90)
 
-    def _add(sym_raw):
+    def _add(user_id, sym_raw):
         sym = clean_ticker(sym_raw.strip().upper())
         if not sym:
-            return _fetch_watchlist_table(), "⚠️ Enter a valid NSE symbol."
-        watchlist_add(sym)
-        return _fetch_watchlist_table(), f"✅ **{sym}** added to watchlist."
+            return _fetch_watchlist_table(user_id), "⚠️ Enter a valid NSE symbol."
+        watchlist_add(user_id, sym)
+        return _fetch_watchlist_table(user_id), f"✅ **{sym}** added to watchlist."
 
-    def _remove(sym_raw):
+    def _remove(user_id, sym_raw):
         sym = clean_ticker(sym_raw.strip().upper())
         if not sym:
-            return _fetch_watchlist_table(), "⚠️ Enter a symbol to remove."
-        watchlist_remove(sym)
-        return _fetch_watchlist_table(), f"🗑️ **{sym}** removed from watchlist."
+            return _fetch_watchlist_table(user_id), "⚠️ Enter a symbol to remove."
+        watchlist_remove(user_id, sym)
+        return _fetch_watchlist_table(user_id), f"🗑️ **{sym}** removed from watchlist."
 
-    def _refresh():
-        rows = _fetch_watchlist_table()
+    def _refresh(user_id):
+        rows = _fetch_watchlist_table(user_id)
         n = len(rows)
         return rows, f"🔄 Refreshed {n} symbol{'s' if n != 1 else ''}."
 
-    add_btn.click(_add,     inputs=[add_box],  outputs=[wl_table, status])
-    rem_btn.click(_remove,  inputs=[rem_box],  outputs=[wl_table, status])
-    ref_btn.click(_refresh, inputs=[],         outputs=[wl_table, status])
-    add_box.submit(_add,    inputs=[add_box],  outputs=[wl_table, status])
+    add_btn.click(_add,     inputs=[user_state, add_box],  outputs=[wl_table, status])
+    rem_btn.click(_remove,  inputs=[user_state, rem_box],  outputs=[wl_table, status])
+    ref_btn.click(_refresh, inputs=[user_state],           outputs=[wl_table, status])
+    add_box.submit(_add,    inputs=[user_state, add_box],  outputs=[wl_table, status])
+
+    return wl_table, status
 
 
 # ── Build full UI ─────────────────────────────────────────────────────────────
 
+# ── Auth gate ─────────────────────────────────────────────────────────────────
+
+def _build_auth_gate():
+    """
+    Login/signup screen. On success, sets user_state to the authenticated
+    user_id, hides this gate, and reveals the main app.
+    Returns (auth_group, main_group, user_state).
+    """
+    user_state = gr.State(None)  # holds user_id once authenticated
+
+    with gr.Column(elem_id="auth-gate", visible=True) as auth_group:
+        gr.HTML(
+            "<div style='text-align:center;padding:30px 0 10px'>"
+            "<span style='font-size:22px;font-weight:700;color:#58a6ff;'>⚡ ARIA</span><br/>"
+            "<span style='font-size:12px;color:#8b949e;'>Sign in to your research workspace</span>"
+            "</div>"
+        )
+        with gr.Column(scale=1, min_width=360, elem_id="auth-card"):
+            email_box = gr.Textbox(label="Email", placeholder="you@example.com")
+            pass_box  = gr.Textbox(label="Password", type="password", placeholder="At least 8 characters")
+            auth_msg  = gr.Markdown("")
+            with gr.Row():
+                login_btn  = gr.Button("Log in", variant="primary")
+                signup_btn = gr.Button("Sign up", variant="secondary")
+
+    with gr.Column(elem_id="main-app", visible=False) as main_group:
+        pass  # populated by caller
+
+    def _do_login(email, password):
+        try:
+            token = login(email, password)
+        except AuthError as e:
+            return str(e), gr.update(visible=True), gr.update(visible=False), None
+        from utils.auth import get_user_id
+        uid = get_user_id(token)
+        return "", gr.update(visible=False), gr.update(visible=True), uid
+
+    def _do_signup(email, password):
+        try:
+            signup(email, password)
+            token = login(email, password)
+        except AuthError as e:
+            return str(e), gr.update(visible=True), gr.update(visible=False), None
+        from utils.auth import get_user_id
+        uid = get_user_id(token)
+        return "", gr.update(visible=False), gr.update(visible=True), uid
+
+    login_btn.click(_do_login,  [email_box, pass_box], [auth_msg, auth_group, main_group, user_state])
+    signup_btn.click(_do_signup, [email_box, pass_box], [auth_msg, auth_group, main_group, user_state])
+    pass_box.submit(_do_login,  [email_box, pass_box], [auth_msg, auth_group, main_group, user_state])
+
+    return auth_group, main_group, user_state
+
+
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="ARIA — Professional Investment Research") as demo:
 
-        # Header
-        gr.HTML("""
-        <div id='aria-header' style='display:flex;align-items:center;justify-content:space-between'>
-          <div>
-            <span style='font-size:18px;font-weight:700;color:#58a6ff;'>⚡ ARIA</span>
-            <span style='font-size:11px;color:#8b949e;margin-left:10px;'>
-              Autonomous Research &amp; Investment Analyst · NSE · BSE · v2
-            </span>
-          </div>
-          <div style='font-size:10px;padding:3px 10px;border-radius:12px;
-                      background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;'>
-            Groq Llama 3.3 70B → Gemini 2.0 Flash fallback
-          </div>
-        </div>
-        """)
+        auth_group, main_group, user_state = _build_auth_gate()
 
-        # Tabs
-        with gr.Tabs():
-            with gr.Tab("📊 Equity Research"):
-                _build_equity_tab()
+        with main_group:
+            # Header
+            gr.HTML("""
+            <div id='aria-header' style='display:flex;align-items:center;justify-content:space-between'>
+              <div>
+                <span style='font-size:18px;font-weight:700;color:#58a6ff;'>⚡ ARIA</span>
+                <span style='font-size:11px;color:#8b949e;margin-left:10px;'>
+                  Autonomous Research &amp; Investment Analyst · NSE · BSE · v2
+                </span>
+              </div>
+              <div style='font-size:10px;padding:3px 10px;border-radius:12px;
+                          background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;'>
+                Groq Llama 3.3 70B → Gemini 2.0 Flash fallback
+              </div>
+            </div>
+            """)
 
-            with gr.Tab("📋 Report Generator"):
-                _build_report_tab()
+            # Tabs
+            with gr.Tabs():
+                with gr.Tab("📊 Equity Research"):
+                    _build_equity_tab(user_state)
 
-            with gr.Tab("📈 Mutual Funds"):
-                _build_tab("mf")
+                with gr.Tab("📋 Report Generator"):
+                    _build_report_tab(user_state)
 
-            with gr.Tab("🔍 Screener"):
-                _build_screener_tab()
+                with gr.Tab("📈 Mutual Funds"):
+                    _build_tab("mf", user_state)
 
-            with gr.Tab("📌 Watchlist"):
-                _build_watchlist_tab()
+                with gr.Tab("🔍 Screener"):
+                    _build_screener_tab(user_state)
 
-        # Footer
-        gr.HTML("""
-        <div style='text-align:center;font-size:10px;color:#484f58;padding:6px 0 10px'>
-          Data: NSE/BSE via yfinance · NSE bhavcopy · AMFI · Google News RSS — All free &nbsp;|&nbsp;
-          ⚠️ Not SEBI-registered. For professional research purposes only.
-        </div>
-        """)
+                with gr.Tab("📌 Watchlist") as watchlist_tab:
+                    wl_table, wl_status = _build_watchlist_tab(user_state)
+
+            # Footer
+            gr.HTML("""
+            <div style='text-align:center;font-size:10px;color:#484f58;padding:6px 0 10px'>
+              Data: NSE/BSE via yfinance · NSE bhavcopy · AMFI · Google News RSS — All free &nbsp;|&nbsp;
+              ⚠️ Not SEBI-registered. For professional research purposes only.
+            </div>
+            """)
+
+        # Populate the watchlist table once a user is authenticated.
+        def _load_watchlist(user_id):
+            if user_id is None:
+                return [], ""
+            return _fetch_watchlist_table(user_id), ""
+
+        user_state.change(_load_watchlist, [user_state], [wl_table, wl_status])
 
     return demo
 
