@@ -168,19 +168,24 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
                          chatbot, chart_panel, suggestions_state, sug_btns,
                          extra_reset=None):
     """
-    Left sidebar listing this user's past chat sessions. Clicking a session
-    loads its saved messages into the chatbot and resumes every specialist
-    agent's conversation memory (the orchestrator doesn't know in advance
-    which one(s) an old conversation touched). "+ New chat" detaches from
-    the current session without deleting it, so the next message starts a
+    ChatGPT-style left sidebar: a persistent icon rail (toggle + new-chat
+    icon) that's always visible, plus a full nav panel (session list) that
+    collapses away — the rail stays, so the sidebar narrows to icons
+    instead of disappearing entirely. Clicking a session loads its saved
+    messages into the chatbot and resumes every specialist agent's
+    conversation memory (the orchestrator doesn't know in advance which
+    one(s) an old conversation touched). "+ New chat" detaches from the
+    current session without deleting it, so the next message starts a
     fresh thread. `extra_reset` is any extra output components (download
-    buttons etc.) that should hide when switching sessions. Returns the
-    sidebar's Column so the caller can wire a collapse/expand toggle.
+    buttons etc.) that should hide when switching sessions.
+    Returns (sidebar_col, sidebar_open_state, toggle_btn) so the caller can
+    read/drive the collapse state from elsewhere if needed.
     """
     from utils.db import session_list, session_delete, chat_load
 
     extra_reset = extra_reset or []
     load_outputs = [session_state, chatbot, chart_panel, suggestions_state] + sug_btns + extra_reset
+    sidebar_open = gr.State(True)
 
     def _blank_update():
         core = [None, [], gr.update(value=None, visible=False), CHAT_DEFAULTS] + list(_make_btn_updates(CHAT_DEFAULTS))
@@ -209,39 +214,56 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
             result = tuple([current_sid] + no_change)
         return result + (refresh + 1,)
 
-    with gr.Column(scale=1, min_width=230, elem_classes=["chat-sidebar"]) as sidebar_col:
-        gr.Markdown("**Chats**", elem_classes=["sidebar-title"])
-        new_chat_btn = gr.Button("＋ New chat", size="sm", elem_classes=["new-chat-btn"])
-        new_chat_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs)
+    with gr.Column(scale=0, min_width=64, elem_classes=["chat-sidebar"]) as sidebar_col:
+        # Icon rail — always visible in both expanded and collapsed states,
+        # exactly like ChatGPT's persistent left rail.
+        with gr.Row(elem_classes=["sidebar-rail"]):
+            toggle_btn = gr.Button("◧", size="sm", elem_classes=["sidebar-icon-btn"], min_width=32)
+            new_chat_icon_btn = gr.Button("✎", size="sm", elem_classes=["sidebar-icon-btn", "collapsed-only"], min_width=32)
 
-        # session_state is in the render inputs so the active chat gets a
-        # highlighted row and the list re-renders the moment it changes.
-        @gr.render(inputs=[user_state, refresh_state, session_state])
-        def _render_sessions(user_id, _refresh, active_sid):
-            if not user_id:
-                return
-            sessions = session_list(user_id, tab_id)
-            if not sessions:
-                gr.Markdown("*No past chats yet*", elem_classes=["sidebar-empty"])
-                return
-            for s in sessions:
-                sid = s["id"]
-                row_classes = ["session-row"]
-                btn_classes = ["session-btn"] + (["session-btn-active"] if sid == active_sid else [])
-                with gr.Row(elem_classes=row_classes):
-                    b = gr.Button(s["title"] or "New chat", size="sm", elem_classes=btn_classes)
-                    d = gr.Button("✕", size="sm", scale=0, min_width=28, elem_classes=["session-del-btn"])
-                b.click(
-                    fn=lambda uid=user_id, s=sid: _load_session(uid, s),
-                    inputs=[], outputs=load_outputs,
-                )
-                d.click(
-                    fn=lambda current_sid, refresh, uid=user_id, s=sid: _delete_session(uid, s, current_sid, refresh),
-                    inputs=[session_state, refresh_state],
-                    outputs=load_outputs + [refresh_state],
-                )
+        # Expanded content — full "New chat" button + session list.
+        with gr.Column(visible=True, elem_classes=["sidebar-expanded-panel"]) as expanded_panel:
+            new_chat_btn = gr.Button("＋ New chat", size="sm", elem_classes=["new-chat-btn"])
+            gr.Markdown("**Chats**", elem_classes=["sidebar-title"])
 
-    return sidebar_col
+            # session_state is in the render inputs so the active chat gets a
+            # highlighted row and the list re-renders the moment it changes.
+            @gr.render(inputs=[user_state, refresh_state, session_state])
+            def _render_sessions(user_id, _refresh, active_sid):
+                if not user_id:
+                    return
+                sessions = session_list(user_id, tab_id)
+                if not sessions:
+                    gr.Markdown("*No past chats yet*", elem_classes=["sidebar-empty"])
+                    return
+                for s in sessions:
+                    sid = s["id"]
+                    row_classes = ["session-row"]
+                    btn_classes = ["session-btn"] + (["session-btn-active"] if sid == active_sid else [])
+                    with gr.Row(elem_classes=row_classes):
+                        b = gr.Button(s["title"] or "New chat", size="sm", elem_classes=btn_classes)
+                        d = gr.Button("✕", size="sm", scale=0, min_width=28, elem_classes=["session-del-btn"])
+                    b.click(
+                        fn=lambda uid=user_id, s=sid: _load_session(uid, s),
+                        inputs=[], outputs=load_outputs,
+                    )
+                    d.click(
+                        fn=lambda current_sid, refresh, uid=user_id, s=sid: _delete_session(uid, s, current_sid, refresh),
+                        inputs=[session_state, refresh_state],
+                        outputs=load_outputs + [refresh_state],
+                    )
+
+    new_chat_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs)
+    new_chat_icon_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs)
+
+    def _toggle(is_open):
+        new_state = not is_open
+        rail_class = ["chat-sidebar"] if new_state else ["chat-sidebar", "collapsed"]
+        return new_state, gr.update(visible=new_state), gr.update(elem_classes=rail_class)
+
+    toggle_btn.click(_toggle, [sidebar_open], [sidebar_open, expanded_panel, sidebar_col])
+
+    return sidebar_col, sidebar_open, toggle_btn
 
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -422,28 +444,56 @@ footer { display: none !important; }
     padding: 4px !important;
 }
 .session-del-btn:hover { color: #f85149 !important; }
-/* ChatGPT-style chat shell: centered column, sticky toolbar */
-.chat-shell { gap: 0 !important; }
+/* ChatGPT-style chat shell: sidebar docked left, centered chat column */
+.chat-shell { gap: 0 !important; align-items: stretch !important; }
 .chat-main {
     max-width: 820px !important;
     margin: 0 auto !important;
 }
-.chat-toolbar {
-    align-items: center !important;
-    gap: 8px !important;
-    padding: 4px 0 8px 0 !important;
-    border-bottom: 1px solid #21262d !important;
+/* order:-1 pins the sidebar to the visual left of the flex row regardless
+   of build order — it has to be built after chatbot/chart_panel/sug_btns
+   exist (its click handlers target them), but must render first. */
+.chat-sidebar {
+    order: -1;
+    background: #0a0d12 !important;
+    border-right: 1px solid #30363d !important;
+    padding: 8px 6px !important;
+    width: 260px !important;
+    min-width: 260px !important;
+    max-width: 260px !important;
+    transition: width .15s ease, min-width .15s ease, max-width .15s ease, padding .15s ease;
+    overflow-x: hidden;
+    overflow-y: auto;
+    max-height: 720px;
+}
+.chat-sidebar.collapsed {
+    width: 52px !important;
+    min-width: 52px !important;
+    max-width: 52px !important;
+    padding: 8px 6px !important;
+}
+.sidebar-rail {
+    gap: 4px !important;
     margin-bottom: 8px !important;
 }
-.sidebar-toggle-btn {
-    background: #161b22 !important;
-    color: #8b949e !important;
-    border: 1px solid #30363d !important;
+.sidebar-icon-btn {
+    background: transparent !important;
+    color: #c9d1d9 !important;
+    border: 1px solid transparent !important;
     border-radius: 8px !important;
-    font-size: 14px !important;
-    padding: 4px 10px !important;
+    font-size: 15px !important;
+    padding: 6px !important;
+    width: 32px !important;
+    min-width: 32px !important;
+    max-width: 32px !important;
+    flex: 0 0 auto !important;
 }
-.sidebar-toggle-btn:hover { color: #58a6ff !important; border-color: #58a6ff66 !important; }
+.sidebar-icon-btn:hover { background: #161b22 !important; border-color: #30363d !important; }
+/* The icon-only "new chat" button only makes sense once the full panel
+   (with its own "+ New chat" button) is hidden — CSS keeps it out of the
+   way in the expanded state without needing a second server round-trip. */
+.chat-sidebar:not(.collapsed) .collapsed-only { display: none !important; }
+.chat-sidebar.collapsed .sidebar-expanded-panel { display: none !important; }
 """
 
 
@@ -460,17 +510,14 @@ def _build_chat_tab(user_state: gr.State):
 
     session_state   = gr.State(None)
     refresh_state   = gr.State(0)
-    sidebar_open    = gr.State(True)
     suggestions_state = gr.State(CHAT_DEFAULTS)
 
+    # Sidebar has to be *built* after chatbot/chart_panel/sug_btns exist (it
+    # wires click handlers that target them), but must *render* on the left
+    # like ChatGPT — solved with `order: -1` in CSS (.chat-sidebar) rather
+    # than fighting component build order.
     with gr.Row(elem_classes=["chat-shell"]):
         with gr.Column(scale=4, elem_classes=["chat-main"]):
-            # Minimal toolbar — just the sidebar toggle. Branding already
-            # lives in the page header above; a second title here would be
-            # redundant chrome ChatGPT itself doesn't have.
-            with gr.Row(elem_classes=["chat-toolbar"]):
-                sidebar_toggle = gr.Button("☰", size="sm", elem_classes=["sidebar-toggle-btn"], min_width=36)
-
             chatbot = gr.Chatbot(
                 label="", show_label=False, height=480,
                 render_markdown=True, elem_id=f"chatbot-{tab_id}",
@@ -512,15 +559,9 @@ def _build_chat_tab(user_state: gr.State):
                 send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
                 clear_btn = gr.Button("Clear",   scale=1, min_width=60, elem_classes=["clear-btn"])
 
-        sidebar_col = _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
-                                           chatbot, chart_panel, suggestions_state, sug_btns,
-                                           extra_reset=[pdf_btn, md_btn, csv_btn])
-
-    def _toggle_sidebar(is_open):
-        new_state = not is_open
-        return new_state, gr.update(visible=new_state)
-
-    sidebar_toggle.click(_toggle_sidebar, [sidebar_open], [sidebar_open, sidebar_col])
+        _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
+                             chatbot, chart_panel, suggestions_state, sug_btns,
+                             extra_reset=[pdf_btn, md_btn, csv_btn])
 
     outputs = ([msg_box, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn]
                + sug_btns + [session_state, refresh_state])
