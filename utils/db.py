@@ -1,0 +1,220 @@
+"""
+utils/db.py — SQLite schema and query helpers.
+Creates the DB and all tables on first run.
+"""
+
+import sqlite3
+import json
+import os
+from datetime import datetime
+from config import DB_PATH
+
+
+def get_conn() -> sqlite3.Connection:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    """Create all tables if they don't exist."""
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.executescript("""
+    CREATE TABLE IF NOT EXISTS portfolio (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol      TEXT NOT NULL,
+        qty         REAL NOT NULL,
+        avg_price   REAL NOT NULL,
+        added_at    TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS watchlist (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol      TEXT UNIQUE NOT NULL,
+        added_at    TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS alerts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol      TEXT NOT NULL,
+        alert_type  TEXT NOT NULL,
+        condition   TEXT NOT NULL,
+        threshold   REAL,
+        active      INTEGER DEFAULT 1,
+        created_at  TEXT DEFAULT (datetime('now')),
+        triggered_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS cache_meta (
+        key         TEXT PRIMARY KEY,
+        fetched_at  TEXT NOT NULL,
+        ttl_seconds INTEGER DEFAULT 3600
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        tab         TEXT NOT NULL,
+        role        TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        ts          TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS saved_screeners (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT NOT NULL,
+        filters_json TEXT NOT NULL,
+        created_at  TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS reports (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol      TEXT,
+        report_type TEXT NOT NULL,
+        title       TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        created_at  TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS pdf_cache (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol      TEXT NOT NULL,
+        doc_type    TEXT NOT NULL,
+        period      TEXT,
+        url         TEXT,
+        text_content TEXT,
+        fetched_at  TEXT DEFAULT (datetime('now'))
+    );
+    """)
+    conn.commit()
+    conn.close()
+
+
+# ── Portfolio helpers ─────────────────────────────────────────────────────────
+
+def portfolio_add(symbol: str, qty: float, avg_price: float):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO portfolio (symbol, qty, avg_price) VALUES (?,?,?)",
+        (symbol.upper(), qty, avg_price),
+    )
+    conn.commit(); conn.close()
+
+
+def portfolio_remove(symbol: str):
+    conn = get_conn()
+    conn.execute("DELETE FROM portfolio WHERE symbol=?", (symbol.upper(),))
+    conn.commit(); conn.close()
+
+
+def portfolio_all() -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM portfolio").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── Watchlist helpers ─────────────────────────────────────────────────────────
+
+def watchlist_add(symbol: str):
+    conn = get_conn()
+    conn.execute("INSERT OR IGNORE INTO watchlist (symbol) VALUES (?)", (symbol.upper(),))
+    conn.commit(); conn.close()
+
+
+def watchlist_remove(symbol: str):
+    conn = get_conn()
+    conn.execute("DELETE FROM watchlist WHERE symbol=?", (symbol.upper(),))
+    conn.commit(); conn.close()
+
+
+def watchlist_all() -> list[str]:
+    conn = get_conn()
+    rows = conn.execute("SELECT symbol FROM watchlist").fetchall()
+    conn.close()
+    return [r["symbol"] for r in rows]
+
+
+# ── Chat history helpers ──────────────────────────────────────────────────────
+
+def chat_save(tab: str, role: str, content: str):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO chat_history (tab, role, content) VALUES (?,?,?)",
+        (tab, role, content),
+    )
+    conn.commit(); conn.close()
+
+
+def chat_load(tab: str, limit: int = 50) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT role, content FROM chat_history WHERE tab=? ORDER BY ts DESC LIMIT ?",
+        (tab, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in reversed(rows)]
+
+
+# ── Report helpers ────────────────────────────────────────────────────────────
+
+def report_save(symbol: str, report_type: str, title: str, content: str) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO reports (symbol, report_type, title, content) VALUES (?,?,?,?)",
+        (symbol, report_type, title, content),
+    )
+    rid = cur.lastrowid
+    conn.commit(); conn.close()
+    return rid
+
+
+def report_list(limit: int = 20) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, symbol, report_type, title, created_at FROM reports ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── PDF cache helpers ─────────────────────────────────────────────────────────
+
+def pdf_cache_get(symbol: str, doc_type: str, period: str = None) -> str | None:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT text_content FROM pdf_cache WHERE symbol=? AND doc_type=? AND (period=? OR period IS NULL) LIMIT 1",
+        (symbol.upper(), doc_type, period),
+    ).fetchone()
+    conn.close()
+    return row["text_content"] if row else None
+
+
+def pdf_cache_set(symbol: str, doc_type: str, text: str, period: str = None, url: str = None):
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO pdf_cache (symbol, doc_type, period, url, text_content) VALUES (?,?,?,?,?)",
+        (symbol.upper(), doc_type, period, url, text),
+    )
+    conn.commit(); conn.close()
+
+
+# ── Saved screener helpers ────────────────────────────────────────────────────
+
+def screener_save(name: str, filters: dict):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO saved_screeners (name, filters_json) VALUES (?,?)",
+        (name, json.dumps(filters)),
+    )
+    conn.commit(); conn.close()
+
+
+def screener_list() -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute("SELECT id, name, filters_json, created_at FROM saved_screeners").fetchall()
+    conn.close()
+    return [{"id": r["id"], "name": r["name"], "filters": json.loads(r["filters_json"]), "created_at": r["created_at"]} for r in rows]
