@@ -182,7 +182,7 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
     load_outputs = [session_state, chatbot, chart_panel, suggestions_state] + sug_btns + extra_reset
 
     def _blank_update():
-        core = [None, [], gr.update(value=None, visible=False), CHAT_DEFAULTS] + _make_btn_updates(CHAT_DEFAULTS)
+        core = [None, [], gr.update(value=None, visible=False), CHAT_DEFAULTS] + list(_make_btn_updates(CHAT_DEFAULTS))
         extras = [gr.update(value=None, visible=False) for _ in extra_reset]
         return tuple(core + extras)
 
@@ -195,7 +195,7 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
         msgs = chat_load(user_id, sid)
         hist = [{"role": m["role"], "content": m["content"]} for m in msgs]
         get_orchestrator(user_id).load_history(hist)
-        core = [sid, hist, gr.update(value=None, visible=False), CHAT_DEFAULTS] + _make_btn_updates(CHAT_DEFAULTS)
+        core = [sid, hist, gr.update(value=None, visible=False), CHAT_DEFAULTS] + list(_make_btn_updates(CHAT_DEFAULTS))
         extras = [gr.update(value=None, visible=False) for _ in extra_reset]
         return tuple(core + extras)
 
