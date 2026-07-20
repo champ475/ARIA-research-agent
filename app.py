@@ -58,6 +58,8 @@ CHAT_PLACEHOLDER = (
     "screening, portfolio, market overview…"
 )
 
+WATCHLIST_COLS = ["Symbol", "Name", "Price", "Change %", "RSI", "52W High", "52W Low"]
+
 
 def _session_title(msg: str) -> str:
     """First-message-derived title for a new chat session, ChatGPT-style."""
@@ -494,6 +496,29 @@ footer { display: none !important; }
    way in the expanded state without needing a second server round-trip. */
 .chat-sidebar:not(.collapsed) .collapsed-only { display: none !important; }
 .chat-sidebar.collapsed .sidebar-expanded-panel { display: none !important; }
+/* Watchlist table (plain HTML — see _watchlist_table_html for why) */
+.wl-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    background: #161b22;
+    border-radius: 6px;
+    overflow: hidden;
+}
+.wl-table th {
+    background: #21262d;
+    color: #58a6ff;
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid #30363d;
+}
+.wl-table td {
+    padding: 7px 12px;
+    border-bottom: 1px solid #21262d;
+    color: #e6edf3;
+}
+.wl-table tr:last-child td { border-bottom: none; }
+.wl-empty { color: #6e7681; font-size: 13px; padding: 10px 2px; }
 """
 
 
@@ -637,23 +662,45 @@ def _fetch_watchlist_table(user_id: int) -> list[list]:
     return rows
 
 
+def _watchlist_table_html(rows: list[list]) -> str:
+    """
+    Renders the watchlist as a plain HTML table instead of gr.Dataframe.
+    gr.Dataframe has a confirmed client-side rendering bug in this Gradio
+    version: the server-sent payload always has the correct row_count and
+    full data (verified over the wire via the SSE stream — every add/remove
+    carried the right number of rows), but the browser only ever paints the
+    first row, no matter whether the update goes through gr.update(),
+    a fresh component instance, or a stable `key=` inside @gr.render(). A
+    plain HTML table has no such virtualization/diffing layer to misbehave.
+    """
+    if not rows:
+        return "<p class='wl-empty'>No symbols yet — add one below.</p>"
+    head = "".join(f"<th>{c}</th>" for c in WATCHLIST_COLS)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+        for row in rows
+    )
+    return f"<table class='wl-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
 def _build_watchlist_tab(user_state: gr.State):
-    """Watchlist tab: add/remove symbols, live price table with RSI, refresh button."""
+    """
+    Watchlist tab: add/remove symbols, live price table with RSI, refresh
+    button. The table lives inside @gr.render() keyed to a refresh counter
+    (bumped on every add/remove/refresh) so it re-renders on every change —
+    see _watchlist_table_html() for why it's plain HTML, not gr.Dataframe.
+    """
     from utils.db import watchlist_add, watchlist_remove
     from utils.helpers import clean_ticker
 
-    COLS = ["Symbol", "Name", "Price", "Change %", "RSI", "52W High", "52W Low"]
-
     gr.Markdown("## 📌 Watchlist\nTrack live prices and key indicators for your saved symbols.")
 
-    # Price table (populated on login via app.load, since it needs user_id)
-    wl_table = gr.Dataframe(
-        value=[],
-        headers=COLS,
-        datatype=["str"] * len(COLS),
-        interactive=False,
-        elem_id="wl-table",
-    )
+    wl_refresh = gr.State(0)
+
+    @gr.render(inputs=[user_state, wl_refresh])
+    def _render_table(user_id, _refresh):
+        rows = _fetch_watchlist_table(user_id) if user_id else []
+        gr.HTML(_watchlist_table_html(rows), elem_id="wl-table")
 
     # Status message
     status = gr.Markdown("")
@@ -668,31 +715,30 @@ def _build_watchlist_tab(user_state: gr.State):
         rem_btn  = gr.Button("➖ Remove",  variant="secondary", scale=1, min_width=80)
         ref_btn  = gr.Button("🔄 Refresh", variant="secondary", scale=1, min_width=90)
 
-    def _add(user_id, sym_raw):
+    def _add(user_id, sym_raw, refresh):
         sym = clean_ticker(sym_raw.strip().upper())
         if not sym:
-            return _fetch_watchlist_table(user_id), "⚠️ Enter a valid NSE symbol."
+            return refresh, "⚠️ Enter a valid NSE symbol."
         watchlist_add(user_id, sym)
-        return _fetch_watchlist_table(user_id), f"✅ **{sym}** added to watchlist."
+        return refresh + 1, f"✅ **{sym}** added to watchlist."
 
-    def _remove(user_id, sym_raw):
+    def _remove(user_id, sym_raw, refresh):
         sym = clean_ticker(sym_raw.strip().upper())
         if not sym:
-            return _fetch_watchlist_table(user_id), "⚠️ Enter a symbol to remove."
+            return refresh, "⚠️ Enter a symbol to remove."
         watchlist_remove(user_id, sym)
-        return _fetch_watchlist_table(user_id), f"🗑️ **{sym}** removed from watchlist."
+        return refresh + 1, f"🗑️ **{sym}** removed from watchlist."
 
-    def _refresh(user_id):
-        rows = _fetch_watchlist_table(user_id)
-        n = len(rows)
-        return rows, f"🔄 Refreshed {n} symbol{'s' if n != 1 else ''}."
+    def _refresh_click(user_id, refresh):
+        n = len(_fetch_watchlist_table(user_id))
+        return refresh + 1, f"🔄 Refreshed {n} symbol{'s' if n != 1 else ''}."
 
-    add_btn.click(_add,     inputs=[user_state, add_box],  outputs=[wl_table, status])
-    rem_btn.click(_remove,  inputs=[user_state, rem_box],  outputs=[wl_table, status])
-    ref_btn.click(_refresh, inputs=[user_state],           outputs=[wl_table, status])
-    add_box.submit(_add,    inputs=[user_state, add_box],  outputs=[wl_table, status])
+    add_btn.click(_add,          inputs=[user_state, add_box, wl_refresh],  outputs=[wl_refresh, status])
+    rem_btn.click(_remove,       inputs=[user_state, rem_box, wl_refresh],  outputs=[wl_refresh, status])
+    ref_btn.click(_refresh_click, inputs=[user_state, wl_refresh],          outputs=[wl_refresh, status])
+    add_box.submit(_add,         inputs=[user_state, add_box, wl_refresh], outputs=[wl_refresh, status])
 
-    return wl_table, status
+    return status
 
 
 # ── Auth gate ─────────────────────────────────────────────────────────────────
@@ -777,7 +823,7 @@ def build_ui() -> gr.Blocks:
                     chat_chatbot, chat_chart, chat_session, chat_sugg_state = _build_chat_tab(user_state)
 
                 with gr.Tab("📌 Watchlist") as watchlist_tab:
-                    wl_table, wl_status = _build_watchlist_tab(user_state)
+                    _build_watchlist_tab(user_state)
 
             # Footer
             gr.HTML("""
@@ -787,13 +833,9 @@ def build_ui() -> gr.Blocks:
             </div>
             """)
 
-        # Populate the watchlist table once a user is authenticated.
-        def _load_watchlist(user_id):
-            if user_id is None:
-                return [], ""
-            return _fetch_watchlist_table(user_id), ""
-
-        user_state.change(_load_watchlist, [user_state], [wl_table, wl_status])
+        # Note: the watchlist table no longer needs a user_state.change
+        # handler here — its @gr.render already takes user_state as an
+        # input, so it re-renders automatically on login/logout.
 
         # Reset the visible chat + active session on login/logout, so a
         # different account signing in on the same browser tab never sees the
