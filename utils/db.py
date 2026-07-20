@@ -113,7 +113,22 @@ def init_db():
     );
     """)
     conn.commit()
+    _migrate_add_user_id(conn)
+    conn.commit()
     conn.close()
+
+
+# Tables that gained a user_id column after the auth/multi-tenancy migration.
+# CREATE TABLE IF NOT EXISTS above is a no-op on a pre-existing single-user
+# SQLite file, so this backfills the column on old databases.
+_USER_SCOPED_TABLES = ["portfolio", "watchlist", "alerts", "chat_history", "saved_screeners", "reports"]
+
+
+def _migrate_add_user_id(conn: sqlite3.Connection):
+    for table in _USER_SCOPED_TABLES:
+        cols = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if cols and "user_id" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
 
 
 # ── Portfolio helpers ─────────────────────────────────────────────────────────
