@@ -236,3 +236,5 @@ Write a brief market intelligence note:
         ]
 
     def reset(self): self._client.reset()
+
+    def load_history(self, messages: list[dict]): self._client.load_history(messages)

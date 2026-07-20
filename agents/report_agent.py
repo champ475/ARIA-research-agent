@@ -490,3 +490,6 @@ Recent news: {'; '.join(n['title'] for n in news[:3])}
     def reset(self):
         self._client.reset()
         self._last_symbol = None
+
+    def load_history(self, messages: list[dict]):
+        self._client.load_history(messages)

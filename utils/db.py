@@ -73,9 +73,19 @@ def init_db():
         ttl_seconds INTEGER DEFAULT 3600
     );
 
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
+        tab         TEXT NOT NULL,
+        title       TEXT NOT NULL DEFAULT 'New chat',
+        created_at  TEXT DEFAULT (datetime('now')),
+        updated_at  TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS chat_history (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id     INTEGER NOT NULL REFERENCES users(id),
+        session_id  INTEGER REFERENCES chat_sessions(id),
         tab         TEXT NOT NULL,
         role        TEXT NOT NULL,
         content     TEXT NOT NULL,
@@ -130,6 +140,12 @@ def _migrate_add_user_id(conn: sqlite3.Connection):
         if cols and "user_id" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
 
+    # chat_history gained session_id when chat_sessions (ChatGPT-style sidebar
+    # history) was introduced — backfill on databases created before that.
+    cols = [row["name"] for row in conn.execute("PRAGMA table_info(chat_history)").fetchall()]
+    if cols and "session_id" not in cols:
+        conn.execute("ALTER TABLE chat_history ADD COLUMN session_id INTEGER")
+
 
 # ── Portfolio helpers ─────────────────────────────────────────────────────────
 
@@ -179,25 +195,84 @@ def watchlist_all(user_id: int) -> list[str]:
     return [r["symbol"] for r in rows]
 
 
-# ── Chat history helpers ──────────────────────────────────────────────────────
+# ── Chat session helpers (ChatGPT-style sidebar history) ──────────────────────
+# Each session is one conversation thread, scoped to a user + research tab.
+# Sidebar lists sessions (newest first); chat_history rows hang off a session.
 
-def chat_save(user_id: int, tab: str, role: str, content: str):
+def session_create(user_id: int, tab: str, title: str = "New chat") -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO chat_sessions (user_id, tab, title) VALUES (?,?,?)",
+        (user_id, tab, title),
+    )
+    sid = cur.lastrowid
+    conn.commit(); conn.close()
+    return sid
+
+
+def session_list(user_id: int, tab: str, limit: int = 50) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, title, updated_at FROM chat_sessions "
+        "WHERE user_id=? AND tab=? ORDER BY updated_at DESC LIMIT ?",
+        (user_id, tab, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def session_touch(session_id: int, title: str | None = None):
+    conn = get_conn()
+    if title is not None:
+        conn.execute(
+            "UPDATE chat_sessions SET updated_at=datetime('now'), title=? WHERE id=?",
+            (title, session_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE chat_sessions SET updated_at=datetime('now') WHERE id=?",
+            (session_id,),
+        )
+    conn.commit(); conn.close()
+
+
+def session_delete(user_id: int, session_id: int):
+    """Deletes a session and its messages — only if it belongs to user_id."""
+    conn = get_conn()
+    owned = conn.execute(
+        "SELECT id FROM chat_sessions WHERE id=? AND user_id=?", (session_id, user_id)
+    ).fetchone()
+    if owned:
+        conn.execute("DELETE FROM chat_history WHERE session_id=?", (session_id,))
+        conn.execute("DELETE FROM chat_sessions WHERE id=?", (session_id,))
+        conn.commit()
+    conn.close()
+
+
+def chat_save(user_id: int, session_id: int, tab: str, role: str, content: str):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO chat_history (user_id, tab, role, content) VALUES (?,?,?,?)",
-        (user_id, tab, role, content),
+        "INSERT INTO chat_history (user_id, session_id, tab, role, content) VALUES (?,?,?,?,?)",
+        (user_id, session_id, tab, role, content),
     )
     conn.commit(); conn.close()
 
 
-def chat_load(user_id: int, tab: str, limit: int = 50) -> list[dict]:
+def chat_load(user_id: int, session_id: int) -> list[dict]:
+    """Loads a session's messages — only if it belongs to user_id (tenant isolation)."""
     conn = get_conn()
+    owned = conn.execute(
+        "SELECT id FROM chat_sessions WHERE id=? AND user_id=?", (session_id, user_id)
+    ).fetchone()
+    if not owned:
+        conn.close()
+        return []
     rows = conn.execute(
-        "SELECT role, content FROM chat_history WHERE user_id=? AND tab=? ORDER BY ts DESC LIMIT ?",
-        (user_id, tab, limit),
+        "SELECT role, content FROM chat_history WHERE session_id=? ORDER BY ts ASC",
+        (session_id,),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in reversed(rows)]
+    return [dict(r) for r in rows]
 
 
 # ── Report helpers ────────────────────────────────────────────────────────────

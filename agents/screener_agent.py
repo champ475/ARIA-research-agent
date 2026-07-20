@@ -285,3 +285,6 @@ Write:
     def reset(self):
         self._client.reset()
         self._last_results = []
+
+    def load_history(self, messages: list[dict]):
+        self._client.load_history(messages)

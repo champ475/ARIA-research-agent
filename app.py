@@ -64,12 +64,21 @@ TAB_PLACEHOLDERS = {
 }
 
 
+def _session_title(msg: str) -> str:
+    """First-message-derived title for a new chat session, ChatGPT-style."""
+    t = " ".join(msg.strip().split())
+    if not t:
+        return "New chat"
+    return (t[:42] + "…") if len(t) > 42 else t
+
+
 # ── Core respond function ─────────────────────────────────────────────────────
 
-def respond(user_id: int, tab: str, message: str, history: list, suggestions: list):
+def respond(user_id: int, tab: str, message: str, history: list, suggestions: list, session_id: int):
     """
     Generator: first yield shows loading dots, second yield delivers the real response.
     Yields: (cleared_input, updated_history, chart_update, new_suggestions, *btn_updates)
+    Persists the turn to chat_history under session_id once the reply is ready.
     """
     if not message.strip():
         yield ("", history, gr.update(), suggestions) + tuple(gr.update() for _ in range(4))
@@ -104,6 +113,8 @@ def respond(user_id: int, tab: str, message: str, history: list, suggestions: li
     except Exception as e:
         text = f"⚠️ Error: `{str(e)}`\n\nPlease try again."
 
+    _persist_turn(user_id, session_id, tab, message, text, is_first=not history)
+
     updated_history = history + [
         {"role": "user",      "content": message},
         {"role": "assistant", "content": text},
@@ -113,7 +124,14 @@ def respond(user_id: int, tab: str, message: str, history: list, suggestions: li
     yield ("", updated_history, chart_update, new_sugg) + btn_updates
 
 
-def respond_report(user_id: int, message: str, history: list, suggestions: list):
+def _persist_turn(user_id: int, session_id: int, tab: str, user_msg: str, assistant_msg: str, is_first: bool):
+    from utils.db import chat_save, session_touch
+    chat_save(user_id, session_id, tab, "user", user_msg)
+    chat_save(user_id, session_id, tab, "assistant", assistant_msg)
+    session_touch(session_id, title=_session_title(user_msg) if is_first else None)
+
+
+def respond_report(user_id: int, message: str, history: list, suggestions: list, session_id: int):
     """
     Generator: first yield shows loading dots, second yield delivers the real response.
     Like respond() but handles the report agent's 4-tuple output and populates
@@ -160,6 +178,8 @@ def respond_report(user_id: int, message: str, history: list, suggestions: list)
     except Exception as e:
         text = f"⚠️ Error: `{str(e)}`\n\nPlease try again."
 
+    _persist_turn(user_id, session_id, "report", message, text, is_first=not history)
+
     updated_history = history + [
         {"role": "user",      "content": message},
         {"role": "assistant", "content": text},
@@ -177,7 +197,6 @@ def clear_tab(user_id: int, tab: str):
     return ([], gr.update(value=None, visible=False), sugg) + _make_btn_updates(sugg)
 
 
-
 def _make_btn_updates(sugg: list) -> tuple:
     updates = []
     for i in range(4):
@@ -186,6 +205,85 @@ def _make_btn_updates(sugg: list) -> tuple:
         else:
             updates.append(gr.update(value="", visible=False))
     return tuple(updates)
+
+
+# ── ChatGPT-style sidebar: past sessions per (user, tab) ──────────────────────
+
+def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
+                         chatbot, chart_panel, suggestions_state, sug_btns,
+                         extra_reset=None):
+    """
+    Left sidebar listing this user's past chat sessions for `tab_id`.
+    Clicking a session loads its saved messages into the chatbot and resumes
+    the agent's conversation memory. "+ New chat" detaches from the current
+    session without deleting it, so the next message starts a fresh thread.
+    `extra_reset` is any extra output components (download buttons etc.) that
+    should hide when switching sessions.
+    """
+    from utils.db import session_list, session_delete, chat_load
+
+    extra_reset = extra_reset or []
+    defaults = TAB_DEFAULTS[tab_id]
+    load_outputs = [session_state, chatbot, chart_panel, suggestions_state] + sug_btns + extra_reset
+
+    def _blank_update():
+        core = [None, [], gr.update(value=None, visible=False), defaults] + _make_btn_updates(defaults)
+        extras = [gr.update(value=None, visible=False) for _ in extra_reset]
+        return tuple(core + extras)
+
+    def _new_chat(user_id):
+        if user_id:
+            agent = get_agent(user_id, tab_id)
+            agent.reset()
+        return _blank_update()
+
+    def _load_session(user_id, sid):
+        msgs = chat_load(user_id, sid)
+        hist = [{"role": m["role"], "content": m["content"]} for m in msgs]
+        agent = get_agent(user_id, tab_id)
+        agent.load_history(hist)
+        core = [sid, hist, gr.update(value=None, visible=False), defaults] + _make_btn_updates(defaults)
+        extras = [gr.update(value=None, visible=False) for _ in extra_reset]
+        return tuple(core + extras)
+
+    def _delete_session(user_id, sid, current_sid, refresh):
+        session_delete(user_id, sid)
+        if sid == current_sid:
+            result = _blank_update()
+        else:
+            no_change = [gr.update() for _ in range(len(load_outputs) - 1)]
+            result = tuple([current_sid] + no_change)
+        return result + (refresh + 1,)
+
+    with gr.Column(scale=1, min_width=190, elem_classes=["chat-sidebar"]):
+        gr.Markdown("**Chats**", elem_classes=["sidebar-title"])
+        new_chat_btn = gr.Button("+ New chat", size="sm", elem_classes=["new-chat-btn"])
+        new_chat_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs)
+
+        @gr.render(inputs=[user_state, refresh_state])
+        def _render_sessions(user_id, _refresh):
+            if not user_id:
+                return
+            sessions = session_list(user_id, tab_id)
+            if not sessions:
+                gr.Markdown("*No past chats yet*", elem_classes=["sidebar-empty"])
+                return
+            for s in sessions:
+                sid = s["id"]
+                with gr.Row(elem_classes=["session-row"]):
+                    b = gr.Button(s["title"] or "New chat", size="sm", elem_classes=["session-btn"])
+                    d = gr.Button("✕", size="sm", scale=0, min_width=28, elem_classes=["session-del-btn"])
+                b.click(
+                    fn=lambda uid=user_id, s=sid: _load_session(uid, s),
+                    inputs=[], outputs=load_outputs,
+                )
+                d.click(
+                    fn=lambda current_sid, refresh, uid=user_id, s=sid: _delete_session(uid, s, current_sid, refresh),
+                    inputs=[session_state, refresh_state],
+                    outputs=load_outputs + [refresh_state],
+                )
+
+    return _blank_update
 
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -317,6 +415,49 @@ footer { display: none !important; }
 /* Timeframe radio */
 .tf-radio label { font-size: 12px !important; color: #8b949e !important; }
 .tf-radio .wrap { gap: 4px !important; }
+/* Chat sidebar (ChatGPT-style) */
+.chat-sidebar {
+    background: #0a0d12 !important;
+    border-right: 1px solid #30363d !important;
+    padding: 8px !important;
+    max-height: 640px;
+    overflow-y: auto;
+}
+.sidebar-title { color: #8b949e !important; font-size: 11px !important; padding: 2px 4px !important; }
+.new-chat-btn {
+    background: #161b22 !important;
+    color: #e6edf3 !important;
+    border: 1px solid #30363d !important;
+    border-radius: 8px !important;
+    font-size: 12px !important;
+    margin-bottom: 6px !important;
+    width: 100% !important;
+}
+.new-chat-btn:hover { border-color: #58a6ff66 !important; }
+.sidebar-empty { color: #6e7681 !important; font-size: 11px !important; padding: 6px 4px !important; }
+.session-row { gap: 4px !important; margin-bottom: 2px !important; }
+.session-btn {
+    background: transparent !important;
+    color: #c9d1d9 !important;
+    border: none !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    font-size: 12px !important;
+    padding: 6px 8px !important;
+    border-radius: 6px !important;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.session-btn:hover { background: #161b22 !important; color: #58a6ff !important; }
+.session-del-btn {
+    background: transparent !important;
+    color: #6e7681 !important;
+    border: none !important;
+    font-size: 11px !important;
+    padding: 4px !important;
+}
+.session-del-btn:hover { color: #f85149 !important; }
 """
 
 
@@ -326,59 +467,68 @@ def _build_tab(tab_id: str, user_state: gr.State):
     defaults = TAB_DEFAULTS[tab_id]
     placeholder = TAB_PLACEHOLDERS[tab_id]
 
-    history_state    = gr.State([])
+    session_state = gr.State(None)
+    refresh_state = gr.State(0)
     suggestions_state = gr.State(defaults)
 
-    # Chat window
-    chatbot = gr.Chatbot(
-        label="",
-        show_label=False,
-        height=480,
-        render_markdown=True,
-        elem_id=f"chatbot-{tab_id}",
-    )
-
-    # Chart panel
-    chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
-
-    # Suggestion chips
-    gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
     with gr.Row():
-        sug_btns = [
-            gr.Button(defaults[i], size="sm", elem_classes=["sugg-btn"])
-            for i in range(4)
-        ]
+        with gr.Column(scale=4):
+            # Chat window
+            chatbot = gr.Chatbot(
+                label="",
+                show_label=False,
+                height=480,
+                render_markdown=True,
+                elem_id=f"chatbot-{tab_id}",
+            )
 
-    # Input row
-    with gr.Row(elem_id=f"input-row-{tab_id}"):
-        msg_box  = gr.Textbox(
-            placeholder=placeholder, label="", show_label=False,
-            lines=1, max_lines=3, autofocus=(tab_id == "equity"),
-            elem_id=f"msg-{tab_id}", scale=10,
-        )
-        send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
-        clear_btn = gr.Button("Clear", scale=1, min_width=60, elem_classes=["clear-btn"])
+            # Chart panel
+            chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
+
+            # Suggestion chips
+            gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
+            with gr.Row():
+                sug_btns = [
+                    gr.Button(defaults[i], size="sm", elem_classes=["sugg-btn"])
+                    for i in range(4)
+                ]
+
+            # Input row
+            with gr.Row(elem_id=f"input-row-{tab_id}"):
+                msg_box  = gr.Textbox(
+                    placeholder=placeholder, label="", show_label=False,
+                    lines=1, max_lines=3, autofocus=(tab_id == "equity"),
+                    elem_id=f"msg-{tab_id}", scale=10,
+                )
+                send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
+                clear_btn = gr.Button("Clear", scale=1, min_width=60, elem_classes=["clear-btn"])
+
+        _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
+                             chatbot, chart_panel, suggestions_state, sug_btns)
 
     # Outputs list
-    outputs = [msg_box, chatbot, chart_panel, suggestions_state] + sug_btns
+    outputs = [msg_box, chatbot, chart_panel, suggestions_state] + sug_btns + [session_state, refresh_state]
 
     # Respond handler
-    def _respond(user_id, msg, hist, sugg):
-        yield from respond(user_id, tab_id, msg, hist, sugg)
+    def _respond(user_id, session_id, refresh, msg, hist, sugg):
+        if session_id is None and msg.strip():
+            from utils.db import session_create
+            session_id = session_create(user_id, tab_id, title=_session_title(msg))
+        for i, out in enumerate(respond(user_id, tab_id, msg, hist, sugg, session_id)):
+            yield out + (session_id, refresh if i == 0 else refresh + 1)
 
     def _clear(user_id):
         result = clear_tab(user_id, tab_id)
-        # result = ([], no_chart, sugg) + btn_updates
         hist, chart, sugg = result[0], result[1], result[2]
         btns = result[3:]
-        return [hist, chart, sugg] + list(btns)
+        return [hist, chart, sugg] + list(btns) + [None]
 
     # Wire events
-    msg_box.submit(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
-    send_btn.click(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
+    msg_box.submit(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state], outputs)
+    send_btn.click(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state], outputs)
     clear_btn.click(
         _clear, [user_state],
-        [chatbot, chart_panel, suggestions_state] + sug_btns,
+        [chatbot, chart_panel, suggestions_state] + sug_btns + [session_state],
     )
 
     # Suggestion button clicks: populate the input box only, do not submit.
@@ -389,69 +539,80 @@ def _build_tab(tab_id: str, user_state: gr.State):
             outputs=[msg_box],
         )
 
-    return chatbot, chart_panel, sug_btns, msg_box
+    return chatbot, chart_panel, sug_btns, session_state, suggestions_state
 
 
 def _build_equity_tab(user_state: gr.State):
-    """Equity tab: standard layout + timeframe selector radio."""
+    """Equity tab: standard layout + timeframe selector radio + chat sidebar."""
     tab_id      = "equity"
     defaults    = TAB_DEFAULTS[tab_id]
     placeholder = TAB_PLACEHOLDERS[tab_id]
 
+    session_state = gr.State(None)
+    refresh_state = gr.State(0)
     suggestions_state = gr.State(defaults)
 
-    chatbot = gr.Chatbot(
-        label="", show_label=False, height=480,
-        render_markdown=True, elem_id=f"chatbot-{tab_id}",
-    )
-    chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
-
-    # Timeframe selector — appends a keyword to the message so the agent's _timeframe() picks it up
-    with gr.Row(elem_classes=["tf-radio"]):
-        tf_radio = gr.Radio(
-            choices=["1D", "1W", "1M", "3M", "6M", "2Y"],
-            value="1D",
-            label="Chart timeframe",
-            interactive=True,
-            scale=1,
-        )
-
-    gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
     with gr.Row():
-        sug_btns = [
-            gr.Button(defaults[i], size="sm", elem_classes=["sugg-btn"])
-            for i in range(4)
-        ]
+        with gr.Column(scale=4):
+            chatbot = gr.Chatbot(
+                label="", show_label=False, height=480,
+                render_markdown=True, elem_id=f"chatbot-{tab_id}",
+            )
+            chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
 
-    with gr.Row(elem_id=f"input-row-{tab_id}"):
-        msg_box  = gr.Textbox(
-            placeholder=placeholder, label="", show_label=False,
-            lines=1, max_lines=3, autofocus=True,
-            elem_id=f"msg-{tab_id}", scale=10,
-        )
-        send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
-        clear_btn = gr.Button("Clear",   scale=1, min_width=60, elem_classes=["clear-btn"])
+            # Timeframe selector — appends a keyword to the message so the agent's _timeframe() picks it up
+            with gr.Row(elem_classes=["tf-radio"]):
+                tf_radio = gr.Radio(
+                    choices=["1D", "1W", "1M", "3M", "6M", "2Y"],
+                    value="1D",
+                    label="Chart timeframe",
+                    interactive=True,
+                    scale=1,
+                )
 
-    outputs = [msg_box, chatbot, chart_panel, suggestions_state] + sug_btns
+            gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
+            with gr.Row():
+                sug_btns = [
+                    gr.Button(defaults[i], size="sm", elem_classes=["sugg-btn"])
+                    for i in range(4)
+                ]
 
-    def _respond(user_id, msg, hist, sugg, tf):
+            with gr.Row(elem_id=f"input-row-{tab_id}"):
+                msg_box  = gr.Textbox(
+                    placeholder=placeholder, label="", show_label=False,
+                    lines=1, max_lines=3, autofocus=True,
+                    elem_id=f"msg-{tab_id}", scale=10,
+                )
+                send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
+                clear_btn = gr.Button("Clear",   scale=1, min_width=60, elem_classes=["clear-btn"])
+
+        _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
+                             chatbot, chart_panel, suggestions_state, sug_btns)
+
+    outputs = [msg_box, chatbot, chart_panel, suggestions_state] + sug_btns + [session_state, refresh_state]
+
+    def _respond(user_id, session_id, refresh, msg, hist, sugg, tf):
         # Append timeframe keyword so agent's _timeframe() can parse it
         kw = _TF_KEYWORDS.get(tf, "")
         if kw and kw not in msg.lower():
             msg = msg.strip() + " " + kw
-        yield from respond(user_id, tab_id, msg, hist, sugg)
+        if session_id is None and msg.strip():
+            from utils.db import session_create
+            session_id = session_create(user_id, tab_id, title=_session_title(msg))
+        for i, out in enumerate(respond(user_id, tab_id, msg, hist, sugg, session_id)):
+            yield out + (session_id, refresh if i == 0 else refresh + 1)
 
     def _clear(user_id):
         result = clear_tab(user_id, tab_id)
         hist, chart, sugg = result[0], result[1], result[2]
         btns = result[3:]
-        return [hist, chart, sugg] + list(btns)
+        return [hist, chart, sugg] + list(btns) + [None]
 
-    msg_box.submit(_respond,  [user_state, msg_box, chatbot, suggestions_state, tf_radio], outputs)
-    send_btn.click(_respond,  [user_state, msg_box, chatbot, suggestions_state, tf_radio], outputs)
+    msg_box.submit(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio], outputs)
+    send_btn.click(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio], outputs)
     clear_btn.click(
         _clear, [user_state],
-        [chatbot, chart_panel, suggestions_state] + sug_btns,
+        [chatbot, chart_panel, suggestions_state] + sug_btns + [session_state],
     )
 
     for btn in sug_btns:
@@ -460,6 +621,8 @@ def _build_equity_tab(user_state: gr.State):
             inputs=[btn],
             outputs=[msg_box],
         )
+
+    return chatbot, chart_panel, sug_btns, session_state, suggestions_state
 
 
 def _build_report_tab(user_state: gr.State):
@@ -468,54 +631,66 @@ def _build_report_tab(user_state: gr.State):
     defaults    = TAB_DEFAULTS[tab_id]
     placeholder = TAB_PLACEHOLDERS[tab_id]
 
+    session_state = gr.State(None)
+    refresh_state = gr.State(0)
     suggestions_state = gr.State(defaults)
 
-    chatbot = gr.Chatbot(
-        label="", show_label=False, height=480,
-        render_markdown=True, elem_id=f"chatbot-{tab_id}",
-    )
-    chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
-
-    # Download buttons — appear directly below the response, hidden until report is ready
-    with gr.Row(elem_classes=["dl-row"]):
-        pdf_btn = gr.DownloadButton("⬇ Download PDF",      value=None, visible=False,
-                                    variant="primary",   size="sm", elem_classes=["dl-btn"])
-        md_btn  = gr.DownloadButton("⬇ Download Markdown", value=None, visible=False,
-                                    variant="secondary", size="sm", elem_classes=["dl-btn"])
-
-    gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
     with gr.Row():
-        sug_btns = [
-            gr.Button(defaults[i], size="sm", elem_classes=["sugg-btn"])
-            for i in range(4)
-        ]
+        with gr.Column(scale=4):
+            chatbot = gr.Chatbot(
+                label="", show_label=False, height=480,
+                render_markdown=True, elem_id=f"chatbot-{tab_id}",
+            )
+            chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
 
-    with gr.Row(elem_id=f"input-row-{tab_id}"):
-        msg_box  = gr.Textbox(
-            placeholder=placeholder, label="", show_label=False,
-            lines=1, max_lines=3, autofocus=False,
-            elem_id=f"msg-{tab_id}", scale=10,
-        )
-        send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
-        clear_btn = gr.Button("Clear",   scale=1, min_width=60, elem_classes=["clear-btn"])
+            # Download buttons — appear directly below the response, hidden until report is ready
+            with gr.Row(elem_classes=["dl-row"]):
+                pdf_btn = gr.DownloadButton("⬇ Download PDF",      value=None, visible=False,
+                                            variant="primary",   size="sm", elem_classes=["dl-btn"])
+                md_btn  = gr.DownloadButton("⬇ Download Markdown", value=None, visible=False,
+                                            variant="secondary", size="sm", elem_classes=["dl-btn"])
 
-    outputs = [msg_box, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn] + sug_btns
+            gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
+            with gr.Row():
+                sug_btns = [
+                    gr.Button(defaults[i], size="sm", elem_classes=["sugg-btn"])
+                    for i in range(4)
+                ]
 
-    def _respond(user_id, msg, hist, sugg):
-        yield from respond_report(user_id, msg, hist, sugg)
+            with gr.Row(elem_id=f"input-row-{tab_id}"):
+                msg_box  = gr.Textbox(
+                    placeholder=placeholder, label="", show_label=False,
+                    lines=1, max_lines=3, autofocus=False,
+                    elem_id=f"msg-{tab_id}", scale=10,
+                )
+                send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
+                clear_btn = gr.Button("Clear",   scale=1, min_width=60, elem_classes=["clear-btn"])
+
+        _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
+                             chatbot, chart_panel, suggestions_state, sug_btns,
+                             extra_reset=[pdf_btn, md_btn])
+
+    outputs = [msg_box, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn] + sug_btns + [session_state, refresh_state]
+
+    def _respond(user_id, session_id, refresh, msg, hist, sugg):
+        if session_id is None and msg.strip():
+            from utils.db import session_create
+            session_id = session_create(user_id, tab_id, title=_session_title(msg))
+        for i, out in enumerate(respond_report(user_id, msg, hist, sugg, session_id)):
+            yield out + (session_id, refresh if i == 0 else refresh + 1)
 
     def _clear(user_id):
         result = clear_tab(user_id, tab_id)
         hist, chart, sugg = result[0], result[1], result[2]
         btns = result[3:]
         no_dl = gr.update(value=None, visible=False)
-        return [hist, chart, sugg, no_dl, no_dl] + list(btns)
+        return [hist, chart, sugg, no_dl, no_dl] + list(btns) + [None]
 
-    msg_box.submit(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
-    send_btn.click(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
+    msg_box.submit(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state], outputs)
+    send_btn.click(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state], outputs)
     clear_btn.click(
         _clear, [user_state],
-        [chatbot, chart_panel, suggestions_state, pdf_btn, md_btn] + sug_btns,
+        [chatbot, chart_panel, suggestions_state, pdf_btn, md_btn] + sug_btns + [session_state],
     )
 
     for btn in sug_btns:
@@ -525,50 +700,64 @@ def _build_report_tab(user_state: gr.State):
             outputs=[msg_box],
         )
 
+    return chatbot, chart_panel, sug_btns, session_state, suggestions_state
+
 
 def _build_screener_tab(user_state: gr.State):
-    """Screener tab: standard layout + CSV export download button."""
+    """Screener tab: standard layout + CSV export download button + chat sidebar."""
     tab_id      = "screener"
     defaults    = TAB_DEFAULTS[tab_id]
     placeholder = TAB_PLACEHOLDERS[tab_id]
 
+    session_state = gr.State(None)
+    refresh_state = gr.State(0)
     suggestions_state = gr.State(defaults)
 
-    chatbot = gr.Chatbot(
-        label="", show_label=False, height=480,
-        render_markdown=True, elem_id=f"chatbot-{tab_id}",
-    )
-    chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
-
-    # CSV download — appears after a screen is run
-    with gr.Row(elem_classes=["dl-row"]):
-        csv_btn = gr.DownloadButton(
-            "⬇ Export Results CSV", value=None, visible=False,
-            variant="secondary", size="sm", elem_classes=["dl-btn"],
-        )
-
-    gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
     with gr.Row():
-        sug_btns = [
-            gr.Button(defaults[i], size="sm", elem_classes=["sugg-btn"])
-            for i in range(4)
-        ]
+        with gr.Column(scale=4):
+            chatbot = gr.Chatbot(
+                label="", show_label=False, height=480,
+                render_markdown=True, elem_id=f"chatbot-{tab_id}",
+            )
+            chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
 
-    with gr.Row(elem_id=f"input-row-{tab_id}"):
-        msg_box  = gr.Textbox(
-            placeholder=placeholder, label="", show_label=False,
-            lines=1, max_lines=3, autofocus=False,
-            elem_id=f"msg-{tab_id}", scale=10,
-        )
-        send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
-        clear_btn = gr.Button("Clear",   scale=1, min_width=60, elem_classes=["clear-btn"])
+            # CSV download — appears after a screen is run
+            with gr.Row(elem_classes=["dl-row"]):
+                csv_btn = gr.DownloadButton(
+                    "⬇ Export Results CSV", value=None, visible=False,
+                    variant="secondary", size="sm", elem_classes=["dl-btn"],
+                )
 
-    outputs = [msg_box, chatbot, chart_panel, suggestions_state, csv_btn] + sug_btns
+            gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
+            with gr.Row():
+                sug_btns = [
+                    gr.Button(defaults[i], size="sm", elem_classes=["sugg-btn"])
+                    for i in range(4)
+                ]
 
-    def _respond(user_id, msg, hist, sugg):
+            with gr.Row(elem_id=f"input-row-{tab_id}"):
+                msg_box  = gr.Textbox(
+                    placeholder=placeholder, label="", show_label=False,
+                    lines=1, max_lines=3, autofocus=False,
+                    elem_id=f"msg-{tab_id}", scale=10,
+                )
+                send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
+                clear_btn = gr.Button("Clear",   scale=1, min_width=60, elem_classes=["clear-btn"])
+
+        _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
+                             chatbot, chart_panel, suggestions_state, sug_btns,
+                             extra_reset=[csv_btn])
+
+    outputs = [msg_box, chatbot, chart_panel, suggestions_state, csv_btn] + sug_btns + [session_state, refresh_state]
+
+    def _respond(user_id, session_id, refresh, msg, hist, sugg):
         """Same as respond() but also updates the CSV download button after a screen runs."""
+        if session_id is None and msg.strip():
+            from utils.db import session_create
+            session_id = session_create(user_id, tab_id, title=_session_title(msg))
+
         if not msg.strip():
-            yield ("", hist, gr.update(), sugg, gr.update()) + tuple(gr.update() for _ in range(4))
+            yield ("", hist, gr.update(), sugg, gr.update()) + tuple(gr.update() for _ in range(4)) + (session_id, refresh)
             return
 
         clean = msg.lstrip("📊📋📈📰🔀🌍❓✅🔍 ").strip()
@@ -576,7 +765,7 @@ def _build_screener_tab(user_state: gr.State):
             {"role": "user",      "content": msg},
             {"role": "assistant", "content": LOADING_HTML},
         ]
-        yield ("", loading_hist, gr.update(value=None, visible=False), sugg, gr.update()) + _make_btn_updates(sugg)
+        yield ("", loading_hist, gr.update(value=None, visible=False), sugg, gr.update()) + _make_btn_updates(sugg) + (session_id, refresh)
 
         text     = ""
         new_sugg = sugg
@@ -598,23 +787,25 @@ def _build_screener_tab(user_state: gr.State):
         except Exception as e:
             text = f"⚠️ Error: `{str(e)}`\n\nPlease try again."
 
+        _persist_turn(user_id, session_id, tab_id, msg, text, is_first=not hist)
+
         updated_hist = hist + [
             {"role": "user",      "content": msg},
             {"role": "assistant", "content": text},
         ]
-        yield ("", updated_hist, gr.update(visible=False), new_sugg, csv_update) + _make_btn_updates(new_sugg)
+        yield ("", updated_hist, gr.update(visible=False), new_sugg, csv_update) + _make_btn_updates(new_sugg) + (session_id, refresh + 1)
 
     def _clear(user_id):
         result = clear_tab(user_id, tab_id)
         hist, chart, sugg = result[0], result[1], result[2]
         btns = result[3:]
-        return [hist, chart, sugg, gr.update(value=None, visible=False)] + list(btns)
+        return [hist, chart, sugg, gr.update(value=None, visible=False)] + list(btns) + [None]
 
-    msg_box.submit(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
-    send_btn.click(_respond,  [user_state, msg_box, chatbot, suggestions_state], outputs)
+    msg_box.submit(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state], outputs)
+    send_btn.click(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state], outputs)
     clear_btn.click(
         _clear, [user_state],
-        [chatbot, chart_panel, suggestions_state, csv_btn] + sug_btns,
+        [chatbot, chart_panel, suggestions_state, csv_btn] + sug_btns + [session_state],
     )
 
     for btn in sug_btns:
@@ -623,6 +814,8 @@ def _build_screener_tab(user_state: gr.State):
             inputs=[btn],
             outputs=[msg_box],
         )
+
+    return chatbot, chart_panel, sug_btns, session_state, suggestions_state
 
 
 # ── Watchlist helpers ─────────────────────────────────────────────────────────
@@ -725,8 +918,6 @@ def _build_watchlist_tab(user_state: gr.State):
     return wl_table, status
 
 
-# ── Build full UI ─────────────────────────────────────────────────────────────
-
 # ── Auth gate ─────────────────────────────────────────────────────────────────
 
 def _build_auth_gate():
@@ -806,16 +997,16 @@ def build_ui() -> gr.Blocks:
             # Tabs
             with gr.Tabs():
                 with gr.Tab("📊 Equity Research"):
-                    _build_equity_tab(user_state)
+                    eq_chatbot, eq_chart, eq_sugbtns, eq_session, eq_sugg_state = _build_equity_tab(user_state)
 
                 with gr.Tab("📋 Report Generator"):
-                    _build_report_tab(user_state)
+                    rp_chatbot, rp_chart, rp_sugbtns, rp_session, rp_sugg_state = _build_report_tab(user_state)
 
                 with gr.Tab("📈 Mutual Funds"):
-                    _build_tab("mf", user_state)
+                    mf_chatbot, mf_chart, mf_sugbtns, mf_session, mf_sugg_state = _build_tab("mf", user_state)
 
                 with gr.Tab("🔍 Screener"):
-                    _build_screener_tab(user_state)
+                    sc_chatbot, sc_chart, sc_sugbtns, sc_session, sc_sugg_state = _build_screener_tab(user_state)
 
                 with gr.Tab("📌 Watchlist") as watchlist_tab:
                     wl_table, wl_status = _build_watchlist_tab(user_state)
@@ -835,6 +1026,26 @@ def build_ui() -> gr.Blocks:
             return _fetch_watchlist_table(user_id), ""
 
         user_state.change(_load_watchlist, [user_state], [wl_table, wl_status])
+
+        # Reset every tab's visible chat + active session on login/logout, so a
+        # different account signing in on the same browser tab never sees the
+        # previous user's conversation (UI-level tenant isolation, not just DB).
+        def _reset_all_chats(user_id):
+            blank = ([], gr.update(value=None, visible=False))
+            return (
+                blank[0], blank[1], TAB_DEFAULTS["equity"], None,
+                blank[0], blank[1], TAB_DEFAULTS["report"], None,
+                blank[0], blank[1], TAB_DEFAULTS["mf"], None,
+                blank[0], blank[1], TAB_DEFAULTS["screener"], None,
+            )
+
+        user_state.change(
+            _reset_all_chats, [user_state],
+            [eq_chatbot, eq_chart, eq_sugg_state, eq_session,
+             rp_chatbot, rp_chart, rp_sugg_state, rp_session,
+             mf_chatbot, mf_chart, mf_sugg_state, mf_session,
+             sc_chatbot, sc_chart, sc_sugg_state, sc_session],
+        )
 
     return demo
 

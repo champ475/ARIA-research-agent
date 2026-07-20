@@ -491,3 +491,13 @@ Write:
     def reset(self):
         self._client.reset()
         self._last_symbol = None
+
+    def load_history(self, messages: list[dict]):
+        """Resumes a previously saved chat: seeds LLM memory and re-anchors
+        the last-mentioned ticker so follow-up questions still work."""
+        self._client.load_history(messages)
+        for m in reversed(messages):
+            valid = [t for t in extract_all_entities(m["content"]) if validate_ticker(t)]
+            if valid:
+                self._last_symbol = valid[-1]
+                break

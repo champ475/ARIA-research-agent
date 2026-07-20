@@ -84,6 +84,9 @@ class _GroqProvider:
     def reset(self):
         self._history.clear()
 
+    def load_history(self, messages: list[dict]):
+        self._history = list(messages[-20:])
+
 
 class _GeminiProvider:
     name = "Gemini"
@@ -136,6 +139,9 @@ class _GeminiProvider:
 
     def reset(self):
         self._history.clear()
+
+    def load_history(self, messages: list[dict]):
+        self._history = list(messages[-20:])
 
 
 # ── Unified client ────────────────────────────────────────────────────────────
@@ -198,6 +204,11 @@ class LLMClient:
     def reset(self):
         if self._primary:   self._primary.reset()
         if self._secondary: self._secondary.reset()
+
+    def load_history(self, messages: list[dict]):
+        """Seeds conversation memory from a previously saved chat (resume-on-load)."""
+        if self._primary:   self._primary.load_history(messages)
+        if self._secondary: self._secondary.load_history(messages)
 
     def _call(self, method: str, prompt: str, temperature: float, max_tokens: int) -> str:
         last_err = None
