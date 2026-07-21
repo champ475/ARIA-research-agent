@@ -464,9 +464,16 @@ Write:
         chart = portfolio_chart(holdings)
         return port_md(holdings, summary), chart
 
-    def _is_port_add(self, l):    return ("portfolio" in l or "holding" in l) and any(k in l for k in ["add","bought","buy"])
-    def _is_port_remove(self, l): return ("portfolio" in l or "holding" in l) and any(k in l for k in ["remove","delete","sold"])
-    def _is_port_view(self, l):   return any(k in l for k in ["my portfolio","portfolio","my holdings","show holdings"])
+    # Bare "portfolio" used to be enough to trigger these — but that word
+    # alone shows up in ordinary finance questions ("diversified portfolio",
+    # "investment portfolio strategy") that have nothing to do with the
+    # portfolio-tracking commands. Require an explicit command phrase instead.
+    _PORT_VIEW_RE   = re.compile(r'\b(my|show|view|see)\s+(portfolio|holdings)\b', re.I)
+    _PORT_ADD_RE    = re.compile(r'\b(my\s+)?(portfolio|holding)s?\b', re.I)
+
+    def _is_port_add(self, l):    return bool(self._PORT_ADD_RE.search(l)) and any(k in l for k in ["add","bought","buy"])
+    def _is_port_remove(self, l): return bool(self._PORT_ADD_RE.search(l)) and any(k in l for k in ["remove","delete","sold"])
+    def _is_port_view(self, l):   return bool(self._PORT_VIEW_RE.search(l)) or "show holdings" in l
 
     def _ask_ticker(self) -> str:
         return ("Please specify a stock name or NSE ticker.\n"

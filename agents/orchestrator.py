@@ -9,11 +9,13 @@ since EquityAgent already handles general Q&A, portfolio, backtest, and
 market-overview intents on its own.
 """
 
-from agents.equity_agent   import EquityAgent
-from agents.report_agent   import ReportAgent
-from agents.mf_agent       import MFAgent
-from agents.screener_agent import ScreenerAgent
-from agents.alert_agent    import AlertAgent
+from agents.equity_agent    import EquityAgent
+from agents.report_agent    import ReportAgent
+from agents.mf_agent        import MFAgent
+from agents.screener_agent  import ScreenerAgent
+from agents.alert_agent     import AlertAgent
+from agents.planning_agent  import PlanningAgent
+from utils.helpers          import extract_all_entities, validate_ticker
 import re
 
 # Keyword sets per specialist. Checked in this priority order — report and
@@ -53,21 +55,43 @@ _ALERT_KW = [
 # trying to enumerate every symbol position.
 _ALERT_CRUD_RE = re.compile(r"\b(cancel|delete|remove|pause|resume|reactivate|unpause)\b.{0,30}\balerts?\b", re.I)
 
-_TABS = ["equity", "report", "mf", "screener", "alert"]
+# Goal-based / multi-asset planning — deliberately phrase-based (not bare
+# "portfolio") since that word alone is too generic and used to misroute
+# ordinary planning questions into EquityAgent's portfolio-view command.
+_PLANNING_KW = [
+    "investment strategy", "financial plan", "financial planning", "asset allocation",
+    "how should i invest", "how do i invest", "retirement plan", "plan for retirement",
+    "diversified portfolio", "diversify my portfolio", "build my portfolio",
+    "long term goal", "long-term goal", "my financial goal", "invest for my goal",
+    "invest for retirement", "wealth plan", "financial profile", "my risk tolerance",
+    "build my plan", "build my strategy", "investment plan",
+]
+
+_TABS = ["equity", "report", "mf", "screener", "alert", "planning"]
 
 
-def route(message: str) -> str:
-    """Returns one of "equity"|"report"|"mf"|"screener"|"alert" for this message."""
+def route(message: str, last_tab: str | None = None) -> str:
+    """Returns one of "equity"|"report"|"mf"|"screener"|"alert"|"planning" for this message."""
     q = f" {message.lower().strip()} "
     scores = {
         "report":   sum(1 for kw in _REPORT_KW   if kw in q),
         "screener": sum(1 for kw in _SCREENER_KW if kw in q),
         "mf":       sum(1 for kw in _MF_KW       if kw in q),
         "alert":    sum(1 for kw in _ALERT_KW    if kw in q) + (1 if _ALERT_CRUD_RE.search(q) else 0),
+        "planning": sum(1 for kw in _PLANNING_KW if kw in q),
     }
     best_tab = max(scores, key=scores.get)
     if scores[best_tab] > 0:
         return best_tab
+    # Planning is a multi-turn intake ("what's your age/capital/horizon...") —
+    # follow-up answers like "I'm 30, moderate risk" won't contain any
+    # planning keyword, so stay on planning rather than falling through to
+    # the equity catch-all mid-conversation. But if the user clearly names a
+    # stock (a valid ticker), treat that as switching topics back to equity.
+    if last_tab == "planning":
+        has_ticker = any(validate_ticker(t) for t in extract_all_entities(message))
+        if not has_ticker:
+            return "planning"
     return "equity"
 
 
@@ -87,12 +111,13 @@ class Orchestrator:
             "mf":       MFAgent(user_id),
             "screener": ScreenerAgent(user_id),
             "alert":    AlertAgent(user_id),
+            "planning": PlanningAgent(user_id),
         }
         self._last_tab = "equity"
 
     def process(self, message: str) -> tuple[str, object, str | None, str | None, str | None, str]:
         """Returns (text, chart, pdf_path, md_path, csv_path, tab_used)."""
-        tab = route(message)
+        tab = route(message, last_tab=self._last_tab)
         self._last_tab = tab
         agent = self._agents[tab]
 

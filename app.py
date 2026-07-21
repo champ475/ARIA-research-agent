@@ -48,6 +48,8 @@ _TAB_LABELS = {
     "report"  : "📋 Report Generator",
     "mf"      : "📈 Mutual Funds",
     "screener": "🔍 Screener",
+    "alert"   : "🔔 Alerts",
+    "planning": "🧭 Financial Planner",
 }
 
 CHAT_DEFAULTS = [

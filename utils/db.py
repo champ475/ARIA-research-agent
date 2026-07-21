@@ -173,6 +173,16 @@ def init_db():
             fetched_at    TIMESTAMPTZ DEFAULT now(),
             UNIQUE (symbol, doc_type, period)
         );
+
+        -- One profile per user. Stored as a flexible JSON blob (not fixed
+        -- columns) since the field set is LLM-extracted and open-ended
+        -- (age/capital/horizon are core, but anything from dependents to
+        -- past panic-selling behavior can show up depending on conversation).
+        CREATE TABLE IF NOT EXISTS financial_profiles (
+            user_id     INTEGER PRIMARY KEY REFERENCES users(id),
+            profile     JSONB NOT NULL DEFAULT '{}',
+            updated_at  TIMESTAMPTZ DEFAULT now()
+        );
         """)
         conn.commit()
     finally:
@@ -411,3 +421,28 @@ def alert_get_active_all() -> list[dict]:
     """Cross-tenant fetch — used only by the standalone checker script, never
     by the Gradio app (which is always user_id-scoped)."""
     return _query("SELECT * FROM alerts WHERE active=TRUE ORDER BY id", fetch="all")
+
+
+# ── Financial profile helpers (PlanningAgent) ─────────────────────────────────
+
+def profile_get(user_id: int) -> dict:
+    row = _query("SELECT profile FROM financial_profiles WHERE user_id=%s", (user_id,), fetch="one")
+    return row["profile"] if row else {}
+
+
+def profile_upsert(user_id: int, updates: dict) -> dict:
+    """Merges `updates` into the stored profile (shallow merge — new keys
+    overwrite old ones, existing keys not present in `updates` are kept) and
+    returns the resulting full profile."""
+    current = profile_get(user_id)
+    current.update(updates)
+    _query(
+        "INSERT INTO financial_profiles (user_id, profile, updated_at) VALUES (%s,%s,now()) "
+        "ON CONFLICT (user_id) DO UPDATE SET profile=%s, updated_at=now()",
+        (user_id, json.dumps(current), json.dumps(current)), fetch=None, commit=True,
+    )
+    return current
+
+
+def profile_clear(user_id: int):
+    _query("DELETE FROM financial_profiles WHERE user_id=%s", (user_id,), fetch=None, commit=True)
