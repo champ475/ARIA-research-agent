@@ -2,7 +2,7 @@
 utils/auth.py — signup/login/session helpers.
 
 Password hashing: PBKDF2-HMAC-SHA256, stdlib only (no new dependency).
-Sessions: opaque random token, stored server-side in SQLite `sessions`
+Sessions: opaque random token, stored server-side in Postgres `sessions`
 table, checked on every request. This is the Phase-1 foundation piece of
 docs/PRD.md §7.1/§7.2 — email verification, OAuth, MFA are fast-follows,
 not implemented here.
@@ -12,10 +12,9 @@ import hashlib
 import os
 import re
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from utils.db import get_conn
-from utils.helpers import now_ist
+from utils.db import get_conn, release_conn
 
 SESSION_TTL_HOURS = 24 * 14  # 14 days
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -51,49 +50,55 @@ def signup(email: str, password: str) -> int:
         raise AuthError("Password must be at least 8 characters.")
 
     conn = get_conn()
-    existing = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
-    if existing:
-        conn.close()
-        raise AuthError("An account with this email already exists.")
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE email=%s", (email,))
+        if cur.fetchone():
+            raise AuthError("An account with this email already exists.")
 
-    password_hash = _hash_password(password)
-    cur = conn.execute(
-        "INSERT INTO users (email, password_hash, created_at) VALUES (?,?,?)",
-        (email, password_hash, now_ist()),
-    )
-    user_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return user_id
+        password_hash = _hash_password(password)
+        cur.execute(
+            "INSERT INTO users (email, password_hash) VALUES (%s,%s) RETURNING id",
+            (email, password_hash),
+        )
+        user_id = cur.fetchone()["id"]
+        conn.commit()
+        return user_id
+    finally:
+        release_conn(conn)
 
 
 def login(email: str, password: str) -> str:
     """Verify credentials and return a new session token. Raises AuthError on failure."""
     email = email.strip().lower()
     conn = get_conn()
-    row = conn.execute(
-        "SELECT id, password_hash FROM users WHERE email=?", (email,)
-    ).fetchone()
-    if not row or not _verify_password(password, row["password_hash"]):
-        conn.close()
-        raise AuthError("Invalid email or password.")
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, password_hash FROM users WHERE email=%s", (email,))
+        row = cur.fetchone()
+        if not row or not _verify_password(password, row["password_hash"]):
+            raise AuthError("Invalid email or password.")
 
-    token = secrets.token_urlsafe(32)
-    expires_at = (datetime.utcnow() + timedelta(hours=SESSION_TTL_HOURS)).isoformat()
-    conn.execute(
-        "INSERT INTO sessions (user_id, token, expires_at) VALUES (?,?,?)",
-        (row["id"], token, expires_at),
-    )
-    conn.commit()
-    conn.close()
-    return token
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=SESSION_TTL_HOURS)
+        cur.execute(
+            "INSERT INTO sessions (user_id, token, expires_at) VALUES (%s,%s,%s)",
+            (row["id"], token, expires_at),
+        )
+        conn.commit()
+        return token
+    finally:
+        release_conn(conn)
 
 
 def logout(token: str):
     conn = get_conn()
-    conn.execute("DELETE FROM sessions WHERE token=?", (token,))
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM sessions WHERE token=%s", (token,))
+        conn.commit()
+    finally:
+        release_conn(conn)
 
 
 def get_user_id(token: str) -> int | None:
@@ -101,12 +106,14 @@ def get_user_id(token: str) -> int | None:
     if not token:
         return None
     conn = get_conn()
-    row = conn.execute(
-        "SELECT user_id, expires_at FROM sessions WHERE token=?", (token,)
-    ).fetchone()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, expires_at FROM sessions WHERE token=%s", (token,))
+        row = cur.fetchone()
+    finally:
+        release_conn(conn)
     if not row:
         return None
-    if datetime.fromisoformat(row["expires_at"]) < datetime.utcnow():
+    if row["expires_at"] < datetime.now(timezone.utc):
         return None
     return row["user_id"]

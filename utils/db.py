@@ -1,197 +1,224 @@
 """
-utils/db.py — SQLite schema and query helpers.
+utils/db.py — Postgres (Neon) schema and query helpers.
+Single shared DB: read/written by the local Gradio app AND by
+scripts/check_alerts.py (run on a schedule via GitHub Actions).
 Creates the DB and all tables on first run.
 """
 
-import sqlite3
 import json
-import os
-from datetime import datetime
-from config import DB_PATH
+import psycopg2
+from psycopg2 import pool
+from psycopg2.extras import RealDictCursor
+from config import DATABASE_URL
+
+_pool: "pool.ThreadedConnectionPool | None" = None
 
 
-def get_conn() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+def _get_pool() -> "pool.ThreadedConnectionPool":
+    global _pool
+    if _pool is None:
+        _pool = pool.ThreadedConnectionPool(
+            minconn=1, maxconn=10, dsn=DATABASE_URL, cursor_factory=RealDictCursor
+        )
+    return _pool
+
+
+def get_conn():
+    """Returns a pooled connection. Caller MUST release it via release_conn()
+    (not conn.close(), which would just drop the socket instead of returning
+    it to the pool)."""
+    return _get_pool().getconn()
+
+
+def release_conn(conn):
+    """Rolls back any uncommitted/aborted transaction before returning the
+    connection to the pool — without this, a failed statement (e.g. a CHECK
+    violation) leaves the connection stuck in an aborted-transaction state
+    for whoever borrows it next."""
+    try:
+        if not conn.closed:
+            conn.rollback()
+    finally:
+        _get_pool().putconn(conn)
+
+
+def _query(sql: str, params: tuple = (), fetch: str | None = "all", commit: bool = False):
+    """fetch: 'all' | 'one' | None. Returns list[dict] | dict|None | None."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        result = None
+        if fetch == "all":
+            result = [dict(r) for r in cur.fetchall()]
+        elif fetch == "one":
+            row = cur.fetchone()
+            result = dict(row) if row else None
+        if commit:
+            conn.commit()
+        return result
+    finally:
+        release_conn(conn)
 
 
 def init_db():
     """Create all tables if they don't exist."""
     conn = get_conn()
-    c = conn.cursor()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id            SERIAL PRIMARY KEY,
+            email         TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at    TIMESTAMPTZ DEFAULT now()
+        );
 
-    c.executescript("""
-    CREATE TABLE IF NOT EXISTS users (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        email         TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at    TEXT DEFAULT (datetime('now'))
-    );
+        CREATE TABLE IF NOT EXISTS sessions (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            token       TEXT UNIQUE NOT NULL,
+            expires_at  TIMESTAMPTZ NOT NULL,
+            created_at  TIMESTAMPTZ DEFAULT now()
+        );
 
-    CREATE TABLE IF NOT EXISTS sessions (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id     INTEGER NOT NULL REFERENCES users(id),
-        token       TEXT UNIQUE NOT NULL,
-        expires_at  TEXT NOT NULL,
-        created_at  TEXT DEFAULT (datetime('now'))
-    );
+        CREATE TABLE IF NOT EXISTS portfolio (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            symbol      TEXT NOT NULL,
+            qty         REAL NOT NULL,
+            avg_price   REAL NOT NULL,
+            added_at    TIMESTAMPTZ DEFAULT now()
+        );
 
-    CREATE TABLE IF NOT EXISTS portfolio (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id     INTEGER NOT NULL REFERENCES users(id),
-        symbol      TEXT NOT NULL,
-        qty         REAL NOT NULL,
-        avg_price   REAL NOT NULL,
-        added_at    TEXT DEFAULT (datetime('now'))
-    );
+        CREATE TABLE IF NOT EXISTS watchlist (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            symbol      TEXT NOT NULL,
+            added_at    TIMESTAMPTZ DEFAULT now(),
+            UNIQUE(user_id, symbol)
+        );
 
-    CREATE TABLE IF NOT EXISTS watchlist (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id     INTEGER NOT NULL REFERENCES users(id),
-        symbol      TEXT NOT NULL,
-        added_at    TEXT DEFAULT (datetime('now')),
-        UNIQUE(user_id, symbol)
-    );
+        CREATE TABLE IF NOT EXISTS alerts (
+            id            SERIAL PRIMARY KEY,
+            user_id       INTEGER NOT NULL REFERENCES users(id),
+            symbol        TEXT NOT NULL,
+            alert_type    TEXT NOT NULL CHECK (alert_type IN (
+                'price_above','price_below','pct_change',
+                'rsi_cross_above','rsi_cross_below',
+                'macd_bullish_cross','macd_bearish_cross',
+                'ma_cross','bb_breakout','volume_spike',
+                'week52_high','week52_low','bulk_deal','portfolio_pnl'
+            )),
+            condition     TEXT,
+            threshold     REAL,
+            active        BOOLEAN DEFAULT TRUE,
+            created_at    TIMESTAMPTZ DEFAULT now(),
+            triggered_at  TIMESTAMPTZ
+        );
+        CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts (active) WHERE active = TRUE;
 
-    CREATE TABLE IF NOT EXISTS alerts (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id     INTEGER NOT NULL REFERENCES users(id),
-        symbol      TEXT NOT NULL,
-        alert_type  TEXT NOT NULL,
-        condition   TEXT NOT NULL,
-        threshold   REAL,
-        active      INTEGER DEFAULT 1,
-        created_at  TEXT DEFAULT (datetime('now')),
-        triggered_at TEXT
-    );
+        CREATE TABLE IF NOT EXISTS cache_meta (
+            key         TEXT PRIMARY KEY,
+            fetched_at  TIMESTAMPTZ NOT NULL,
+            ttl_seconds INTEGER DEFAULT 3600
+        );
 
-    CREATE TABLE IF NOT EXISTS cache_meta (
-        key         TEXT PRIMARY KEY,
-        fetched_at  TEXT NOT NULL,
-        ttl_seconds INTEGER DEFAULT 3600
-    );
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            tab         TEXT NOT NULL,
+            title       TEXT NOT NULL DEFAULT 'New chat',
+            created_at  TIMESTAMPTZ DEFAULT now(),
+            updated_at  TIMESTAMPTZ DEFAULT now()
+        );
 
-    CREATE TABLE IF NOT EXISTS chat_sessions (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id     INTEGER NOT NULL REFERENCES users(id),
-        tab         TEXT NOT NULL,
-        title       TEXT NOT NULL DEFAULT 'New chat',
-        created_at  TEXT DEFAULT (datetime('now')),
-        updated_at  TEXT DEFAULT (datetime('now'))
-    );
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            session_id  INTEGER REFERENCES chat_sessions(id),
+            tab         TEXT NOT NULL,
+            role        TEXT NOT NULL,
+            content     TEXT NOT NULL,
+            ts          TIMESTAMPTZ DEFAULT now()
+        );
 
-    CREATE TABLE IF NOT EXISTS chat_history (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id     INTEGER NOT NULL REFERENCES users(id),
-        session_id  INTEGER REFERENCES chat_sessions(id),
-        tab         TEXT NOT NULL,
-        role        TEXT NOT NULL,
-        content     TEXT NOT NULL,
-        ts          TEXT DEFAULT (datetime('now'))
-    );
+        CREATE TABLE IF NOT EXISTS saved_screeners (
+            id            SERIAL PRIMARY KEY,
+            user_id       INTEGER NOT NULL REFERENCES users(id),
+            name          TEXT NOT NULL,
+            filters_json  TEXT NOT NULL,
+            created_at    TIMESTAMPTZ DEFAULT now()
+        );
 
-    CREATE TABLE IF NOT EXISTS saved_screeners (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id     INTEGER NOT NULL REFERENCES users(id),
-        name        TEXT NOT NULL,
-        filters_json TEXT NOT NULL,
-        created_at  TEXT DEFAULT (datetime('now'))
-    );
+        CREATE TABLE IF NOT EXISTS reports (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            symbol      TEXT,
+            report_type TEXT NOT NULL,
+            title       TEXT NOT NULL,
+            content     TEXT NOT NULL,
+            created_at  TIMESTAMPTZ DEFAULT now()
+        );
 
-    CREATE TABLE IF NOT EXISTS reports (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id     INTEGER NOT NULL REFERENCES users(id),
-        symbol      TEXT,
-        report_type TEXT NOT NULL,
-        title       TEXT NOT NULL,
-        content     TEXT NOT NULL,
-        created_at  TEXT DEFAULT (datetime('now'))
-    );
-
-    -- pdf_cache is a shared, symbol-keyed fetch cache (not per-tenant data),
-    -- so it intentionally has no user_id — same reasoning as cache_meta.
-    CREATE TABLE IF NOT EXISTS pdf_cache (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        symbol      TEXT NOT NULL,
-        doc_type    TEXT NOT NULL,
-        period      TEXT,
-        url         TEXT,
-        text_content TEXT,
-        fetched_at  TEXT DEFAULT (datetime('now'))
-    );
-    """)
-    conn.commit()
-    _migrate_add_user_id(conn)
-    conn.commit()
-    conn.close()
-
-
-# Tables that gained a user_id column after the auth/multi-tenancy migration.
-# CREATE TABLE IF NOT EXISTS above is a no-op on a pre-existing single-user
-# SQLite file, so this backfills the column on old databases.
-_USER_SCOPED_TABLES = ["portfolio", "watchlist", "alerts", "chat_history", "saved_screeners", "reports"]
-
-
-def _migrate_add_user_id(conn: sqlite3.Connection):
-    for table in _USER_SCOPED_TABLES:
-        cols = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-        if cols and "user_id" not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
-
-    # chat_history gained session_id when chat_sessions (ChatGPT-style sidebar
-    # history) was introduced — backfill on databases created before that.
-    cols = [row["name"] for row in conn.execute("PRAGMA table_info(chat_history)").fetchall()]
-    if cols and "session_id" not in cols:
-        conn.execute("ALTER TABLE chat_history ADD COLUMN session_id INTEGER")
+        -- pdf_cache is a shared, symbol-keyed fetch cache (not per-tenant data),
+        -- so it intentionally has no user_id — same reasoning as cache_meta.
+        CREATE TABLE IF NOT EXISTS pdf_cache (
+            id            SERIAL PRIMARY KEY,
+            symbol        TEXT NOT NULL,
+            doc_type      TEXT NOT NULL,
+            period        TEXT,
+            url           TEXT,
+            text_content  TEXT,
+            fetched_at    TIMESTAMPTZ DEFAULT now(),
+            UNIQUE (symbol, doc_type, period)
+        );
+        """)
+        conn.commit()
+    finally:
+        release_conn(conn)
 
 
 # ── Portfolio helpers ─────────────────────────────────────────────────────────
 
 def portfolio_add(user_id: int, symbol: str, qty: float, avg_price: float):
-    conn = get_conn()
-    conn.execute(
-        "INSERT INTO portfolio (user_id, symbol, qty, avg_price) VALUES (?,?,?,?)",
+    _query(
+        "INSERT INTO portfolio (user_id, symbol, qty, avg_price) VALUES (%s,%s,%s,%s)",
         (user_id, symbol.upper(), qty, avg_price),
+        fetch=None, commit=True,
     )
-    conn.commit(); conn.close()
 
 
 def portfolio_remove(user_id: int, symbol: str):
-    conn = get_conn()
-    conn.execute("DELETE FROM portfolio WHERE user_id=? AND symbol=?", (user_id, symbol.upper()))
-    conn.commit(); conn.close()
+    _query(
+        "DELETE FROM portfolio WHERE user_id=%s AND symbol=%s",
+        (user_id, symbol.upper()), fetch=None, commit=True,
+    )
 
 
 def portfolio_all(user_id: int) -> list[dict]:
-    conn = get_conn()
-    rows = conn.execute("SELECT * FROM portfolio WHERE user_id=?", (user_id,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    return _query("SELECT * FROM portfolio WHERE user_id=%s", (user_id,), fetch="all")
 
 
 # ── Watchlist helpers ─────────────────────────────────────────────────────────
 
 def watchlist_add(user_id: int, symbol: str):
-    conn = get_conn()
-    conn.execute(
-        "INSERT OR IGNORE INTO watchlist (user_id, symbol) VALUES (?,?)",
-        (user_id, symbol.upper()),
+    _query(
+        "INSERT INTO watchlist (user_id, symbol) VALUES (%s,%s) "
+        "ON CONFLICT (user_id, symbol) DO NOTHING",
+        (user_id, symbol.upper()), fetch=None, commit=True,
     )
-    conn.commit(); conn.close()
 
 
 def watchlist_remove(user_id: int, symbol: str):
-    conn = get_conn()
-    conn.execute("DELETE FROM watchlist WHERE user_id=? AND symbol=?", (user_id, symbol.upper()))
-    conn.commit(); conn.close()
+    _query(
+        "DELETE FROM watchlist WHERE user_id=%s AND symbol=%s",
+        (user_id, symbol.upper()), fetch=None, commit=True,
+    )
 
 
 def watchlist_all(user_id: int) -> list[str]:
-    conn = get_conn()
-    rows = conn.execute("SELECT symbol FROM watchlist WHERE user_id=?", (user_id,)).fetchall()
-    conn.close()
+    rows = _query("SELECT symbol FROM watchlist WHERE user_id=%s", (user_id,), fetch="all")
     return [r["symbol"] for r in rows]
 
 
@@ -200,142 +227,187 @@ def watchlist_all(user_id: int) -> list[str]:
 # Sidebar lists sessions (newest first); chat_history rows hang off a session.
 
 def session_create(user_id: int, tab: str, title: str = "New chat") -> int:
-    conn = get_conn()
-    cur = conn.execute(
-        "INSERT INTO chat_sessions (user_id, tab, title) VALUES (?,?,?)",
-        (user_id, tab, title),
+    row = _query(
+        "INSERT INTO chat_sessions (user_id, tab, title) VALUES (%s,%s,%s) RETURNING id",
+        (user_id, tab, title), fetch="one", commit=True,
     )
-    sid = cur.lastrowid
-    conn.commit(); conn.close()
-    return sid
+    return row["id"]
 
 
 def session_list(user_id: int, tab: str, limit: int = 50) -> list[dict]:
-    conn = get_conn()
-    rows = conn.execute(
+    return _query(
         "SELECT id, title, updated_at FROM chat_sessions "
-        "WHERE user_id=? AND tab=? ORDER BY updated_at DESC LIMIT ?",
-        (user_id, tab, limit),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+        "WHERE user_id=%s AND tab=%s ORDER BY updated_at DESC LIMIT %s",
+        (user_id, tab, limit), fetch="all",
+    )
 
 
 def session_touch(session_id: int, title: str | None = None):
-    conn = get_conn()
     if title is not None:
-        conn.execute(
-            "UPDATE chat_sessions SET updated_at=datetime('now'), title=? WHERE id=?",
-            (title, session_id),
+        _query(
+            "UPDATE chat_sessions SET updated_at=now(), title=%s WHERE id=%s",
+            (title, session_id), fetch=None, commit=True,
         )
     else:
-        conn.execute(
-            "UPDATE chat_sessions SET updated_at=datetime('now') WHERE id=?",
-            (session_id,),
+        _query(
+            "UPDATE chat_sessions SET updated_at=now() WHERE id=%s",
+            (session_id,), fetch=None, commit=True,
         )
-    conn.commit(); conn.close()
 
 
 def session_delete(user_id: int, session_id: int):
     """Deletes a session and its messages — only if it belongs to user_id."""
     conn = get_conn()
-    owned = conn.execute(
-        "SELECT id FROM chat_sessions WHERE id=? AND user_id=?", (session_id, user_id)
-    ).fetchone()
-    if owned:
-        conn.execute("DELETE FROM chat_history WHERE session_id=?", (session_id,))
-        conn.execute("DELETE FROM chat_sessions WHERE id=?", (session_id,))
-        conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM chat_sessions WHERE id=%s AND user_id=%s", (session_id, user_id)
+        )
+        owned = cur.fetchone()
+        if owned:
+            cur.execute("DELETE FROM chat_history WHERE session_id=%s", (session_id,))
+            cur.execute("DELETE FROM chat_sessions WHERE id=%s", (session_id,))
+            conn.commit()
+    finally:
+        release_conn(conn)
 
 
 def chat_save(user_id: int, session_id: int, tab: str, role: str, content: str):
-    conn = get_conn()
-    conn.execute(
-        "INSERT INTO chat_history (user_id, session_id, tab, role, content) VALUES (?,?,?,?,?)",
-        (user_id, session_id, tab, role, content),
+    _query(
+        "INSERT INTO chat_history (user_id, session_id, tab, role, content) VALUES (%s,%s,%s,%s,%s)",
+        (user_id, session_id, tab, role, content), fetch=None, commit=True,
     )
-    conn.commit(); conn.close()
 
 
 def chat_load(user_id: int, session_id: int) -> list[dict]:
     """Loads a session's messages — only if it belongs to user_id (tenant isolation)."""
     conn = get_conn()
-    owned = conn.execute(
-        "SELECT id FROM chat_sessions WHERE id=? AND user_id=?", (session_id, user_id)
-    ).fetchone()
-    if not owned:
-        conn.close()
-        return []
-    rows = conn.execute(
-        "SELECT role, content FROM chat_history WHERE session_id=? ORDER BY ts ASC",
-        (session_id,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM chat_sessions WHERE id=%s AND user_id=%s", (session_id, user_id)
+        )
+        if not cur.fetchone():
+            return []
+        cur.execute(
+            "SELECT role, content FROM chat_history WHERE session_id=%s ORDER BY ts ASC",
+            (session_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        release_conn(conn)
 
 
 # ── Report helpers ────────────────────────────────────────────────────────────
 
 def report_save(user_id: int, symbol: str, report_type: str, title: str, content: str) -> int:
-    conn = get_conn()
-    cur = conn.execute(
-        "INSERT INTO reports (user_id, symbol, report_type, title, content) VALUES (?,?,?,?,?)",
-        (user_id, symbol, report_type, title, content),
+    row = _query(
+        "INSERT INTO reports (user_id, symbol, report_type, title, content) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+        (user_id, symbol, report_type, title, content), fetch="one", commit=True,
     )
-    rid = cur.lastrowid
-    conn.commit(); conn.close()
-    return rid
+    return row["id"]
 
 
 def report_list(user_id: int, limit: int = 20) -> list[dict]:
-    conn = get_conn()
-    rows = conn.execute(
+    return _query(
         "SELECT id, symbol, report_type, title, created_at FROM reports "
-        "WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
-        (user_id, limit),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+        "WHERE user_id=%s ORDER BY created_at DESC LIMIT %s",
+        (user_id, limit), fetch="all",
+    )
 
 
 # ── PDF cache helpers ─────────────────────────────────────────────────────────
 
 def pdf_cache_get(symbol: str, doc_type: str, period: str = None) -> str | None:
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT text_content FROM pdf_cache WHERE symbol=? AND doc_type=? AND (period=? OR period IS NULL) LIMIT 1",
-        (symbol.upper(), doc_type, period),
-    ).fetchone()
-    conn.close()
+    row = _query(
+        "SELECT text_content FROM pdf_cache WHERE symbol=%s AND doc_type=%s AND (period=%s OR period IS NULL) LIMIT 1",
+        (symbol.upper(), doc_type, period), fetch="one",
+    )
     return row["text_content"] if row else None
 
 
 def pdf_cache_set(symbol: str, doc_type: str, text: str, period: str = None, url: str = None):
-    conn = get_conn()
-    conn.execute(
-        "INSERT OR REPLACE INTO pdf_cache (symbol, doc_type, period, url, text_content) VALUES (?,?,?,?,?)",
-        (symbol.upper(), doc_type, period, url, text),
+    _query(
+        "INSERT INTO pdf_cache (symbol, doc_type, period, url, text_content) VALUES (%s,%s,%s,%s,%s) "
+        "ON CONFLICT (symbol, doc_type, period) DO UPDATE SET "
+        "url=EXCLUDED.url, text_content=EXCLUDED.text_content, fetched_at=now()",
+        (symbol.upper(), doc_type, period, url, text), fetch=None, commit=True,
     )
-    conn.commit(); conn.close()
 
 
 # ── Saved screener helpers ────────────────────────────────────────────────────
 
 def screener_save(user_id: int, name: str, filters: dict):
-    conn = get_conn()
-    conn.execute(
-        "INSERT INTO saved_screeners (user_id, name, filters_json) VALUES (?,?,?)",
-        (user_id, name, json.dumps(filters)),
+    _query(
+        "INSERT INTO saved_screeners (user_id, name, filters_json) VALUES (%s,%s,%s)",
+        (user_id, name, json.dumps(filters)), fetch=None, commit=True,
     )
-    conn.commit(); conn.close()
 
 
 def screener_list(user_id: int) -> list[dict]:
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT id, name, filters_json, created_at FROM saved_screeners WHERE user_id=?",
-        (user_id,),
-    ).fetchall()
-    conn.close()
+    rows = _query(
+        "SELECT id, name, filters_json, created_at FROM saved_screeners WHERE user_id=%s",
+        (user_id,), fetch="all",
+    )
     return [{"id": r["id"], "name": r["name"], "filters": json.loads(r["filters_json"]), "created_at": r["created_at"]} for r in rows]
+
+
+# ── Alert helpers ─────────────────────────────────────────────────────────────
+
+def alert_add(user_id: int, symbol: str, alert_type: str, condition: str, threshold: float | None) -> int:
+    row = _query(
+        "INSERT INTO alerts (user_id, symbol, alert_type, condition, threshold) "
+        "VALUES (%s,%s,%s,%s,%s) RETURNING id",
+        (user_id, symbol.upper(), alert_type, condition, threshold),
+        fetch="one", commit=True,
+    )
+    return row["id"]
+
+
+def alert_list(user_id: int, active_only: bool = False) -> list[dict]:
+    sql = "SELECT * FROM alerts WHERE user_id=%s"
+    if active_only:
+        sql += " AND active=TRUE"
+    sql += " ORDER BY created_at DESC"
+    return _query(sql, (user_id,), fetch="all")
+
+
+def alert_remove(user_id: int, alert_id: int) -> bool:
+    """Deletes only if owned by user_id (tenant isolation, mirrors session_delete)."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM alerts WHERE id=%s AND user_id=%s", (alert_id, user_id))
+        deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
+    finally:
+        release_conn(conn)
+
+
+def alert_pause(user_id: int, alert_id: int):
+    _query(
+        "UPDATE alerts SET active=FALSE WHERE id=%s AND user_id=%s",
+        (alert_id, user_id), fetch=None, commit=True,
+    )
+
+
+def alert_resume(user_id: int, alert_id: int):
+    _query(
+        "UPDATE alerts SET active=TRUE WHERE id=%s AND user_id=%s",
+        (alert_id, user_id), fetch=None, commit=True,
+    )
+
+
+def alert_mark_triggered(alert_id: int):
+    """Called only by scripts/check_alerts.py — fires once, then deactivates."""
+    _query(
+        "UPDATE alerts SET active=FALSE, triggered_at=now() WHERE id=%s",
+        (alert_id,), fetch=None, commit=True,
+    )
+
+
+def alert_get_active_all() -> list[dict]:
+    """Cross-tenant fetch — used only by the standalone checker script, never
+    by the Gradio app (which is always user_id-scoped)."""
+    return _query("SELECT * FROM alerts WHERE active=TRUE ORDER BY id", fetch="all")

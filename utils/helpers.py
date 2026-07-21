@@ -70,13 +70,21 @@ STOP_WORDS = {
     # layer, before ever needing an LLM call.
     "SHOULD", "WOULD", "COULD", "CAN", "WILL", "MUST", "MAY", "MIGHT", "SHALL", "OR",
     "WITH", "FROM", "INTO", "ABOUT", "THIS", "THAT", "THESE", "THOSE",
-    "WHEN", "WHERE", "WHICH", "WHO", "WHY", "WHOM",
+    "WHEN", "WHERE", "WHICH", "WHO", "WHY", "WHOM", "IF", "UNLESS", "ONCE", "WHILE",
     "DOES", "DO", "DID", "IS", "ARE", "WAS", "WERE", "BE", "BEEN", "BEING",
     "HAVE", "HAS", "HAD", "NOT", "NOW", "THEN", "THAN",
     "YOU", "YOUR", "YOURS", "MY", "MINE", "ME", "WE", "OUR", "THEY", "THEIR", "IT", "ITS",
     "SOME", "ANY", "ALL", "EACH", "EVERY", "MUCH", "MANY", "MORE", "MOST",
     "GOOD", "BAD", "WORTH", "WORTHY", "SAFE", "SAFELY", "SOON", "RIGHT", "STILL",
     "INVEST", "INVESTING", "INVESTMENT", "HOLD", "HOLDING",
+    # Alert-phrasing vocabulary — none of these are ever tickers, but they're
+    # capitalized (query is upper-cased before token extraction) and common
+    # in "alert me if/when X does Y" phrasing, so without this they can beat
+    # the real ticker to the first non-stopword match.
+    "NOTIFY", "TELL", "PING", "LET", "KNOW", "REACH", "REACHES",
+    "CROSS", "CROSSES", "CROSSING", "DROPS", "DROP", "GOES", "GO",
+    "ABOVE", "BELOW", "THRESHOLD", "CANCEL", "DELETE", "REMOVE",
+    "PAUSE", "RESUME", "REACTIVATE", "UNPAUSE", "ACTIVE",
 }
 
 
@@ -195,9 +203,11 @@ def extract_entity(query: str) -> str | None:
     """
     upper = query.upper().strip()
 
-    # 1. Check alias map (longest match first)
+    # 1. Check alias map (longest match first). Word-boundary match — a plain
+    #    substring check would match short aliases like "BEL" inside ordinary
+    #    words (e.g. "BELOW"), which alert phrasing ("drops below X") hits often.
     for alias, ticker in sorted(TICKER_ALIASES.items(), key=lambda x: -len(x[0])):
-        if alias in upper:
+        if re.search(rf'\b{re.escape(alias)}\b', upper):
             return ticker
 
     # 1b. "... for/on/of SYMBOL" pattern — highest-confidence preposition cue
@@ -236,16 +246,19 @@ def extract_all_entities(query: str) -> list[str]:
     matches: list[tuple[int, str]] = []
 
     # 1. Alias map, longest alias first, so "HDFC BANK" is consumed before
-    #    a bare "HDFC" or "BANK" token could be picked up in step 3.
+    #    a bare "HDFC" or "BANK" token could be picked up in step 3. Word-boundary
+    #    match — a plain substring search would match short aliases like "BEL"
+    #    inside ordinary words (e.g. "BELOW").
     for alias, ticker in sorted(TICKER_ALIASES.items(), key=lambda x: -len(x[0])):
+        pattern = re.compile(rf'\b{re.escape(alias)}\b')
         text = "".join(masked)
-        idx = text.find(alias)
-        while idx != -1:
-            matches.append((idx, ticker))
-            for i in range(idx, idx + len(alias)):
+        m = pattern.search(text)
+        while m:
+            matches.append((m.start(), ticker))
+            for i in range(m.start(), m.end()):
                 masked[i] = " "
             text = "".join(masked)
-            idx = text.find(alias)
+            m = pattern.search(text)
 
     # 2. Explicit .NS/.BO suffix on whatever text is left unmasked.
     remaining = "".join(masked)

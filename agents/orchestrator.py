@@ -13,6 +13,8 @@ from agents.equity_agent   import EquityAgent
 from agents.report_agent   import ReportAgent
 from agents.mf_agent       import MFAgent
 from agents.screener_agent import ScreenerAgent
+from agents.alert_agent    import AlertAgent
+import re
 
 # Keyword sets per specialist. Checked in this priority order — report and
 # screener keywords are fairly unambiguous jargon, so they're checked before
@@ -37,17 +39,31 @@ _MF_KW = [
     "small cap fund", "debt fund", "hybrid fund", "index fund", "lumpsum",
     "fund manager", "amc ", "direct plan", "regular plan",
 ]
+# Multi-word phrases only — single ambiguous words like "cross" would
+# misroute screener/technical queries (e.g. "stocks with RSI crossing 30").
+_ALERT_KW = [
+    "alert me", "notify me", "let me know if", "ping me", "stop loss",
+    "stoploss", "stop-loss", "target price", "drops below", "goes above",
+    "my alerts", "my alert", "cancel my alert", "cancel alert",
+    "pause alert", "resume alert", "delete alert", "set an alert",
+    "create an alert",
+]
+# Fixed phrases above miss "cancel my TCS alert" (a ticker sits between the
+# verb and "alert") — catch CRUD-verb-near-"alert" with a regex instead of
+# trying to enumerate every symbol position.
+_ALERT_CRUD_RE = re.compile(r"\b(cancel|delete|remove|pause|resume|reactivate|unpause)\b.{0,30}\balerts?\b", re.I)
 
-_TABS = ["equity", "report", "mf", "screener"]
+_TABS = ["equity", "report", "mf", "screener", "alert"]
 
 
 def route(message: str) -> str:
-    """Returns one of "equity"|"report"|"mf"|"screener" for this message."""
+    """Returns one of "equity"|"report"|"mf"|"screener"|"alert" for this message."""
     q = f" {message.lower().strip()} "
     scores = {
         "report":   sum(1 for kw in _REPORT_KW   if kw in q),
         "screener": sum(1 for kw in _SCREENER_KW if kw in q),
         "mf":       sum(1 for kw in _MF_KW       if kw in q),
+        "alert":    sum(1 for kw in _ALERT_KW    if kw in q) + (1 if _ALERT_CRUD_RE.search(q) else 0),
     }
     best_tab = max(scores, key=scores.get)
     if scores[best_tab] > 0:
@@ -70,6 +86,7 @@ class Orchestrator:
             "report":   ReportAgent(user_id),
             "mf":       MFAgent(user_id),
             "screener": ScreenerAgent(user_id),
+            "alert":    AlertAgent(user_id),
         }
         self._last_tab = "equity"
 

@@ -273,7 +273,7 @@ Write:
             return "No saved screeners yet. Run a screen and say `save screener as <name>`."
         lines = ["## Saved Screeners\n", "| Name | Filters | Created |", "|------|---------|---------|"]
         for s in saved:
-            lines.append(f"| {s['name']} | {s['filters']} | {s['created_at'][:10]} |")
+            lines.append(f"| {s['name']} | {s['filters']} | {s['created_at'].strftime('%Y-%m-%d')} |")
         return "\n".join(lines)
 
     def _help(self) -> str:

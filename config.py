@@ -41,7 +41,13 @@ NSE_SUFFIX  = ".NS"
 BSE_SUFFIX  = ".BO"
 DATA_DIR    = "data"
 REPORTS_DIR = "reports"
-DB_PATH     = "data/aria.db"
+
+# ── Database (Neon Postgres — shared by the app and the GH Actions alert checker) ─
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+# ── Telegram (alert notifications) ────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
 MACRO_TICKERS = {
     "Nifty 50"  : "^NSEI",

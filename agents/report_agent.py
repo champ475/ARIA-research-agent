@@ -437,7 +437,7 @@ Recent news: {'; '.join(n['title'] for n in news[:3])}
             return "No reports saved yet. Generate one with: `IC report for TCS`"
         lines = ["## Saved Reports\n", "| # | Type | Title | Date |", "|---|------|-------|------|"]
         for i, r in enumerate(reports, 1):
-            lines.append(f"| {i} | {r['report_type']} | {r['title'][:40]} | {r['created_at'][:10]} |")
+            lines.append(f"| {i} | {r['report_type']} | {r['title'][:40]} | {r['created_at'].strftime('%Y-%m-%d')} |")
         return "\n".join(lines)
 
     def _save_files(self, sym: str, rtype: str, content: str) -> tuple:
