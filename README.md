@@ -1,111 +1,91 @@
-# ARIA v2 — Autonomous Research & Investment Analyst
+# ARIA — Autonomous Research & Investment Analyst
 
-Multi-agent investment research platform for Indian equity markets (NSE/BSE). AI-powered stock analysis, institutional-grade report generation, mutual fund comparison, stock screening, and price/technical alerts — all via a single chat-driven Gradio web UI.
+Your AI research assistant for Indian stocks and mutual funds (NSE/BSE). Chat naturally — ARIA figures out what you need and handles it: stock research, IC-style reports, mutual fund advice, stock screening, and price/technical alerts sent straight to your phone.
 
-## Features
+Everything happens in one chat window. No tabs to hunt through, no menus to learn — just ask.
 
-- **Equity Research** — analyse stocks, chart price action, backtest strategies, compare tickers, market overview
-- **Report Generator** — IC (Investment Committee) reports, result updates, sector thematic notes
-- **Mutual Funds** — fund comparison, SIP vs lumpsum advice, category screening (ELSS, large/mid cap)
-- **Screener** — factor-based stock screening, PE/ROE filters, top gainers, bulk/block deal analysis
-- **Alerts** — chat-driven price and technical-indicator alerts (stop-loss, RSI/MACD crossovers, moving-average crosses, Bollinger breakouts, volume spikes, 52-week highs/lows, bulk deals, portfolio P&L), delivered via Telegram on a 5-min GitHub Actions cron during market hours
-- **Free-tier LLM stack** — Groq (multi-key rotation) with automatic Gemini fallback on rate limits
+## Setup
 
-A single orchestrator (`agents/orchestrator.py`) routes every chat message to the right specialist agent by keyword scoring — no manual tab-switching required.
-
-## Quick Start
+**1. Install**
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
-
-# Configure API keys and infra
 cp .env.example .env
-# Required: GROQ_API_KEY_1, GEMINI_API_KEY, DATABASE_URL (Neon Postgres — see below)
-# Optional: GROQ_API_KEY_2 / _3 (more free-tier request budget via rotation),
-#           TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (alert notifications)
+```
 
-# Run
+**2. Get your free API keys and fill them into `.env`:**
+
+| Key | Where to get it | Required? |
+|---|---|---|
+| `GROQ_API_KEY_1` | [console.groq.com](https://console.groq.com) | Yes |
+| `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Yes |
+| `DATABASE_URL` | [neon.tech](https://neon.tech) — create a free project, copy the connection string | Yes |
+| `GROQ_API_KEY_2`, `_3` | Same as above, extra keys | Optional — lets you chat more before hitting free-tier limits |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | See **Setting up Alerts** below | Only if you want alert notifications |
+
+**3. Run it**
+
+```bash
 python app.py
-# → http://localhost:7860
 ```
 
-No build step. No test suite — verify changes manually via the Gradio UI.
+Open **http://localhost:7860**, sign up with an email and password, and start chatting.
 
-### Database
+## Setting up Alerts (optional, one-time)
 
-Persistence is a single shared Postgres DB (free tier on [Neon](https://neon.tech)) — used by both the local app and the GitHub Actions alert checker, since a local SQLite file isn't reachable from GH's cloud runners. Create a Neon project, put the pooled connection string in `DATABASE_URL`, and `init_db()` creates all tables on first run.
+Alerts need a Telegram bot to notify you and a GitHub Actions cron job to check prices every 5 minutes even while your laptop is off.
 
-### Alerts (GitHub Actions)
+1. **Create a Telegram bot** — message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`, follow the prompts, copy the token it gives you into `TELEGRAM_BOT_TOKEN`.
+2. **Get your chat ID** — send any message to your new bot, then message [@userinfobot](https://t.me/userinfobot) to get your numeric ID, put it in `TELEGRAM_CHAT_ID`.
+3. **Push this repo to a public GitHub repo** (public keeps GitHub Actions free at this checking frequency).
+4. **Add three repo secrets** — on GitHub, go to *Settings → Secrets and variables → Actions*, add `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` using the same values from your `.env`.
 
-`scripts/check_alerts.py` runs on a schedule (`.github/workflows/alert-check.yml`, every 5 min, market-hours-gated inside the script) and needs three repo secrets set under **Settings → Secrets and variables → Actions**: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. The workflow file must live on the repo's default branch to be scheduled/dispatchable at all.
+That's it — the checker runs automatically every 5 minutes during NSE market hours (9:15 AM–3:30 PM IST, weekdays) and pings your Telegram the moment an alert fires.
 
-## Architecture
+## How to use each feature
 
-```
-app.py                    Gradio UI: single unified chat tab + Watchlist tab, auth-gated
-config.py                  Central config: LLM budgets, sector universe, TA defaults, risk thresholds, DB/Telegram env
-agents/
-  orchestrator.py           Routes each chat message to a specialist agent by keyword scoring
-  base_agent.py             Shared agent behavior (optional convenience wrapper, not all agents inherit it)
-  equity_agent.py            Stock analysis, charting, backtesting, comparisons
-  report_agent.py            IC reports, result updates, thematic notes
-  mf_agent.py                 Mutual fund comparison & advice
-  screener_agent.py           Factor screening
-  alert_agent.py               Chat-driven alert create/list/cancel/pause/resume (CRUD only — evaluation is scripts/check_alerts.py)
-  llm_client.py              Groq/Gemini wrapper: key rotation, fallback, conversation history
-tools/
-  data/                      fetcher.py (yfinance), nse_scraper.py (bhavcopy/deals),
-                             news_fetcher.py (RSS/Google News), amfi.py (MF NAV), cache.py (Parquet)
-  analysis/                  technical.py, fundamental.py, risk.py, backtester.py, sentiment.py
-  charts/builder.py          Plotly candlestick charts & heatmaps
-  portfolio.py, screener.py
-utils/
-  db.py                      Postgres (Neon): users, sessions, portfolio, watchlist, alerts, chat, reports, screeners
-  auth.py                    Signup/login/session (PBKDF2 password hashing, opaque session tokens)
-  helpers.py                 Ticker alias resolution, IST timestamps, intent parsing
-scripts/
-  check_alerts.py            Standalone alert evaluator — run by GitHub Actions, not the app process
-.github/workflows/
-  alert-check.yml            Cron (every 5 min) + manual dispatch for the alert checker
-data/                       Parquet OHLCV cache
-reports/                    Generated report output
-```
+Just type what you want in the chat — ARIA routes it to the right specialist automatically.
 
-### Request flow
+### 📈 Equity Research
+> "Analyse TCS"
+> "Show me a chart for RELIANCE"
+> "Compare HDFC Bank vs ICICI Bank"
+> "What's the RSI and MACD on INFY?"
+> "Backtest a moving average crossover on TATAMOTORS"
 
-1. `app.py` builds a single chat tab (plus a Watchlist utility tab). Every message goes through `Orchestrator.process()`, which routes it to one specialist agent by keyword scoring, each with its own LLM conversation history.
-2. Agent parses user intent (keyword/pattern matching) → calls tools to fetch/compute data (or, for alerts, does deterministic DB CRUD) → synthesizes via LLM where needed → returns `(markdown_text, chart_html)`.
-3. `LLMClient` (`agents/llm_client.py`) round-robins across up to 5 Groq keys (thread-safe), falls back to Gemini 2.0 Flash on 429s. Conversation history capped at 20 messages per agent instance.
-4. Alert *evaluation* happens outside the app entirely: `scripts/check_alerts.py`, triggered by GitHub Actions on a schedule, reads active alerts from the shared Postgres DB, evaluates conditions using the same `tools/data`/`tools/analysis` functions the chat agents use, and pushes Telegram notifications.
+### 📄 Reports
+> "Generate an IC report for RELIANCE"
+> "Write a result update for TCS"
+> "Sector thematic on IT stocks"
+> "Show my saved reports"
 
-### Models
+### 💰 Mutual Funds
+> "Compare large cap funds"
+> "Best ELSS funds for tax saving"
+> "Should I do SIP or lumpsum for a 10-year goal?"
+> "NAV of Parag Parikh Flexi Cap"
 
-| Purpose      | Model                        |
-|--------------|-------------------------------|
-| Primary       | `llama-3.3-70b-versatile`     |
-| Fast           | `gemma2-9b-it`                 |
-| Fallback       | `gemini-2.0-flash`             |
+### 🔍 Screener
+> "Top gainers today"
+> "Stocks with PE below 20 and ROE above 15"
+> "Show bulk deals today"
+> "Save screener as my value screener"
 
-## Configuration (`config.py`)
+### 🔔 Alerts
+> "Alert me if TCS drops below 3500"
+> "Notify me when RELIANCE RSI crosses below 30"
+> "Alert me on a MACD bullish crossover for INFY"
+> "Notify me on a golden cross for HDFC Bank"
+> "Show my alerts"
+> "Cancel my TCS alert"
+> "Pause my RELIANCE alert"
 
-- Token budgets: `TOKENS_SYNTHESIS=1500`, `TOKENS_AGENT=800`, `TOKENS_FAST=200`
-- Sector universe: 120+ NSE stocks across 9 sectors
-- Technical analysis defaults: RSI 14, MACD 12/26/9, Bollinger Bands 20
-- Risk thresholds, data source URLs (NSE bhavcopy, news feeds, AMFI)
+Every alert fires **once** — you get a Telegram message, and the alert switches itself off so you don't get spammed. Set a new one anytime.
 
-## Key Constraints
+**Conditions you can set alerts on:** price above/below a level, % price move, RSI crossing a level, MACD bullish/bearish crossover, moving-average golden/death cross, Bollinger Band breakout, volume spike, new 52-week high/low, bulk deal activity, and portfolio P&L threshold.
 
-- **Token budgets** — stay within `config.py` limits per call type
-- **Rate limits** — Groq free tier: 14,400 req/day/key; `_KeyRotator` in `llm_client.py` handles rotation, don't bypass it
-- **Data caching** — OHLCV data goes through `tools/data/cache.py` (Parquet, keyed `{symbol}_{period}_{interval}`) to avoid yfinance rate limits
-- **Timezone** — all timestamps use `pytz` Asia/Kolkata (see `utils/helpers.py`)
-- **Ticker format** — NSE tickers suffixed `.NS`, BSE `.BO`, before passing to yfinance; common aliases (`SBI`→`SBIN`, `HUL`→`HINDUNILVR`) resolved in `utils/helpers.py`
-- **GitHub Actions minutes** — the alert-check cron runs every 5 min, 24/7 (market-hours gating happens inside the script, not the cron expression) — this only stays free on the GitHub Free plan if the repo is **public** (unlimited Actions minutes); a private repo would exceed the 2,000 min/month quota at this cadence
-
-## Persistence
-
-Postgres (Neon free tier) — single DB shared by the local app and the GitHub Actions alert checker. Tables: `users`, `sessions`, `portfolio`, `watchlist`, `alerts`, `chat_sessions`, `chat_history`, `saved_screeners`, `reports`, `pdf_cache`, `cache_meta`. Initialized on startup via `init_db()` (`utils/db.py`).
+### 📌 Watchlist
+Use the Watchlist tab to add/remove stocks you're tracking — separate from alerts, just a quick-glance list.
 
 ## License
 
