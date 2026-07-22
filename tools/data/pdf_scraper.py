@@ -10,6 +10,7 @@ import io
 import logging
 from bs4 import BeautifulSoup
 from utils.db import pdf_cache_get, pdf_cache_set
+from langchain_core.tools import tool
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ def _pdf_to_text(content: bytes, max_pages: int = 30) -> str:
         return ""
 
 
+@tool(description="Fetch list of corporate filings (quarterly results, annual reports, etc.) from NSE for a symbol.")
 def fetch_nse_filings_list(symbol: str, filing_type: str = "Quarterly Results") -> list[dict]:
     """
     Fetch list of filings from NSE corporate filings API.
@@ -71,6 +73,7 @@ def fetch_nse_filings_list(symbol: str, filing_type: str = "Quarterly Results") 
         return []
 
 
+@tool(description="Fetch quarterly results filings from BSE for a given scrip code.")
 def fetch_bse_filings_list(symbol: str, bse_code: str = "") -> list[dict]:
     """
     Fetch quarterly results filings from BSE.
@@ -101,6 +104,7 @@ def fetch_bse_filings_list(symbol: str, bse_code: str = "") -> list[dict]:
         return []
 
 
+@tool(description="Download and extract text from a filing PDF, using the SQLite cache when available.")
 def fetch_pdf_text(symbol: str, url: str, doc_type: str, period: str = None) -> str:
     """
     Download and extract text from a filing PDF.
@@ -137,6 +141,7 @@ def fetch_pdf_text(symbol: str, url: str, doc_type: str, period: str = None) -> 
         return ""
 
 
+@tool(description="Get the most recent quarterly results PDF text for a symbol as a summary-ready string.")
 def get_latest_quarterly_results(symbol: str) -> str:
     """
     High-level: get the most recent quarterly results PDF text.
@@ -146,7 +151,7 @@ def get_latest_quarterly_results(symbol: str) -> str:
     if cached:
         return cached[:8000]  # Return up to 8K chars
 
-    filings = fetch_nse_filings_list(symbol, "Quarterly Results")
+    filings = fetch_nse_filings_list.func(symbol, "Quarterly Results")
     if not filings:
         return f"No quarterly results filings found on NSE for {symbol}."
 
@@ -160,13 +165,14 @@ def get_latest_quarterly_results(symbol: str) -> str:
     if not url.startswith("http"):
         url = f"https://nsearchives.nseindia.com/corporate/xbrl/{url}"
 
-    text = fetch_pdf_text(symbol, url, "quarterly_results", period)
+    text = fetch_pdf_text.func(symbol, url, "quarterly_results", period)
     if not text:
         return f"Could not extract text from quarterly results PDF for {symbol}."
 
     return text[:8000]
 
 
+@tool(description="Get the most recent annual report PDF text for a symbol.")
 def get_annual_report_text(symbol: str) -> str:
     """
     High-level: get the most recent annual report PDF text.
@@ -175,7 +181,7 @@ def get_annual_report_text(symbol: str) -> str:
     if cached:
         return cached[:10000]
 
-    filings = fetch_nse_filings_list(symbol, "Annual Report")
+    filings = fetch_nse_filings_list.func(symbol, "Annual Report")
     if not filings:
         return f"No annual report found on NSE for {symbol}."
 
@@ -186,7 +192,7 @@ def get_annual_report_text(symbol: str) -> str:
     if not url:
         return f"Annual report filing found ({period}) but no PDF attachment available."
 
-    text = fetch_pdf_text(symbol, url, "annual_report", period)
+    text = fetch_pdf_text.func(symbol, url, "annual_report", period)
     if not text:
         return f"Could not extract annual report text for {symbol}."
 

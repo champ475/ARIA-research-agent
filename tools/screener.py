@@ -2,10 +2,12 @@
 
 import re
 import yfinance as yf
+from langchain_core.tools import tool
 from config import NIFTY200, SECTOR_UNIVERSE
 from utils.helpers import safe_float
 
 
+@tool(description="Parse a natural-language screener query into structured filters (sector, P/E, D/E, ROE, ROCE, market cap).")
 def parse_query(query: str) -> dict:
     filters = {}
     q = query.lower()
@@ -42,6 +44,7 @@ def parse_query(query: str) -> dict:
     return filters
 
 
+@tool(description="Run a stock screen over the NSE universe using the given filter dict, returning matching stocks.")
 def run(filters: dict, max_stocks: int = 30) -> list[dict]:
     universe = SECTOR_UNIVERSE.get(filters.get("sector",""), NIFTY200)[:max_stocks]
     results  = []
@@ -92,6 +95,7 @@ def run(filters: dict, max_stocks: int = 30) -> list[dict]:
     return results
 
 
+@tool(description="Format screener results as a markdown table.")
 def to_markdown(results: list[dict], filters: dict) -> str:
     """Pure string formatting — NO tabulate dependency."""
     if not results:

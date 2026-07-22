@@ -4,6 +4,8 @@ Tab 3: Mutual Fund Analyser
 Analyses MF schemes, categories, and comparisons using AMFI data.
 """
 
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnableLambda
 from agents.llm_client import LLMClient
 from config import TOKENS_AGENT, TOKENS_FAST, TOKENS_COMPLEX
 from tools.data.amfi import get_all_nav, search_fund, get_category_funds, get_mf_comparison, format_fund_search_results
@@ -52,12 +54,100 @@ class MFAgent:
         self._nav_df = None
         self._user_id = user_id
 
+        self._complex_advice_prompt = PromptTemplate.from_template(
+            'USER QUESTION: "{msg}"\n\n'
+            "This is a multi-part allocation question — silently identify every distinct part\n"
+            "(e.g. how to split an amount across categories, which funds to pick in each,\n"
+            "SIP vs lumpsum) and make sure your answer covers all of them. Use only the fund\n"
+            "data below — never invent fund names or NAVs not present in it.\n\n"
+            "=== FUND DATA ===\n{data_text}\n\n"
+            "Write a direct, complete answer covering:\n"
+            "- Recommended % split across the categories mentioned (with brief risk/horizon\n"
+            "  rationale for the split — why more/less goes to large vs mid vs small cap)\n"
+            "- 2-3 specific funds to consider per category, drawn only from the data above\n"
+            "- Direct vs regular plan note\n"
+            "- Key disclaimers (market risk, not SEBI-registered advice, read scheme docs)\n\n"
+            "*ARIA MF Analyst | {now} | Not AMFI/SEBI registered advice*\n"
+        )
+
+        self._search_prompt = PromptTemplate.from_template(
+            'User searched for mutual funds matching: "{keywords}"\n\n'
+            "AMFI DATA (matching funds):\n{table}\n\n"
+            "Write a helpful response:\n"
+            "## Mutual Fund Search: {keywords}\n\n"
+            "### Matching Funds\n{table}\n\n"
+            "### Key Observations\n"
+            "(Explain what these funds are, their category, and what investors should look for)\n\n"
+            "### How to Choose\n"
+            "(2-3 decision criteria specific to this category)\n"
+        )
+
+        self._category_prompt = PromptTemplate.from_template(
+            "Analyse the {category} mutual fund category in India.\n\n"
+            "TOP FUNDS (AMFI NAV data):\n{table}\n\n"
+            "RECENT NEWS:\n{news_txt}\n\n"
+            "Write:\n"
+            "## {category_title} Mutual Funds — India\n\n"
+            "### Category Overview\n"
+            "(What this category invests in, SEBI classification, ideal investor)\n\n"
+            "### Top Funds Analysis\n"
+            "(Comment on the funds shown — NAV, what to look for)\n\n"
+            "### Direct vs Regular Plan\n"
+            "(Explain the cost difference and why direct is better for DIY investors)\n\n"
+            "### Risk Profile\n"
+            "(Riskometer level, suitable investment horizon, volatility expectations)\n\n"
+            "### Who Should Invest\n"
+            "(Investor profile: risk appetite, time horizon, goal)\n\n"
+            "### Key Metrics to Compare\n"
+            "(Expense ratio, exit load, AUM, fund manager tenure)\n\n"
+            "### Our View on this Category\n"
+            "(Current market context — is this a good time to invest in this category?)\n"
+        )
+
+        self._compare_prompt = PromptTemplate.from_template(
+            'User wants to compare mutual funds. Message: "{msg}"\n\n'
+            "{result}\n\n"
+            "Write:\n"
+            "## Mutual Fund Comparison\n\n"
+            "### Key Differences\n"
+            "### Risk-Return Analysis\n"
+            "### Who Should Choose Which Fund\n"
+            "### Recommendation (based on different investor profiles)\n"
+        )
+
+        self._invest_advice_prompt = PromptTemplate.from_template(
+            'User investment query: "{msg}"\n\n'
+            "Based on this query, provide structured mutual fund investment guidance for an Indian investor.\n\n"
+            "Write:\n"
+            "## MF Investment Guidance\n\n"
+            "### Understanding Your Goal\n"
+            "(Infer the investment goal from the query)\n\n"
+            "### Recommended Category & Rationale\n"
+            "### SIP vs Lumpsum — Which to Choose Now\n"
+            "### Key Funds to Consider (by category, not specific picks without data)\n"
+            "### Important Disclaimers\n"
+            "- Past performance not indicative of future returns\n"
+            "- Mutual fund investments subject to market risks\n"
+            "- Read scheme documents carefully before investing\n\n"
+            "*ARIA MF Analyst | {now} | Not AMFI/SEBI registered advice*\n"
+        )
+
+        self._mf_news_prompt = PromptTemplate.from_template(
+            "Latest mutual fund industry news in India:\n\n"
+            "{news_txt}\n\n"
+            "Write a brief market intelligence note:\n"
+            "## MF Industry News — {now}\n\n"
+            "### Key Developments\n"
+            "### Regulatory Updates\n"
+            "### Impact on Investors\n"
+        )
+
     @property
     def provider(self): return self._client.provider
 
     def _get_nav(self):
         if self._nav_df is None or self._nav_df.empty:
-            self._nav_df = get_all_nav()
+            self._nav_df = get_all_nav.func()
         return self._nav_df
 
     _CATEGORY_KW = ["large cap","mid cap","small cap","flexi cap","elss","liquid",
@@ -135,31 +225,15 @@ class MFAgent:
 
         data_blocks = []
         for cat in buckets:
-            funds = get_category_funds(cat, top_n=6)
+            funds = get_category_funds.func(cat, top_n=6)
             table = format_fund_search_results(funds)
             data_blocks.append(f"--- {cat.title()} (top funds by AMFI NAV) ---\n{table}")
         data_text = "\n\n".join(data_blocks)
 
-        prompt = f"""USER QUESTION: "{msg}"
-
-This is a multi-part allocation question — silently identify every distinct part
-(e.g. how to split an amount across categories, which funds to pick in each,
-SIP vs lumpsum) and make sure your answer covers all of them. Use only the fund
-data below — never invent fund names or NAVs not present in it.
-
-=== FUND DATA ===
-{data_text}
-
-Write a direct, complete answer covering:
-- Recommended % split across the categories mentioned (with brief risk/horizon
-  rationale for the split — why more/less goes to large vs mid vs small cap)
-- 2-3 specific funds to consider per category, drawn only from the data above
-- Direct vs regular plan note
-- Key disclaimers (market risk, not SEBI-registered advice, read scheme docs)
-
-*ARIA MF Analyst | {now_ist()} | Not AMFI/SEBI registered advice*
-"""
-        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_COMPLEX)
+        chain = self._complex_advice_prompt | RunnableLambda(
+            lambda pv: self._client.chat(pv.text, temperature=0.3, max_tokens=TOKENS_COMPLEX)
+        )
+        return chain.invoke({"msg": msg, "data_text": data_text, "now": now_ist()})
 
     def _search(self, msg: str) -> str:
         # Extract fund name from query
@@ -168,65 +242,25 @@ Write a direct, complete answer covering:
         results  = search_fund(keywords, nav_df)
         table    = format_fund_search_results(results)
 
-        prompt = f"""User searched for mutual funds matching: "{keywords}"
-
-AMFI DATA (matching funds):
-{table}
-
-Write a helpful response:
-## Mutual Fund Search: {keywords}
-
-### Matching Funds
-{table}
-
-### Key Observations
-(Explain what these funds are, their category, and what investors should look for)
-
-### How to Choose
-(2-3 decision criteria specific to this category)
-"""
-        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+        chain = self._search_prompt | RunnableLambda(
+            lambda pv: self._client.chat(pv.text, temperature=0.3, max_tokens=TOKENS_AGENT)
+        )
+        return chain.invoke({"keywords": keywords, "table": table})
 
     def _category(self, category: str, msg: str) -> str:
         nav_df = self._get_nav()
-        funds  = get_category_funds(category, top_n=12)
+        funds  = get_category_funds.func(category, top_n=12)
         table  = format_fund_search_results(funds)
-        news   = google_news(f"India {category} mutual fund 2025", n=5)
+        news   = google_news.func(f"India {category} mutual fund 2025", n=5)
         news_txt = "\n".join(f"- {n['title']}" for n in news[:4])
 
-        prompt = f"""Analyse the {category} mutual fund category in India.
-
-TOP FUNDS (AMFI NAV data):
-{table}
-
-RECENT NEWS:
-{news_txt}
-
-Write:
-## {category.title()} Mutual Funds — India
-
-### Category Overview
-(What this category invests in, SEBI classification, ideal investor)
-
-### Top Funds Analysis
-(Comment on the funds shown — NAV, what to look for)
-
-### Direct vs Regular Plan
-(Explain the cost difference and why direct is better for DIY investors)
-
-### Risk Profile
-(Riskometer level, suitable investment horizon, volatility expectations)
-
-### Who Should Invest
-(Investor profile: risk appetite, time horizon, goal)
-
-### Key Metrics to Compare
-(Expense ratio, exit load, AUM, fund manager tenure)
-
-### Our View on this Category
-(Current market context — is this a good time to invest in this category?)
-"""
-        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+        chain = self._category_prompt | RunnableLambda(
+            lambda pv: self._client.chat(pv.text, temperature=0.3, max_tokens=TOKENS_AGENT)
+        )
+        return chain.invoke({
+            "category": category, "category_title": category.title(),
+            "table": table, "news_txt": news_txt,
+        })
 
     def _compare(self, msg: str) -> str:
         # Extract fund names to compare
@@ -236,44 +270,18 @@ Write:
         if len(candidates) < 2:
             candidates = [w for w in words if len(w) > 4 and w[0].isupper()]
 
-        result = get_mf_comparison(candidates[:4]) if candidates else "Please specify 2-4 fund names to compare."
+        result = get_mf_comparison.func(candidates[:4]) if candidates else "Please specify 2-4 fund names to compare."
 
-        prompt = f"""User wants to compare mutual funds. Message: "{msg}"
-
-{result}
-
-Write:
-## Mutual Fund Comparison
-
-### Key Differences
-### Risk-Return Analysis
-### Who Should Choose Which Fund
-### Recommendation (based on different investor profiles)
-"""
-        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+        chain = self._compare_prompt | RunnableLambda(
+            lambda pv: self._client.chat(pv.text, temperature=0.3, max_tokens=TOKENS_AGENT)
+        )
+        return chain.invoke({"msg": msg, "result": result})
 
     def _invest_advice(self, msg: str) -> str:
-        prompt = f"""User investment query: "{msg}"
-
-Based on this query, provide structured mutual fund investment guidance for an Indian investor.
-
-Write:
-## MF Investment Guidance
-
-### Understanding Your Goal
-(Infer the investment goal from the query)
-
-### Recommended Category & Rationale
-### SIP vs Lumpsum — Which to Choose Now
-### Key Funds to Consider (by category, not specific picks without data)
-### Important Disclaimers
-- Past performance not indicative of future returns
-- Mutual fund investments subject to market risks
-- Read scheme documents carefully before investing
-
-*ARIA MF Analyst | {now_ist()} | Not AMFI/SEBI registered advice*
-"""
-        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+        chain = self._invest_advice_prompt | RunnableLambda(
+            lambda pv: self._client.chat(pv.text, temperature=0.3, max_tokens=TOKENS_AGENT)
+        )
+        return chain.invoke({"msg": msg, "now": now_ist()})
 
     def _nav_query(self, msg: str) -> str:
         keywords = re.sub(r'\b(nav|net asset value|price|of|the|what is|check)\b', '', msg, flags=re.I).strip()
@@ -285,20 +293,12 @@ Write:
         return f"## NAV Data — {keywords}\n\n{top.to_string(index=False)}\n\n*Source: AMFI | Updated: {now_ist()}*"
 
     def _mf_news(self, msg: str) -> str:
-        news = google_news(f"India mutual fund SEBI AMFI 2025", n=8)
+        news = google_news.func(f"India mutual fund SEBI AMFI 2025", n=8)
         news_txt = "\n".join(f"- {n['title']}: {n['summary'][:120]}" for n in news[:6])
-        prompt = f"""Latest mutual fund industry news in India:
-
-{news_txt}
-
-Write a brief market intelligence note:
-## MF Industry News — {now_ist()}
-
-### Key Developments
-### Regulatory Updates
-### Impact on Investors
-"""
-        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+        chain = self._mf_news_prompt | RunnableLambda(
+            lambda pv: self._client.chat(pv.text, temperature=0.3, max_tokens=TOKENS_AGENT)
+        )
+        return chain.invoke({"news_txt": news_txt, "now": now_ist()})
 
     def generate_suggestions(self, last_response: str, last_query: str) -> list[str]:
         return [

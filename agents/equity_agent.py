@@ -8,7 +8,13 @@ of routing through rigid per-intent report templates.
 """
 
 import re
+import operator
+from typing import TypedDict, Annotated
 from concurrent.futures import ThreadPoolExecutor
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import Send
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnableLambda
 from agents.llm_client import LLMClient
 from config import TOKENS_SYNTHESIS, TOKENS_COMPLEX, TOKENS_AGENT, TOKENS_FAST
 
@@ -55,6 +61,53 @@ class EquityAgent:
         self._client = LLMClient(system_prompt=SYSTEM)
         self._last_symbol = None
         self._user_id = user_id
+        self._bundle_graph = self._build_bundle_graph()
+        self._synthesis_prompt = PromptTemplate.from_template(
+            'USER QUESTION: "{msg}"\n\n'
+            "Answer this question directly and specifically FIRST, citing exact numbers from "
+            "the data below — never invent numbers, never give vague ranges. {guidance}\n"
+            "Then add ONLY the supporting sections that are relevant to what was actually "
+            "asked — skip sections that don't help answer this specific question.\n"
+            "If the question is broad/generic (e.g. \"analyse X\", \"tell me about X\"), use "
+            "the full structure instead: Executive Summary, Investment Scorecard, Fundamental "
+            "Deep Dive, Technical Analysis (clearly separate SHORT-TERM/1Y levels from "
+            "LONG-TERM/2Y levels — they are different numbers, never conflate them), News & "
+            "Sentiment, Risk Assessment, Catalysts, Verdict.\n\n"
+            "=== DATA ===\n{data_text}\n{options_block}\n"
+            "*ARIA Equity Research | {now} | {provider}*"
+        )
+
+    def _build_bundle_graph(self):
+        """
+        LangGraph map-reduce: fan out one 'fetch_one' node per ticker (Send API),
+        each calling self._fetch_bundle(ticker) independently, then merge results
+        into shared state. Replaces the ad-hoc ThreadPoolExecutor fan-out that
+        used to live directly in _answer() with the same concurrency, expressed
+        as a graph.
+        """
+        class BundleState(TypedDict):
+            tickers: list[str]
+            bundles: Annotated[list[dict], operator.add]
+            errors: Annotated[list[str], operator.add]
+
+        def dispatch(state: BundleState):
+            return [Send("fetch_one", {"ticker": t}) for t in state["tickers"]]
+
+        def fetch_one(state: dict):
+            t = state["ticker"]
+            try:
+                b = self._fetch_bundle(t)
+                if b:
+                    return {"bundles": [b]}
+                return {"errors": [f"{t}: no market data"]}
+            except Exception as e:
+                return {"errors": [f"{t}: {e}"]}
+
+        g = StateGraph(BundleState)
+        g.add_node("fetch_one", fetch_one)
+        g.add_conditional_edges(START, dispatch, ["fetch_one"])
+        g.add_edge("fetch_one", END)
+        return g.compile()
 
     @property
     def provider(self): return self._client.provider
@@ -156,18 +209,18 @@ class EquityAgent:
         risk, sentiment, quarterly results, recent news. Returns None if the
         ticker has no real market data.
         """
-        info = get_info(sym)
+        info = get_info.func(sym)
         comp = info.get("longName") or info.get("shortName") or sym
         if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
             return None
 
         with ThreadPoolExecutor(max_workers=6) as exe:
-            f_ohlcv_1y = exe.submit(get_ohlcv, sym, "1y", "1d")
-            f_ohlcv_2y = exe.submit(get_ohlcv, sym, "2y", "1d")
-            f_fins     = exe.submit(get_financials, sym)
-            f_macro    = exe.submit(get_macro)
-            f_qtext    = exe.submit(get_latest_quarterly_results, sym)
-            f_news     = exe.submit(company_news, sym, comp)
+            f_ohlcv_1y = exe.submit(get_ohlcv.func, sym, "1y", "1d")
+            f_ohlcv_2y = exe.submit(get_ohlcv.func, sym, "2y", "1d")
+            f_fins     = exe.submit(get_financials.func, sym)
+            f_macro    = exe.submit(get_macro.func)
+            f_qtext    = exe.submit(get_latest_quarterly_results.func, sym)
+            f_news     = exe.submit(company_news.func, sym, comp)
 
         df_1y  = f_ohlcv_1y.result()
         df_2y  = f_ohlcv_2y.result()
@@ -183,13 +236,13 @@ class EquityAgent:
         sr_1y = support_resistance(df_ta_1y)
         sr_2y = support_resistance(df_ta_2y) if not df_ta_2y.empty else {}
 
-        fund = compute(info, fins)
+        fund = compute.func(info, fins)
         price = ta_1y.get("current_price") or fund.get("price")
         if price:
             fund["price"] = price
 
-        sent = analyse(news)
-        risk = assess(fund, ta_1y, sent["score"], macro)
+        sent = analyse.func(news)
+        risk = assess.func(fund, ta_1y, sent["score"], macro)
         q_note = trim_text(q_text, 120) if q_text and "No " not in q_text else "Not available via scraper"
 
         s1 = sr_1y.get("S1"); r1 = sr_1y.get("R1")
@@ -231,7 +284,7 @@ class EquityAgent:
             f"CMP ₹{b['price']}",
             "",
             "--- Fundamentals ---",
-            to_text(fund),
+            to_text.func(fund),
             "",
             "--- Technicals (1Y / SHORT-TERM) ---",
             f"RSI {ta.get('RSI')} | MACD {ta.get('MACD')}/{ta.get('MACD_Signal')} | ADX {ta.get('ADX')} | "
@@ -264,7 +317,7 @@ class EquityAgent:
 
     def _options_block(self, sym: str) -> str:
         try:
-            opt = get_options(sym)
+            opt = get_options.func(sym)
             if not opt["available"]:
                 return "\n--- Options Chain ---\nNo options data available.\n"
             calls = opt["calls"][["strike","lastPrice","openInterest","impliedVolatility"]].head(8)
@@ -328,18 +381,9 @@ class EquityAgent:
         lets the LLM decide response shape (direct answer first, full report
         structure only for generic asks) instead of routing to a rigid template.
         """
-        bundles = []
-        errors  = []
-        with ThreadPoolExecutor(max_workers=max(len(tickers), 1)) as exe:
-            futs = {exe.submit(self._fetch_bundle, t): t for t in tickers}
-            for fut in futs:
-                t = futs[fut]
-                try:
-                    b = fut.result()
-                    if b: bundles.append(b)
-                    else: errors.append(f"{t}: no market data")
-                except Exception as e:
-                    errors.append(f"{t}: {e}")
+        result  = self._bundle_graph.invoke({"tickers": tickers, "bundles": [], "errors": []})
+        bundles = result["bundles"]
+        errors  = result["errors"]
 
         if not bundles:
             detail = "; ".join(errors) if errors else "unknown error"
@@ -369,33 +413,24 @@ class EquityAgent:
                 "or bullets per part if there are 3 or more."
             )
 
-        prompt = (
-            f'USER QUESTION: "{msg}"\n\n'
-            f"Answer this question directly and specifically FIRST, citing exact numbers from "
-            f"the data below — never invent numbers, never give vague ranges. {guidance}\n"
-            f"Then add ONLY the supporting sections that are relevant to what was actually "
-            f"asked — skip sections that don't help answer this specific question.\n"
-            f"If the question is broad/generic (e.g. \"analyse X\", \"tell me about X\"), use "
-            f"the full structure instead: Executive Summary, Investment Scorecard, Fundamental "
-            f"Deep Dive, Technical Analysis (clearly separate SHORT-TERM/1Y levels from "
-            f"LONG-TERM/2Y levels — they are different numbers, never conflate them), News & "
-            f"Sentiment, Risk Assessment, Catalysts, Verdict.\n\n"
-            f"=== DATA ===\n{data_text}\n{options_block}\n"
-            f"*ARIA Equity Research | {now_ist()} | {self.provider}*"
-        )
-
         max_tokens = TOKENS_COMPLEX if complex_q else TOKENS_SYNTHESIS
-        llm_out = self._chat(prompt, temperature=0.2, max_tokens=max_tokens)
+        chain = self._synthesis_prompt | RunnableLambda(
+            lambda pv: self._chat(pv.text, temperature=0.2, max_tokens=max_tokens)
+        )
+        llm_out = chain.invoke({
+            "msg": msg, "guidance": guidance, "data_text": data_text,
+            "options_block": options_block, "now": now_ist(), "provider": self.provider,
+        })
         llm_out += self._grounding_note(llm_out, data_text)
 
         chart = None
         extra = ""
         if not is_compare:
             period, interval, tflabel = self._timeframe(msg)
-            df_chart = get_ohlcv(bundles[0]["sym"], period, interval)
+            df_chart = get_ohlcv.func(bundles[0]["sym"], period, interval)
             df_ta_chart = compute_all(df_chart.copy()) if not df_chart.empty else bundles[0]["df_ta_1y"]
             chart = candlestick(df_ta_chart, bundles[0]["sym"], bundles[0]["comp"], tflabel)
-            extra = "\n\n---\n\n" + indicator_breakdown(bundles[0]["ta_1y"]) + "\n\n" + calc_breakdown(bundles[0]["fund"])
+            extra = "\n\n---\n\n" + indicator_breakdown(bundles[0]["ta_1y"]) + "\n\n" + calc_breakdown.func(bundles[0]["fund"])
 
         return llm_out + extra, chart
 
@@ -403,7 +438,7 @@ class EquityAgent:
 
     def _backtest(self, sym: str, msg: str) -> str:
         try:
-            df = get_ohlcv(sym, "2y", "1d")
+            df = get_ohlcv.func(sym, "2y", "1d")
             if "rsi" in msg.lower():
                 result = rsi_backtest(df)
             else:
@@ -412,14 +447,14 @@ class EquityAgent:
                 if m:
                     fast, slow = int(m.group(1)), int(m.group(2))
                 result = ma_crossover_backtest(df, fast=fast, slow=slow)
-            return format_backtest(result)
+            return format_backtest.func(result)
         except Exception as e:
             return f"⚠️ Backtest error: {e}"
 
     def _market_overview(self) -> str:
         try:
-            news  = market_news()
-            macro = get_macro()
+            news  = market_news.func()
+            macro = get_macro.func()
             macro_txt = "\n".join(
                 f"- {'🟢' if isinstance(v.get('change'),float) and v['change'] >= 0 else '🔴'} "
                 f"**{k}:** {v.get('price')} ({'+' if isinstance(v.get('change'),float) and v['change'] >= 0 else ''}{v.get('change')}%)"
@@ -451,18 +486,18 @@ Write:
     def _port_add(self, msg: str) -> str:
         m = re.search(r'\b([A-Z]{2,12})\b.*?(\d+(?:\.\d+)?)\s*(?:shares?|qty)?\s*(?:at|@|for|₹|rs)?\s*(\d+(?:\.\d+)?)', msg.upper())
         if m:
-            return port_add(self._user_id, clean_ticker(m.group(1)), float(m.group(2)), float(m.group(3)))
+            return port_add.func(self._user_id, clean_ticker(m.group(1)), float(m.group(2)), float(m.group(3)))
         return "⚠️ Format: `add TCS 10 shares at 3500`"
 
     def _port_remove(self, msg: str) -> str:
         m = re.search(r'\b([A-Z]{2,12})\b', msg.upper())
-        return port_remove(self._user_id, clean_ticker(m.group(1))) if m else "⚠️ Specify ticker to remove."
+        return port_remove.func(self._user_id, clean_ticker(m.group(1))) if m else "⚠️ Specify ticker to remove."
 
     def _port_view(self) -> tuple[str, str]:
         from tools.charts.builder import portfolio_chart
-        holdings, summary = get_live(self._user_id)
+        holdings, summary = get_live.func(self._user_id)
         chart = portfolio_chart(holdings)
-        return port_md(holdings, summary), chart
+        return port_md.func(holdings, summary), chart
 
     # Bare "portfolio" used to be enough to trigger these — but that word
     # alone shows up in ordinary finance questions ("diversified portfolio",

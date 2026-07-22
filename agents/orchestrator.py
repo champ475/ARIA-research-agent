@@ -9,6 +9,8 @@ since EquityAgent already handles general Q&A, portfolio, backtest, and
 market-overview intents on its own.
 """
 
+from typing import TypedDict, Optional
+from langgraph.graph import StateGraph, START, END
 from agents.equity_agent    import EquityAgent
 from agents.report_agent    import ReportAgent
 from agents.mf_agent        import MFAgent
@@ -95,12 +97,28 @@ def route(message: str, last_tab: str | None = None) -> str:
     return "equity"
 
 
+class _RouteState(TypedDict, total=False):
+    message:  str
+    tab:      str
+    text:     str
+    chart:    object
+    pdf_path: Optional[str]
+    md_path:  Optional[str]
+    csv_path: Optional[str]
+
+
 class Orchestrator:
     """
     Owns one instance of each specialist agent for a given user and routes
     every incoming message to the right one, normalizing their differing
     process() return shapes into a single (text, chart, pdf, md, csv, tab)
     tuple so the UI only needs to handle one response contract.
+
+    Routing/dispatch is a LangGraph StateGraph: a "route" node scores the
+    message (same deterministic keyword scoring as before, see route()),
+    then a conditional edge sends state to exactly one specialist-agent
+    node — the same one-of-five dispatch the plain if/elif used to do,
+    just expressed as graph edges instead of Python branching.
     """
 
     def __init__(self, user_id: int):
@@ -114,22 +132,44 @@ class Orchestrator:
             "planning": PlanningAgent(user_id),
         }
         self._last_tab = "equity"
+        self._graph = self._build_graph()
+
+    def _build_graph(self):
+        def route_node(state: _RouteState) -> dict:
+            return {"tab": route(state["message"], last_tab=self._last_tab)}
+
+        def make_agent_node(tab_name: str):
+            def node(state: _RouteState) -> dict:
+                agent = self._agents[tab_name]
+                message = state["message"]
+                if tab_name == "report":
+                    text, chart, pdf_path, md_path = agent.process(message)
+                    return {"text": text, "chart": chart, "pdf_path": pdf_path, "md_path": md_path, "csv_path": None}
+                text, chart = agent.process(message)
+                csv_path = agent.export_csv() if tab_name == "screener" else None
+                return {"text": text, "chart": chart, "pdf_path": None, "md_path": None, "csv_path": csv_path}
+            return node
+
+        g = StateGraph(_RouteState)
+        g.add_node("route", route_node)
+        for tab in _TABS:
+            g.add_node(tab, make_agent_node(tab))
+        g.add_edge(START, "route")
+        g.add_conditional_edges("route", lambda s: s["tab"], {t: t for t in _TABS})
+        for tab in _TABS:
+            g.add_edge(tab, END)
+        return g.compile()
 
     def process(self, message: str) -> tuple[str, object, str | None, str | None, str | None, str]:
         """Returns (text, chart, pdf_path, md_path, csv_path, tab_used)."""
-        tab = route(message, last_tab=self._last_tab)
+        result = self._graph.invoke({"message": message})
+        tab = result["tab"]
         self._last_tab = tab
-        agent = self._agents[tab]
-
-        if tab == "report":
-            text, chart, pdf_path, md_path = agent.process(message)
-            return text, chart, pdf_path, md_path, None, tab
-
-        text, chart = agent.process(message)
-        csv_path = None
-        if tab == "screener":
-            csv_path = agent.export_csv()
-        return text, chart, None, None, csv_path, tab
+        return (
+            result["text"], result["chart"],
+            result.get("pdf_path"), result.get("md_path"), result.get("csv_path"),
+            tab,
+        )
 
     def generate_suggestions(self, last_response: str, last_query: str) -> list[str]:
         agent = self._agents.get(self._last_tab, self._agents["equity"])

@@ -9,6 +9,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from io import StringIO
 import logging
+from langchain_core.tools import tool
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ def get_bhavcopy(date: datetime = None) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+@tool(description="Fetch bulk deal data from NSE, optionally filtered to one symbol.")
 def get_bulk_deals(symbol: str = None) -> pd.DataFrame:
     """Fetch bulk deal data from NSE (last available)."""
     try:
@@ -82,6 +84,7 @@ def get_bulk_deals(symbol: str = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@tool(description="Fetch block deal data from NSE, optionally filtered to one symbol.")
 def get_block_deals(symbol: str = None) -> pd.DataFrame:
     """Fetch block deal data from NSE."""
     try:
@@ -102,6 +105,7 @@ def get_block_deals(symbol: str = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@tool(description="Fetch corporate actions (dividends, splits, bonuses) for an NSE symbol.")
 def get_corporate_actions(symbol: str) -> pd.DataFrame:
     """Fetch corporate actions (dividends, splits, bonuses) from NSE."""
     try:
@@ -117,6 +121,7 @@ def get_corporate_actions(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@tool(description="Fetch the latest shareholding pattern for an NSE symbol.")
 def get_shareholding_pattern(symbol: str) -> dict:
     """Fetch latest shareholding pattern from NSE."""
     try:
@@ -131,6 +136,7 @@ def get_shareholding_pattern(symbol: str) -> dict:
         return {}
 
 
+@tool(description="Fetch top gainers or losers from NSE ('gainers' or 'losers').")
 def get_top_movers(category: str = "gainers") -> pd.DataFrame:
     """
     Fetch top gainers or losers from NSE.

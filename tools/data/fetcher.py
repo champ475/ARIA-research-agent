@@ -7,6 +7,7 @@ All deprecated yfinance calls replaced.
 import time
 import yfinance as yf
 import pandas as pd
+from langchain_core.tools import tool
 from config import NSE_SUFFIX, BSE_SUFFIX, MACRO_TICKERS
 from tools.data.cache import cache_read, cache_write
 
@@ -21,6 +22,7 @@ def _tk(symbol: str, nse: bool = True) -> yf.Ticker:
     return yf.Ticker(f"{symbol}{NSE_SUFFIX if nse else BSE_SUFFIX}")
 
 
+@tool(description="Fetch live quote/company info for an NSE/BSE ticker symbol (no suffix).")
 def get_info(symbol: str) -> dict:
     now = time.time()
     cached = _info_cache.get(symbol)
@@ -34,6 +36,7 @@ def get_info(symbol: str) -> dict:
     return info
 
 
+@tool(description="Fetch annual/quarterly income statement, balance sheet, and cashflow for a ticker.")
 def get_financials(symbol: str) -> dict:
     now = time.time()
     cached = _fins_cache.get(symbol)
@@ -57,6 +60,7 @@ def get_financials(symbol: str) -> dict:
     return out
 
 
+@tool(description="Fetch major/institutional/mutual-fund shareholder breakdown for a ticker.")
 def get_shareholders(symbol: str) -> dict:
     tk = _tk(symbol)
     out = {}
@@ -68,6 +72,7 @@ def get_shareholders(symbol: str) -> dict:
     return out
 
 
+@tool(description="Fetch the nearest-expiry options chain (calls/puts) for a ticker.")
 def get_options(symbol: str) -> dict:
     tk  = _tk(symbol)
     out = {"available": False, "calls": pd.DataFrame(), "puts": pd.DataFrame(), "expiry": None}
@@ -82,6 +87,7 @@ def get_options(symbol: str) -> dict:
     return out
 
 
+@tool(description="Fetch analyst recommendation history for a ticker.")
 def get_recommendations(symbol: str) -> pd.DataFrame:
     try:
         recs = _tk(symbol).recommendations
@@ -90,6 +96,7 @@ def get_recommendations(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@tool(description="Fetch latest price/change for macro benchmarks (Nifty, Sensex, USD/INR, crude, gold, 10Y bond).")
 def get_macro() -> dict:
     out = {}
     for name, ticker in MACRO_TICKERS.items():
@@ -107,6 +114,7 @@ def get_macro() -> dict:
     return out
 
 
+@tool(description="Fetch 5-day price change for a ticker's sector peers, for peer comparison.")
 def get_sector_peers(symbol: str, info: dict) -> list[dict]:
     from config import SECTOR_UNIVERSE
     sector = info.get("sector", "")
@@ -130,6 +138,7 @@ def get_sector_peers(symbol: str, info: dict) -> list[dict]:
     return result
 
 
+@tool(description="Fetch OHLCV price history for a ticker over the given period/interval, using the Parquet cache.")
 def get_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     cached = cache_read(symbol, period, interval)
     if cached is not None:
@@ -142,6 +151,7 @@ def get_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
     return df
 
 
+@tool(description="Search yfinance for NSE/BSE tickers matching a company name.")
 def search_ticker(name: str) -> list[dict]:
     try:
         results = yf.Search(name, max_results=6)

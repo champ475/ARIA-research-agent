@@ -637,7 +637,7 @@ def _fetch_watchlist_table(user_id: int) -> list[list]:
     rows = []
     for sym in symbols:
         try:
-            info  = get_info(sym)
+            info  = get_info.func(sym)
             price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
             prev  = info.get("previousClose") or price
             chg   = round(((price - prev) / prev) * 100, 2) if prev else 0.0
@@ -648,7 +648,7 @@ def _fetch_watchlist_table(user_id: int) -> list[list]:
             # RSI from cached OHLCV (fast — usually already in Parquet cache)
             rsi = "—"
             try:
-                df = get_ohlcv(sym, "3mo", "1d")
+                df = get_ohlcv.func(sym, "3mo", "1d")
                 if not df.empty:
                     ta = snapshot(compute_all(df.copy()))
                     rsi = ta.get("RSI", "—")

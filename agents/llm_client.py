@@ -1,12 +1,13 @@
 """
 agents/llm_client.py
-Groq round-robin key rotation → Gemini fallback.
-Each LLMClient instance gets its own conversation history.
+Groq round-robin key rotation → Gemini fallback, built on LangChain chat models.
+Each LLMClient instance gets its own conversation history (LangChain message objects).
 """
 
 import time
 import logging
 import threading
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 from config import (
     GROQ_API_KEYS, GROQ_MODEL, GEMINI_API_KEY, GEMINI_MODEL,
     PREFERRED_PROVIDER, MAX_RETRIES,
@@ -38,7 +39,7 @@ class _KeyRotator:
 _groq_rotator = _KeyRotator(GROQ_API_KEYS)
 
 
-# ── Provider wrappers ─────────────────────────────────────────────────────────
+# ── Provider wrappers (LangChain chat models underneath) ────────────────────
 
 class _GroqProvider:
     name = "Groq"
@@ -51,41 +52,40 @@ class _GroqProvider:
                 "Free keys at https://console.groq.com"
             )
         try:
-            from groq import Groq as _Groq
-            self._Groq = _Groq
+            from langchain_groq import ChatGroq
+            self._ChatGroq = ChatGroq
         except ImportError:
-            raise ImportError("Run: pip install groq")
+            raise ImportError("Run: pip install langchain-groq")
         self._system  = system
-        self._history: list[dict] = []
+        self._history: list[BaseMessage] = []
 
-    def _client(self):
-        return self._Groq(api_key=_groq_rotator.next())
+    def _model(self, temperature: float, max_tokens: int):
+        return self._ChatGroq(
+            api_key=_groq_rotator.next(), model=GROQ_MODEL,
+            temperature=temperature, max_tokens=max_tokens,
+        )
 
     def ask(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
-        msgs = [{"role": "system", "content": self._system},
-                {"role": "user",   "content": prompt}]
-        r = self._client().chat.completions.create(
-            model=GROQ_MODEL, messages=msgs,
-            temperature=temperature, max_tokens=max_tokens,
-        )
-        return r.choices[0].message.content.strip()
+        msgs = [SystemMessage(content=self._system), HumanMessage(content=prompt)]
+        r = self._model(temperature, max_tokens).invoke(msgs)
+        return r.content.strip()
 
     def chat(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
-        self._history.append({"role": "user", "content": msg})
-        msgs = [{"role": "system", "content": self._system}] + self._history[-20:]
-        r = self._client().chat.completions.create(
-            model=GROQ_MODEL, messages=msgs,
-            temperature=temperature, max_tokens=max_tokens,
-        )
-        reply = r.choices[0].message.content.strip()
-        self._history.append({"role": "assistant", "content": reply})
+        self._history.append(HumanMessage(content=msg))
+        msgs = [SystemMessage(content=self._system)] + self._history[-20:]
+        r = self._model(temperature, max_tokens).invoke(msgs)
+        reply = r.content.strip()
+        self._history.append(AIMessage(content=reply))
         return reply
 
     def reset(self):
         self._history.clear()
 
     def load_history(self, messages: list[dict]):
-        self._history = list(messages[-20:])
+        self._history = [
+            HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"])
+            for m in messages[-20:]
+        ]
 
 
 class _GeminiProvider:
@@ -98,50 +98,40 @@ class _GeminiProvider:
                 "Add it to your .env — free at https://aistudio.google.com/apikey"
             )
         try:
-            from google import genai
-            from google.genai import types as gt
-            self._client = genai.Client(api_key=GEMINI_API_KEY)
-            self._types  = gt
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            self._ChatGoogleGenerativeAI = ChatGoogleGenerativeAI
         except ImportError:
-            raise ImportError("Run: pip install google-genai")
+            raise ImportError("Run: pip install langchain-google-genai")
         self._system  = system
-        self._history: list[dict] = []
+        self._history: list[BaseMessage] = []
+
+    def _model(self, temperature: float, max_tokens: int):
+        return self._ChatGoogleGenerativeAI(
+            google_api_key=GEMINI_API_KEY, model=GEMINI_MODEL,
+            temperature=temperature, max_output_tokens=max_tokens,
+        )
 
     def ask(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
-        cfg = self._types.GenerateContentConfig(
-            system_instruction=self._system,
-            temperature=temperature, max_output_tokens=max_tokens,
-        )
-        r = self._client.models.generate_content(
-            model=GEMINI_MODEL, contents=prompt, config=cfg,
-        )
-        return r.text.strip()
+        msgs = [SystemMessage(content=self._system), HumanMessage(content=prompt)]
+        r = self._model(temperature, max_tokens).invoke(msgs)
+        return r.content.strip()
 
     def chat(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
-        self._history.append({"role": "user", "content": msg})
-        contents = [
-            self._types.Content(
-                role="user" if t["role"] == "user" else "model",
-                parts=[self._types.Part(text=t["content"])],
-            )
-            for t in self._history[-20:]
-        ]
-        cfg = self._types.GenerateContentConfig(
-            system_instruction=self._system,
-            temperature=temperature, max_output_tokens=max_tokens,
-        )
-        r = self._client.models.generate_content(
-            model=GEMINI_MODEL, contents=contents, config=cfg,
-        )
-        reply = r.text.strip()
-        self._history.append({"role": "assistant", "content": reply})
+        self._history.append(HumanMessage(content=msg))
+        msgs = [SystemMessage(content=self._system)] + self._history[-20:]
+        r = self._model(temperature, max_tokens).invoke(msgs)
+        reply = r.content.strip()
+        self._history.append(AIMessage(content=reply))
         return reply
 
     def reset(self):
         self._history.clear()
 
     def load_history(self, messages: list[dict]):
-        self._history = list(messages[-20:])
+        self._history = [
+            HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"])
+            for m in messages[-20:]
+        ]
 
 
 # ── Unified client ────────────────────────────────────────────────────────────
@@ -156,6 +146,10 @@ class LLMClient:
     """
     Tries Groq (with key rotation) first.
     On rate-limit or error, falls back to Gemini.
+    Provider calls go through LangChain chat models (ChatGroq / ChatGoogleGenerativeAI);
+    the retry-then-fallback control flow (key rotation across attempts, then
+    Groq→Gemini failover) is kept explicit here since it's stateful across calls
+    in a way LangChain's `.with_fallbacks()` (a single static fallback list) doesn't model.
     """
 
     def __init__(self, system_prompt: str = ""):

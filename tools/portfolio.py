@@ -1,20 +1,24 @@
 """tools/portfolio.py — persistent portfolio via SQLite"""
 
 import yfinance as yf
+from langchain_core.tools import tool
 from utils.db import portfolio_add, portfolio_remove, portfolio_all
 from config import NSE_SUFFIX
 
 
+@tool(description="Add a holding (symbol, quantity, average price) to a user's portfolio.")
 def add(user_id: int, symbol: str, qty: float, avg_price: float) -> str:
     portfolio_add(user_id, symbol, qty, avg_price)
     return f"✅ Added {qty} shares of **{symbol.upper()}** @ ₹{avg_price:.2f} to portfolio."
 
 
+@tool(description="Remove a symbol from a user's portfolio.")
 def remove(user_id: int, symbol: str) -> str:
     portfolio_remove(user_id, symbol)
     return f"✅ Removed **{symbol.upper()}** from portfolio."
 
 
+@tool(description="Fetch a user's portfolio holdings with live prices and compute P&L summary.")
 def get_live(user_id: int) -> tuple[list[dict], dict]:
     rows   = portfolio_all(user_id)
     result = []
@@ -57,6 +61,7 @@ def get_live(user_id: int) -> tuple[list[dict], dict]:
     return result, summary
 
 
+@tool(description="Format portfolio holdings and summary into a markdown report.")
 def to_markdown(holdings: list[dict], summary: dict) -> str:
     if not holdings:
         return (

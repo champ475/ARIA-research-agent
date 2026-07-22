@@ -1,9 +1,11 @@
 """tools/analysis/risk.py — multi-factor risk engine"""
 
+from langchain_core.tools import tool
 from utils.helpers import safe_float
 from config import RISK_HIGH_DE, RISK_LOW_CR, RISK_HIGH_PE, RISK_LOW_ROCE
 
 
+@tool(description="Assess multi-factor investment risk (valuation, leverage, liquidity, profitability, volatility, sentiment, macro) and return a scored breakdown.")
 def assess(fund: dict, ta: dict, sentiment_score: float, macro: dict) -> dict:
     flags  = []
     scores = {}

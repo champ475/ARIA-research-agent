@@ -6,12 +6,14 @@ Provides full calculation transparency for explainability.
 
 import numpy as np
 import pandas as pd
+from langchain_core.tools import tool
 from utils.helpers import safe_float, fmt_num, pct, safe_val
 
 
 # ── yfinance D/E is reported as % (e.g. 1500 = 150%) for some fields
 # We recompute from balance sheet wherever possible.
 
+@tool(description="Recompute all fundamental ratios (P/E, P/B, ROE, ROCE, D/E, DCF, etc.) from raw info/financials dicts.")
 def compute(info: dict, financials: dict) -> dict:
     d = {}
 
@@ -367,6 +369,7 @@ def _margins_trend(financials: dict) -> dict:
 
 # ── Explainability text builder ───────────────────────────────────────────────
 
+@tool(description="Format a computed fundamentals dict into compact text for an LLM prompt.")
 def to_text(d: dict) -> str:
     """Compact text for LLM prompt (all N/A values excluded)."""
     def v(key): return safe_val(d.get(key)) if d.get(key) is not None else "N/A"
@@ -394,6 +397,7 @@ def to_text(d: dict) -> str:
     return "\n".join(lines)
 
 
+@tool(description="Build a full calculation-transparency section (D/E, ROCE, DCF detail) for reports from a fundamentals dict.")
 def calc_breakdown(d: dict) -> str:
     """Full calculation transparency section for reports."""
     lines = [

@@ -135,7 +135,7 @@ def _indicator_alert(symbol: str, alert_type: str, threshold: float | None) -> s
 
 
 def _bulk_deal_alert(symbol: str) -> str | None:
-    deals = get_bulk_deals(symbol)
+    deals = get_bulk_deals.func(symbol)
     if deals is not None and not deals.empty:
         return f"🔔 Bulk deal detected for {symbol} today"
     return None

@@ -365,50 +365,55 @@ def llm_resolve_query(query: str, client) -> dict:
     Never raises — returns {"ticker": None, "intent": "chat"} on any failure
     (network, parse, or malformed-JSON error), so callers never need a try/except.
     """
-    import json
+    from typing import Optional
+    from pydantic import BaseModel, Field
+    from langchain_core.output_parsers import PydanticOutputParser
+    from langchain_core.prompts import PromptTemplate
     from config import NIFTY200, TOKENS_FAST
 
     global _VALID_LLM_INTENTS
     if _VALID_LLM_INTENTS is None:
         _VALID_LLM_INTENTS = _known_intents()
 
+    class _TickerIntent(BaseModel):
+        ticker: Optional[str] = Field(
+            default=None,
+            description='Uppercase NSE ticker with no suffix (e.g. "TCS" not "TCS.NS"), or null if no company/stock is mentioned.',
+        )
+        intent: str = Field(
+            description='Exactly one of ["chart","technical","fundamental","news","options","backtest","compare","market","screener","analyse","chat"]. Use "analyse" for general research/opinion/should-I-buy questions.',
+        )
+
+    parser = PydanticOutputParser(pydantic_object=_TickerIntent)
     universe = ", ".join(NIFTY200)
-    prompt = (
-        "You are a strict entity/intent extractor for an Indian stock-market chatbot. "
-        "Do not explain, do not add commentary — output ONLY a single JSON object.\n\n"
-        f"Known NSE tickers (prefer these if the query matches one): {universe}\n\n"
-        f'User query: "{query}"\n\n'
-        "Extract:\n"
-        "1. \"ticker\": the single NSE ticker symbol the query is about (uppercase, no "
-        "suffix, e.g. \"TCS\" not \"TCS.NS\"). If the query names a company not in the "
-        "known list, still give your best-guess correct NSE symbol. If no company or "
-        "stock is mentioned at all, use null.\n"
-        "2. \"intent\": exactly one of "
-        "[\"chart\",\"technical\",\"fundamental\",\"news\",\"options\",\"backtest\","
-        "\"compare\",\"market\",\"screener\",\"analyse\",\"chat\"]. "
-        "Use \"analyse\" for general research/opinion/should-I-buy questions.\n\n"
-        "Respond with ONLY this JSON shape, nothing else, no markdown fences:\n"
-        '{"ticker": "SYMBOL_OR_null", "intent": "one_of_the_list_above"}'
-    )
+    prompt = PromptTemplate(
+        template=(
+            "You are a strict entity/intent extractor for an Indian stock-market chatbot. "
+            "Do not explain, do not add commentary — output ONLY a single JSON object.\n\n"
+            "Known NSE tickers (prefer these if the query matches one): {universe}\n\n"
+            'User query: "{query}"\n\n'
+            "Extract the ticker and intent for this query. If the query names a company not "
+            "in the known list, still give your best-guess correct NSE symbol.\n\n"
+            "{format_instructions}"
+        ),
+        input_variables=["universe", "query"],
+        partial_variables={"format_instructions": parser.get_format_instructions()},
+    ).format(universe=universe, query=query)
 
     print(f"[LLM RESOLVE] prompt sent to LLM:\n{prompt}\n[LLM RESOLVE] --- end prompt ---")
 
     try:
         raw = client.ask(prompt, temperature=0.0, max_tokens=TOKENS_FAST)
         print(f"[LLM RESOLVE] raw response: {raw!r}")
-        raw = raw.strip().strip("```json").strip("```").strip()
-        data = json.loads(raw)
+        parsed = parser.parse(raw)
 
-        raw_ticker = data.get("ticker")
         ticker = None
-        if isinstance(raw_ticker, str):
-            candidate = raw_ticker.strip().upper()
+        if parsed.ticker:
+            candidate = parsed.ticker.strip().upper()
             if candidate not in ("", "NULL", "NONE", "N/A"):
                 ticker = clean_ticker(candidate)
 
-        intent = data.get("intent")
-        if intent not in _VALID_LLM_INTENTS:
-            intent = "chat"
+        intent = parsed.intent if parsed.intent in _VALID_LLM_INTENTS else "chat"
 
         print(f"[LLM RESOLVE] parsed: ticker={ticker!r} intent={intent!r}")
         return {"ticker": ticker, "intent": intent}

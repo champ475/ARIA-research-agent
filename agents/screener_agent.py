@@ -8,6 +8,8 @@ import os
 import csv
 import re
 import tempfile
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnableLambda
 from agents.llm_client import LLMClient
 from config import TOKENS_AGENT, TOKENS_FAST
 
@@ -51,8 +53,74 @@ class ScreenerAgent:
         self._last_results: list[dict] = []
         self._user_id = user_id
 
+        self._nl_screen_prompt = PromptTemplate.from_template(
+            'Stock screener results for: "{msg}"\n'
+            "Filters applied: {filter_desc}\n"
+            "Stocks found: {num_results}\n\n"
+            "{table}\n\n"
+            "Write:\n"
+            "## Screener Results — {filter_desc_title}\n\n"
+            "### Filter Analysis\n"
+            "(What these filters capture and why they matter for stock selection)\n\n"
+            "### Top 3 Picks from Results\n"
+            "(Pick the 3 most interesting stocks with a 2-line thesis each — based on the data)\n\n"
+            "### Cautions\n"
+            "(Any red flags, limitations of this screen, stocks to verify further)\n\n"
+            "### Follow-up Steps\n"
+            "(What to check next: technical setup, quarterly results, news)\n"
+        )
+
+        self._top_movers_prompt = PromptTemplate.from_template(
+            "Market movers analysis — {label}\n\n"
+            "{label_upper} (from NSE):\n"
+            "{mover_table}\n\n"
+            "MACRO CONTEXT:\n"
+            "{macro_txt}\n\n"
+            "TOP HEADLINES:\n"
+            "{news_txt}\n\n"
+            "Write:\n"
+            "## {label} — {now}\n"
+            "### Market Context\n"
+            "### Key Movers Analysis (which stocks and why they moved)\n"
+            "### Sector Rotation Signals\n"
+            "### Watch List (2-3 stocks worth monitoring after today's move)\n"
+        )
+
+        self._bulk_block_prompt = PromptTemplate.from_template(
+            "Bulk and block deal analysis{sym_suffix1}.\n\n"
+            "BULK DEALS:\n"
+            "{bulk_txt}\n\n"
+            "BLOCK DEALS:\n"
+            "{block_txt}\n\n"
+            "Write:\n"
+            "## Bulk & Block Deal Intelligence{sym_suffix2}\n\n"
+            "### What These Deals Signal\n"
+            "(Interpret who is buying/selling and what it means for price action)\n\n"
+            "### FII/DII Activity\n"
+            "### Promoter Activity (if visible)\n"
+            "### Stocks to Watch Based on Deals\n"
+        )
+
+        self._factor_screen_prompt = PromptTemplate.from_template(
+            "{label} Factor Screen results.\n\n"
+            "{desc}\n"
+            "Combined filters (a stock must satisfy ALL of these): {filters}\n\n"
+            "{table}\n\n"
+            "Write:\n"
+            "## {label} Factor Screen — India\n\n"
+            "### Why This Factor Combination Works in Indian Markets\n"
+            "### Top Picks from Screen (3 stocks with brief thesis)\n"
+            "### Limitations of This Screen\n"
+            "### Suggested Refinements\n"
+        )
+
     @property
     def provider(self): return self._client.provider
+
+    def _chat(self, prompt: str, **kwargs) -> str:
+        """Wraps LLMClient.chat() so every synthesis prompt is visible in the terminal."""
+        print(f"[LLM SYNTHESIS] prompt sent to LLM ({len(prompt)} chars):\n{prompt}\n[LLM SYNTHESIS] --- end prompt ---")
+        return self._client.chat(prompt, **kwargs)
 
     def process(self, message: str) -> tuple[str, str]:
         msg   = message.strip()
@@ -95,48 +163,33 @@ class ScreenerAgent:
             return self._nl_screen(msg), None
 
         # Fallback: try to parse as a filter screen (e.g. "IT stocks PE below 25")
-        filters = parse_query(msg)
+        filters = parse_query.func(msg)
         if filters:
             return self._nl_screen(msg), None
 
         return self._help(), None
 
     def _nl_screen(self, msg: str) -> str:
-        filters = parse_query(msg)
-        results = screener_run(filters)
+        filters = parse_query.func(msg)
+        results = screener_run.func(filters)
         self._last_results = results
-        table   = screener_md(results, filters)
+        table   = screener_md.func(results, filters)
 
         filter_desc = ", ".join(f"{k}: {v}" for k, v in filters.items()) or "broad market"
 
-        prompt = f"""Stock screener results for: "{msg}"
-Filters applied: {filter_desc}
-Stocks found: {len(results)}
-
-{table}
-
-Write:
-## Screener Results — {filter_desc.title()}
-
-### Filter Analysis
-(What these filters capture and why they matter for stock selection)
-
-### Top 3 Picks from Results
-(Pick the 3 most interesting stocks with a 2-line thesis each — based on the data)
-
-### Cautions
-(Any red flags, limitations of this screen, stocks to verify further)
-
-### Follow-up Steps
-(What to check next: technical setup, quarterly results, news)
-"""
-        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+        chain = self._nl_screen_prompt | RunnableLambda(
+            lambda pv: self._chat(pv.text, temperature=0.3, max_tokens=TOKENS_AGENT)
+        )
+        return chain.invoke({
+            "msg": msg, "filter_desc": filter_desc, "num_results": len(results),
+            "table": table, "filter_desc_title": filter_desc.title(),
+        })
 
     def _top_movers(self, lower: str) -> str:
         is_loser = "loser" in lower
-        df = get_top_movers("losers" if is_loser else "gainers")
-        macro = get_macro()
-        news  = market_news()
+        df = get_top_movers.func("losers" if is_loser else "gainers")
+        macro = get_macro.func()
+        news  = market_news.func()
 
         if df.empty:
             mover_table = "Live data unavailable — try again during market hours (9:15 AM – 3:30 PM IST)."
@@ -161,25 +214,13 @@ Write:
         news_txt = "\n".join(f"- {n['title']}" for n in news[:5])
 
         label = "Top Losers" if is_loser else "Top Gainers"
-        prompt = f"""Market movers analysis — {label}
-
-{label.upper()} (from NSE):
-{mover_table}
-
-MACRO CONTEXT:
-{macro_txt}
-
-TOP HEADLINES:
-{news_txt}
-
-Write:
-## {label} — {now_ist()}
-### Market Context
-### Key Movers Analysis (which stocks and why they moved)
-### Sector Rotation Signals
-### Watch List (2-3 stocks worth monitoring after today's move)
-"""
-        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+        chain = self._top_movers_prompt | RunnableLambda(
+            lambda pv: self._chat(pv.text, temperature=0.3, max_tokens=TOKENS_AGENT)
+        )
+        return chain.invoke({
+            "label": label, "label_upper": label.upper(), "mover_table": mover_table,
+            "macro_txt": macro_txt, "news_txt": news_txt, "now": now_ist(),
+        })
 
     def _bulk_block(self, msg: str) -> str:
         # Try to find a symbol in message (hybrid: deterministic first, LLM
@@ -187,31 +228,21 @@ Write:
         from utils.helpers import resolve_query
         sym = resolve_query(msg, client=self._client)["ticker"]
 
-        bulk  = get_bulk_deals(sym)
-        block = get_block_deals(sym)
+        bulk  = get_bulk_deals.func(sym)
+        block = get_block_deals.func(sym)
 
         bulk_txt  = bulk.head(10).to_string(index=False)  if not bulk.empty  else "No bulk deals found."
         block_txt = block.head(10).to_string(index=False) if not block.empty else "No block deals found."
 
-        prompt = f"""Bulk and block deal analysis{f' for {sym}' if sym else ' — market-wide'}.
-
-BULK DEALS:
-{bulk_txt}
-
-BLOCK DEALS:
-{block_txt}
-
-Write:
-## Bulk & Block Deal Intelligence{f' — {sym}' if sym else ''}
-
-### What These Deals Signal
-(Interpret who is buying/selling and what it means for price action)
-
-### FII/DII Activity
-### Promoter Activity (if visible)
-### Stocks to Watch Based on Deals
-"""
-        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+        sym_suffix1 = f' for {sym}' if sym else ' — market-wide'
+        sym_suffix2 = f' — {sym}' if sym else ''
+        chain = self._bulk_block_prompt | RunnableLambda(
+            lambda pv: self._chat(pv.text, temperature=0.3, max_tokens=TOKENS_AGENT)
+        )
+        return chain.invoke({
+            "sym_suffix1": sym_suffix1, "bulk_txt": bulk_txt, "block_txt": block_txt,
+            "sym_suffix2": sym_suffix2,
+        })
 
     _FACTOR_FILTERS = {
         "value"    : {"max_pe": 20, "max_de": 1.5, "min_roce": 15},
@@ -235,35 +266,25 @@ Write:
         for f in factor_list:
             filters.update(self._FACTOR_FILTERS.get(f, {}))
 
-        results = screener_run(filters)
+        results = screener_run.func(filters)
         self._last_results = results
-        table   = screener_md(results, filters)
+        table   = screener_md.func(results, filters)
 
         label = " + ".join(f.title() for f in factor_list)
         desc  = "; ".join(self._FACTOR_DESC.get(f, "") for f in factor_list if f in self._FACTOR_DESC)
 
-        prompt = f"""{label} Factor Screen results.
-
-{desc}
-Combined filters (a stock must satisfy ALL of these): {filters}
-
-{table}
-
-Write:
-## {label} Factor Screen — India
-
-### Why This Factor Combination Works in Indian Markets
-### Top Picks from Screen (3 stocks with brief thesis)
-### Limitations of This Screen
-### Suggested Refinements
-"""
-        return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+        chain = self._factor_screen_prompt | RunnableLambda(
+            lambda pv: self._chat(pv.text, temperature=0.3, max_tokens=TOKENS_AGENT)
+        )
+        return chain.invoke({
+            "label": label, "desc": desc, "filters": filters, "table": table,
+        })
 
     def _save_screener(self, msg: str) -> str:
         # Try to parse name from message
         m    = re.search(r'save\s+(?:as\s+)?["\']?([a-zA-Z0-9\s]+)["\']?', msg, re.I)
         name = m.group(1).strip() if m else "My Screener"
-        filters = parse_query(msg)
+        filters = parse_query.func(msg)
         screener_save(self._user_id, name, filters)
         return f"✅ Screener saved as **{name}** with filters: {filters}"
 

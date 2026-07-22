@@ -2,6 +2,7 @@
 
 import re
 from collections import Counter
+from langchain_core.tools import tool
 
 # Try VADER (vaderSentiment package); fall back to keyword matching if not installed
 try:
@@ -42,6 +43,7 @@ _FINANCE_DRAG = {
 }
 
 
+@tool(description="Score a piece of financial news text for sentiment in the range [-1.0, +1.0].")
 def score_text(text: str) -> float:
     """
     Score a piece of text in [-1.0, +1.0].
@@ -75,6 +77,7 @@ def score_text(text: str) -> float:
     return round(raw * damp, 3)
 
 
+@tool(description="Convert a numeric sentiment score into a human-readable bullish/bearish label.")
 def label(score: float) -> str:
     if score >= 0.35:  return "🟢 Bullish"
     if score >= 0.10:  return "🟡 Slightly Bullish"
@@ -83,6 +86,7 @@ def label(score: float) -> str:
     return "🔴 Bearish"
 
 
+@tool(description="Analyse a list of news item dicts and return overall sentiment score, label, and per-item breakdown.")
 def analyse(news_items: list[dict]) -> dict:
     if not news_items:
         return {"score": 0.0, "label": "⚪ Neutral", "items": [], "bull_kws": [], "bear_kws": [], "text": "No news available."}

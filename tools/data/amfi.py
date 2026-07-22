@@ -10,6 +10,7 @@ import pandas as pd
 from io import StringIO
 from datetime import datetime
 import logging
+from langchain_core.tools import tool
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ _nav_cache_ts: float = 0.0
 _NAV_TTL = 1800  # 30 minutes
 
 
+@tool(description="Download complete NAV data from AMFI for all mutual funds.")
 def get_all_nav() -> pd.DataFrame:
     """
     Download complete NAV data from AMFI for all mutual funds.
@@ -78,7 +80,7 @@ def get_all_nav() -> pd.DataFrame:
 def search_fund(query: str, nav_df: pd.DataFrame = None) -> pd.DataFrame:
     """Search funds by name keyword."""
     if nav_df is None or nav_df.empty:
-        nav_df = get_all_nav()
+        nav_df = get_all_nav.func()
     if nav_df.empty:
         return pd.DataFrame()
 
@@ -87,12 +89,13 @@ def search_fund(query: str, nav_df: pd.DataFrame = None) -> pd.DataFrame:
     return nav_df[mask].head(20)
 
 
+@tool(description="Return NAV history and computed returns for a mutual fund matching a name query.")
 def get_fund_performance(scheme_name_query: str) -> dict:
     """
     Returns NAV history and computed returns for a fund.
     Uses yfinance as proxy where possible, otherwise AMFI.
     """
-    nav_df = get_all_nav()
+    nav_df = get_all_nav.func()
     if nav_df.empty:
         return {"error": "Could not fetch AMFI data"}
 
@@ -116,12 +119,13 @@ def get_fund_performance(scheme_name_query: str) -> dict:
     }
 
 
+@tool(description="Return top mutual funds in a given category (e.g. 'large cap', 'flexi cap').")
 def get_category_funds(category_keyword: str, top_n: int = 10) -> pd.DataFrame:
     """
     Return top funds in a category (e.g. 'large cap', 'flexi cap', 'small cap').
     Filtered from full AMFI list.
     """
-    nav_df = get_all_nav()
+    nav_df = get_all_nav.func()
     if nav_df.empty:
         return pd.DataFrame()
 
@@ -148,9 +152,10 @@ def format_fund_search_results(df: pd.DataFrame) -> str:
     return subset.to_string(index=False)
 
 
+@tool(description="Compare multiple mutual funds side by side and return a markdown summary.")
 def get_mf_comparison(funds: list[str]) -> str:
     """Compare multiple mutual funds side by side."""
-    nav_df = get_all_nav()
+    nav_df = get_all_nav.func()
     if nav_df.empty:
         return "Could not fetch fund data."
 

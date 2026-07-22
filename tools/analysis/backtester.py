@@ -6,6 +6,7 @@ No external libraries needed.
 
 import pandas as pd
 import numpy as np
+from langchain_core.tools import tool
 from tools.analysis.technical import compute_all
 
 
@@ -157,6 +158,7 @@ def rsi_backtest(
     }
 
 
+@tool(description="Format a backtest result dict into a markdown table with metrics and recent trades.")
 def format_backtest(result: dict) -> str:
     if "error" in result:
         return f"⚠️ Backtest error: {result['error']}"
