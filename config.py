@@ -28,6 +28,9 @@ GEMINI_MODEL     = "gemini-2.0-flash"
 
 PREFERRED_PROVIDER = os.getenv("PREFERRED_PROVIDER", "groq").lower()
 
+# ── Agentic research graph (see RFC_AGENTIC_RESEARCH_GRAPH.md) ───────────────
+USE_LANGGRAPH_ORCHESTRATOR = os.getenv("USE_LANGGRAPH_ORCHESTRATOR", "false").lower() == "true"
+
 # ── Token budgets (tune to stay within daily limits) ─────────────────────────
 TOKENS_SYNTHESIS  = 2000   # full report synthesis
 TOKENS_COMPLEX    = 3000   # multi-part questions / comparisons — need more room to cover every sub-ask
