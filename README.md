@@ -1,8 +1,8 @@
 # ARIA — Autonomous Research & Investment Analyst
 
-Your AI research assistant for Indian stocks and mutual funds (NSE/BSE). Chat naturally — ARIA figures out what you need and handles it: stock research, IC-style reports, mutual fund advice, stock screening, and price/technical alerts sent straight to your phone.
+An autonomous financial research engine for Indian stocks and mutual funds (NSE/BSE). ARIA decomposes complex investment questions into executable research plans, orchestrates parallel evidence collection through a LangGraph workflow, verifies claims before synthesis, and generates analyst-grade reports with traceable evidence and confidence scoring — covering stock research, IC-style reports, mutual fund advice, stock screening, and price/technical alerts sent straight to your phone.
 
-Everything happens in one chat window. No tabs to hunt through, no menus to learn — just ask.
+You ask a question in plain language; ARIA plans the research, gathers and checks the evidence, and answers with citations you can trace back to the underlying data.
 
 ## Setup
 

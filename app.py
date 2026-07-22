@@ -1,5 +1,5 @@
 """
-app.py — ARIA v2 Professional Multi-Tab Trading Assistant
+app.py — Gradio front end for ARIA, an autonomous financial research engine.
 Gradio 6 compatible. show_api=False fixes the proxy/launch error.
 """
 
@@ -812,7 +812,7 @@ def _build_auth_gate():
 
 
 def build_ui() -> gr.Blocks:
-    with gr.Blocks(title="ARIA — Professional Investment Research") as demo:
+    with gr.Blocks(title="ARIA — Autonomous Financial Research Engine") as demo:
 
         auth_group, main_group, user_state = _build_auth_gate()
 
