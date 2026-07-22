@@ -377,9 +377,9 @@ def to_text(d: dict) -> str:
         f"**{d.get('name')}** | {d.get('sector')} / {d.get('industry')} | {d.get('country')}",
         f"CMP ₹{v('price')} | 52W H/L ₹{v('w52_high')}/₹{v('w52_low')} | MCap {d.get('mktcap_fmt','N/A')}",
         "",
-        f"**Valuation:** P/E {v('pe')} | P/B {v('pb')} | EV/EBITDA {v('ev_ebitda')} | P/S {v('ps')} | PEG {v('peg')}",
-        f"**Profitability:** ROE {pct(d.get('roe'))} | ROCE {v('roce')}% | Net Margin {pct(d.get('net_margin'))} | Op Margin {pct(d.get('op_margin'))} | EBITDA Margin {pct(d.get('ebitda_margin'))}",
-        f"**Leverage:** D/E {v('de')}x | Current Ratio {v('current_ratio')} | Quick Ratio {v('quick_ratio')}",
+        f"**Valuation:** P/E {v('pe')} [^pe] | P/B {v('pb')} [^pb] | EV/EBITDA {v('ev_ebitda')} | P/S {v('ps')} | PEG {v('peg')}",
+        f"**Profitability:** ROE {pct(d.get('roe'))} | ROCE {v('roce')}% [^roce] | Net Margin {pct(d.get('net_margin'))} | Op Margin {pct(d.get('op_margin'))} | EBITDA Margin {pct(d.get('ebitda_margin'))}",
+        f"**Leverage:** D/E {v('de')}x [^de] | Current Ratio {v('current_ratio')} [^cr] | Quick Ratio {v('quick_ratio')}",
         f"**Growth:** Revenue {pct(d.get('rev_growth'))} | Earnings {pct(d.get('earn_growth'))}",
         f"**Per Share:** EPS ₹{v('eps')} | Book Value ₹{v('book_value')} | Div Yield {pct(d.get('div_yield'))} | Beta {v('beta')}",
         f"**Revenue:** {d.get('revenue_fmt','N/A')} | Net Income: {fmt_num(d.get('net_income'))} | FCF: {fmt_num(d.get('fcf'))}",
@@ -391,6 +391,60 @@ def to_text(d: dict) -> str:
         )
     if mt.get("revenue"):
         lines.append(f"**Rev trend (Cr):** " + " → ".join(f"₹{v}" for v in list(mt["revenue"].values())[:4]))
+    lines.append(
+        "(Ratios marked [^pe]/[^pb]/[^roce]/[^de]/[^cr] have a full calculation "
+        "on record — keep the marker attached when you state that ratio.)"
+    )
+    return "\n".join(lines)
+
+
+# key -> (footnote heading, field in the fundamentals dict holding the derivation)
+_CITATION_FIELDS = {
+    "pe":   ("P/E Ratio",       "pe_detail"),
+    "pb":   ("P/B Ratio",       "pb_detail"),
+    "roce": ("ROCE",            "roce_detail"),
+    "de":   ("D/E Ratio",       "de_calc_detail"),
+    "cr":   ("Current Ratio",   "cr_detail"),
+}
+
+
+def cited_footnotes(llm_out: str, d: dict) -> str:
+    """
+    Renders calculation footnotes only for the [^key] markers the model
+    actually used in its answer — tracks what was said instead of dumping
+    every computable ratio regardless of relevance (see calc_breakdown()
+    for the full, unconditional version used elsewhere).
+    """
+    import re
+    keys_cited = re.findall(r"\[\^(\w+)\]", llm_out)
+    used = [k for k in _CITATION_FIELDS if k in keys_cited]
+    if not used:
+        return ""
+    lines = ["", "---", "### 🧮 Cited calculations", ""]
+    for k in used:
+        label, field = _CITATION_FIELDS[k]
+        lines.append(f"**[^{k}] {label}**  \n{d.get(field, 'N/A')}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def dcf_section(d: dict) -> str:
+    """
+    DCF scenario breakdown only — split out of calc_breakdown() so callers
+    that show cited_footnotes() for the citable ratios (P/E, P/B, ROCE, D/E,
+    Current Ratio) can still show the DCF working unconditionally: it has no
+    [^key] marker of its own for the model to cite, so gating it on citation
+    would silently drop it from every report.
+    """
+    dcf = d.get("dcf")
+    if not dcf:
+        return ""
+    lines = ["", "---", "### 🧮 DCF Model", dcf.get("note", "")]
+    for scenario, steps in (dcf.get("steps") or {}).items():
+        lines.append(f"\n**{scenario} Case:**")
+        lines.append(steps.get("detail", ""))
+        lines.append(f"  Terminal Value PV: ₹{steps.get('tv_pv','N/A')}Cr")
+        lines.append(f"  **Intrinsic Value: ₹{steps.get('iv','N/A')}**")
     return "\n".join(lines)
 
 

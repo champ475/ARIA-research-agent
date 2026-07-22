@@ -2,13 +2,24 @@
 tools/data/fetcher.py
 Primary market data layer: yfinance + Parquet cache.
 All deprecated yfinance calls replaced.
+
+yfinance is a single point of failure for the whole app — an outage or
+schema change there would take down equity research, screener, mf, and
+alerts simultaneously. get_info()/get_ohlcv() fall back to NSE bhavcopy
+(tools/data/nse_scraper.py) for a last-EOD-close price when yfinance has
+nothing, so the app degrades instead of dying. Fallback results are tagged
+with "_degraded_source" so callers (see EquityAgent's confidence tiering)
+can flag to the user that they're looking at a stale/partial quote.
 """
 
 import time
+import logging
 import yfinance as yf
 import pandas as pd
 from config import NSE_SUFFIX, BSE_SUFFIX, MACRO_TICKERS
 from tools.data.cache import cache_read, cache_write
+
+log = logging.getLogger(__name__)
 
 # In-memory TTL caches — avoid redundant yfinance roundtrips within a single analysis
 _info_cache: dict = {}   # symbol -> (data, timestamp)
@@ -16,9 +27,48 @@ _fins_cache: dict = {}   # symbol -> (data, timestamp)
 _INFO_TTL = 300          # 5 minutes
 _FINS_TTL = 300
 
+# Bhavcopy is one CSV for the whole market — cache it once per calendar day
+# rather than re-downloading per symbol.
+_bhavcopy_cache: dict = {}   # "YYYY-MM-DD" -> DataFrame
+
 
 def _tk(symbol: str, nse: bool = True) -> yf.Ticker:
     return yf.Ticker(f"{symbol}{NSE_SUFFIX if nse else BSE_SUFFIX}")
+
+
+def _bhavcopy_row(symbol: str) -> dict | None:
+    """Best-effort EOD OHLC for `symbol` from NSE bhavcopy — used only when
+    yfinance has returned nothing for both the NSE and BSE ticker."""
+    from tools.data.nse_scraper import get_bhavcopy
+
+    today_key = time.strftime("%Y-%m-%d")
+    df = _bhavcopy_cache.get(today_key)
+    if df is None:
+        df = get_bhavcopy()
+        _bhavcopy_cache.clear()   # only one trading day's worth needs holding
+        _bhavcopy_cache[today_key] = df
+
+    if df is None or df.empty or "SYMBOL" not in df.columns:
+        return None
+    match = df[df["SYMBOL"].str.strip() == symbol.upper()]
+    if "SERIES" in df.columns:
+        match = match[match["SERIES"].str.strip() == "EQ"]
+    if match.empty:
+        return None
+
+    row = match.iloc[0]
+    try:
+        return {
+            "close":      float(row["CLOSE_PRICE"]),
+            "open":       float(row["OPEN_PRICE"]),
+            "high":       float(row["HIGH_PRICE"]),
+            "low":        float(row["LOW_PRICE"]),
+            "prev_close": float(row["PREV_CLOSE"]),
+            "date":       str(row.get("DATE1", "")).strip(),
+        }
+    except (KeyError, ValueError, TypeError) as e:
+        log.warning(f"Bhavcopy row for {symbol} malformed: {e}")
+        return None
 
 
 def get_info(symbol: str) -> dict:
@@ -26,10 +76,34 @@ def get_info(symbol: str) -> dict:
     cached = _info_cache.get(symbol)
     if cached and (now - cached[1]) < _INFO_TTL:
         return cached[0]
-    tk   = _tk(symbol)
-    info = tk.info or {}
+
+    try:
+        info = _tk(symbol).info or {}
+    except Exception as e:
+        log.warning(f"yfinance NSE get_info failed for {symbol}: {e}")
+        info = {}
+
     if info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
-        info = _tk(symbol, nse=False).info or {}
+        try:
+            info = _tk(symbol, nse=False).info or info
+        except Exception as e:
+            log.warning(f"yfinance BSE get_info failed for {symbol}: {e}")
+
+    if info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
+        row = _bhavcopy_row(symbol)
+        if row:
+            info = {
+                **info,
+                "currentPrice":      row["close"],
+                "regularMarketPrice": row["close"],
+                "previousClose":     row["prev_close"],
+                "dayHigh":           row["high"],
+                "dayLow":            row["low"],
+                "longName":          info.get("longName") or symbol,
+                "shortName":         info.get("shortName") or symbol,
+                "_degraded_source":  f"NSE bhavcopy ({row['date'] or 'latest session'}) — yfinance unavailable",
+            }
+
     _info_cache[symbol] = (info, now)
     return info
 
@@ -134,11 +208,40 @@ def get_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
     cached = cache_read(symbol, period, interval)
     if cached is not None:
         return cached
-    tk = _tk(symbol)
-    df = tk.history(period=period, interval=interval, auto_adjust=True)
+
+    try:
+        df = _tk(symbol).history(period=period, interval=interval, auto_adjust=True)
+    except Exception as e:
+        log.warning(f"yfinance NSE OHLCV failed for {symbol}: {e}")
+        df = pd.DataFrame()
+
     if df.empty:
-        df = _tk(symbol, nse=False).history(period=period, interval=interval, auto_adjust=True)
-    cache_write(symbol, period, interval, df)
+        try:
+            df = _tk(symbol, nse=False).history(period=period, interval=interval, auto_adjust=True)
+        except Exception as e:
+            log.warning(f"yfinance BSE OHLCV failed for {symbol}: {e}")
+            df = pd.DataFrame()
+
+    degraded = False
+    if df.empty:
+        # Single EOD candle from bhavcopy — not real history, but keeps a
+        # price/candle available instead of a hard failure. Callers already
+        # guard "len(df) < N" before running multi-day indicators (see
+        # EquityAgent._fetch_bundle), so a 1-row df degrades gracefully.
+        row = _bhavcopy_row(symbol)
+        if row:
+            parsed = pd.to_datetime(row["date"], format="%d-%b-%Y", errors="coerce")
+            idx = parsed if pd.notna(parsed) else pd.Timestamp.now()
+            df = pd.DataFrame(
+                {"Open": [row["open"]], "High": [row["high"]], "Low": [row["low"]],
+                 "Close": [row["close"]], "Volume": [0]},
+                index=pd.DatetimeIndex([idx]),
+            )
+            df.attrs["_degraded_source"] = f"NSE bhavcopy ({row['date'] or 'latest session'})"
+            degraded = True
+
+    if not degraded:
+        cache_write(symbol, period, interval, df)
     return df
 
 

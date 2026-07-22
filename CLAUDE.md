@@ -71,6 +71,27 @@ Log at `C:\Users\arnav\Desktop\Arnav\PROJECTS\CHANGELOG_ARIA.md` (outside repo, 
 
 Get branch via `git branch --show-current`, timestamp IST (`pytz` Asia/Kolkata). Skip trivial edits (typos, formatting, comments).
 
+## Architecture Decision Log
+
+Log at `ARCHITECTURE.md` (in-repo — tracks the codebase it documents).
+
+**Add an entry for every significant architectural decision**: a change to a
+system boundary, data flow, persistence model, provider/library choice, or a
+trust/reliability contract with the user. Routine feature work and bug fixes
+go in the changelog above instead. Each entry, newest on top:
+
+```
+## YYYY-MM-DD — <Title>
+**Problem.** <what forced a decision>
+**Alternatives considered.** <options weighed, and why each was passed over>
+**Final decision.** <what was built>
+**Trade-offs.** <what was given up / what risk remains>
+**Future improvements.** <what would close the gap later>
+```
+
+If a later change reverses or supersedes an entry, add a new entry rather
+than editing the old one — the log is a history, not a snapshot.
+
 ## Key Constraints
 
 - **Token budgets**: Keep LLM calls within limits defined in `config.py`. Use `TOKENS_FAST` for suggestions, `TOKENS_AGENT` for sub-agent calls, `TOKENS_SYNTHESIS` for full analysis.
