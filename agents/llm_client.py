@@ -81,6 +81,26 @@ class _GroqProvider:
         self._history.append({"role": "assistant", "content": reply})
         return reply
 
+    def stream(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS):
+        self._history.append({"role": "user", "content": msg})
+        msgs = [{"role": "system", "content": self._system}] + self._history[-20:]
+        chunks: list[str] = []
+        try:
+            events = self._client().chat.completions.create(
+                model=GROQ_MODEL, messages=msgs,
+                temperature=temperature, max_tokens=max_tokens, stream=True,
+            )
+            for event in events:
+                delta = event.choices[0].delta.content
+                if delta:
+                    chunks.append(delta)
+                    yield delta
+        except Exception:
+            if not chunks:
+                self._history.pop()   # never produced output — don't leave an orphan turn
+            raise
+        self._history.append({"role": "assistant", "content": "".join(chunks)})
+
     def reset(self):
         self._history.clear()
 
@@ -136,6 +156,34 @@ class _GeminiProvider:
         reply = r.text.strip()
         self._history.append({"role": "assistant", "content": reply})
         return reply
+
+    def stream(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS):
+        self._history.append({"role": "user", "content": msg})
+        contents = [
+            self._types.Content(
+                role="user" if t["role"] == "user" else "model",
+                parts=[self._types.Part(text=t["content"])],
+            )
+            for t in self._history[-20:]
+        ]
+        cfg = self._types.GenerateContentConfig(
+            system_instruction=self._system,
+            temperature=temperature, max_output_tokens=max_tokens,
+        )
+        chunks: list[str] = []
+        try:
+            for event in self._client.models.generate_content_stream(
+                model=GEMINI_MODEL, contents=contents, config=cfg,
+            ):
+                delta = event.text
+                if delta:
+                    chunks.append(delta)
+                    yield delta
+        except Exception:
+            if not chunks:
+                self._history.pop()
+            raise
+        self._history.append({"role": "assistant", "content": "".join(chunks)})
 
     def reset(self):
         self._history.clear()
@@ -200,6 +248,40 @@ class LLMClient:
 
     def chat(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
         return self._call("chat", prompt, temperature, max_tokens)
+
+    def stream(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS):
+        """
+        Yields incremental text chunks. Falls back Groq -> Gemini only if a
+        provider fails before yielding anything — once tokens are already on
+        the wire, restarting on a different provider would duplicate output
+        for the caller, so a mid-stream failure surfaces as a trailing note
+        instead of a silent retry (same rate-limit/quota detection as _call,
+        just no time.sleep() blocking the caller between attempts).
+        """
+        last_err = None
+        for provider in [self._primary, self._secondary]:
+            if provider is None:
+                continue
+            started = False
+            try:
+                for chunk in provider.stream(prompt, temperature, max_tokens):
+                    started = True
+                    self._active = provider.name
+                    yield chunk
+                return
+            except Exception as e:
+                last_err = e
+                log.warning(f"[LLMClient] {provider.name} stream failed: {e}")
+                if started:
+                    yield f"\n\n⚠️ *Connection to {provider.name} dropped mid-response: {e}*"
+                    return
+        yield (
+            f"⚠️ All LLM providers are currently rate-limited.\n\n"
+            f"**What to do:**\n"
+            f"- Groq: wait ~30 min for token quota to reset, or add more keys (GROQ_API_KEY_2, _3) to `.env`\n"
+            f"- Gemini: wait for daily quota reset\n\n"
+            f"Last error: `{last_err}`"
+        )
 
     def reset(self):
         if self._primary:   self._primary.reset()

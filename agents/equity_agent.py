@@ -16,7 +16,7 @@ from tools.data.fetcher      import get_info, get_ohlcv, get_financials, get_mac
 from tools.data.pdf_scraper  import get_latest_quarterly_results
 from tools.data.news_fetcher import company_news, market_news
 from tools.analysis.technical   import compute_all, snapshot, support_resistance, indicator_breakdown, compute_rr
-from tools.analysis.fundamental import compute, to_text, calc_breakdown
+from tools.analysis.fundamental import compute, to_text, cited_footnotes, dcf_section
 from tools.analysis.sentiment   import analyse
 from tools.analysis.risk        import assess
 from tools.analysis.backtester  import ma_crossover_backtest, rsi_backtest, format_backtest
@@ -32,6 +32,10 @@ RESPONSE STYLE:
 - Cite exact numbers, prices, ratios, and indicator values from the data given — never be vague, never invent figures. If the data needed to answer isn't present in the bundle below, say so explicitly instead of guessing.
 - Only include supporting sections beyond the direct answer when they're relevant to what was actually asked.
 - For broad/generic requests ("analyse X", "tell me about X"), fall back to the full institutional report structure.
+
+CITATIONS: Some fundamental ratios in the data are followed by a footnote marker — [^pe], [^pb], [^roce], [^de], [^cr]. When you state one of those specific ratios, keep its marker attached right after the number (e.g. "P/E of 24.3 [^pe]") so the reader can expand the exact calculation below your answer. Only use a marker that already appears in the data block for that ratio — never invent one, and never attach one to a ratio that has no marker.
+
+DATA CONFIDENCE: Each ticker's data block opens with a DATA CONFIDENCE line (High/Medium/Low, plus which specific inputs are missing when not High). If it reads Medium or Low, say so plainly alongside your verdict — a directional call made on incomplete data (missing quarterly results, missing structural levels, a stale/degraded quote) should read with less conviction than one made on a complete bundle. Never quietly fill a stated gap with an invented figure.
 
 HANDLING COMPLEX / MULTI-PART QUESTIONS:
 - Many questions bundle several distinct asks in one message (e.g. "what's the trend, is it a buy, and how does it compare to its sector peers on valuation"). Silently identify every distinct sub-question first, then make sure your answer addresses each one — use short headers or bullets per sub-question when there are 3+ of them so nothing gets skipped.
@@ -59,36 +63,61 @@ class EquityAgent:
     @property
     def provider(self): return self._client.provider
 
-    def _chat(self, prompt: str, **kwargs) -> str:
-        """Wraps LLMClient.chat() so every synthesis prompt is visible in the terminal."""
-        print(f"[LLM SYNTHESIS] prompt sent to LLM ({len(prompt)} chars):\n{prompt}\n[LLM SYNTHESIS] --- end prompt ---")
-        return self._client.chat(prompt, **kwargs)
-
     def _ask(self, prompt: str, **kwargs) -> str:
         """Wraps LLMClient.ask() so every stateless prompt is visible in the terminal."""
         print(f"[LLM SYNTHESIS] prompt sent to LLM ({len(prompt)} chars):\n{prompt}\n[LLM SYNTHESIS] --- end prompt ---")
         return self._client.ask(prompt, **kwargs)
 
+    def _chat_stream(self, prompt: str, **kwargs):
+        """Wraps LLMClient.stream() so every synthesis prompt is visible in the terminal."""
+        print(f"[LLM SYNTHESIS] streaming prompt sent to LLM ({len(prompt)} chars):\n{prompt}\n[LLM SYNTHESIS] --- end prompt ---")
+        return self._client.stream(prompt, **kwargs)
+
     def process(self, message: str) -> tuple[str, str]:
-        """Returns (markdown_text, chart_html)."""
+        """Returns (markdown_text, chart_html) — the final result of process_stream()."""
+        result = None
+        for result in self.process_stream(message):
+            pass
+        return result
+
+    def process_stream(self, message: str):
+        """
+        Generator counterpart to process(). Yields (text_so_far, chart) pairs
+        as an LLM synthesis streams in — text_so_far is always the FULL
+        accumulated text, not a delta, so a caller can just re-render it each
+        time. Non-LLM paths (portfolio, backtest) have nothing to stream, so
+        they yield their single finished result immediately; process() drains
+        this generator and returns its last yield, so both call styles share
+        one implementation.
+        """
         msg   = message.strip()
         lower = msg.lower()
 
         # Portfolio commands
-        if self._is_port_add(lower):    return self._port_add(msg), None
-        if self._is_port_remove(lower): return self._port_remove(msg), None
-        if self._is_port_view(lower):   return self._port_view()
+        if self._is_port_add(lower):
+            yield self._port_add(msg), None
+            return
+        if self._is_port_remove(lower):
+            yield self._port_remove(msg), None
+            return
+        if self._is_port_view(lower):
+            yield self._port_view()
+            return
 
         # Backtesting — equity-curve data, a genuinely different shape from a
         # stock Q&A answer, kept as its own path.
         if "backtest" in lower:
             ticker = self._ticker(msg)
-            if ticker: return self._backtest(ticker, msg), None
-            return self._ask_ticker(), None
+            if ticker:
+                yield self._backtest(ticker, msg), None
+            else:
+                yield self._ask_ticker(), None
+            return
 
         # Market overview — macro feed, no ticker involved, kept separate.
         if any(k in lower for k in ["market overview","market today","nifty","sensex","fii","dii","macro"]):
-            return self._market_overview(), None
+            yield from self._market_overview_stream()
+            return
 
         # Everything else: resolve ticker(s) for the message, then let the LLM
         # answer the actual question using the full data bundle. See
@@ -116,10 +145,14 @@ class EquityAgent:
             # Nothing to anchor on — plain conversational fallback (market concepts,
             # general finance questions). Still give complex asks room to breathe.
             budget = TOKENS_COMPLEX if self._is_complex(msg, False) else TOKENS_AGENT
-            return self._chat(msg, max_tokens=budget), None
+            acc = ""
+            for chunk in self._chat_stream(msg, max_tokens=budget):
+                acc += chunk
+                yield acc, None
+            return
 
         self._last_symbol = tickers[-1]
-        return self._answer(tickers, msg)
+        yield from self._answer_stream(tickers, msg)
 
     # ── Ticker resolution ──────────────────────────────────────────────────────
 
@@ -195,6 +228,17 @@ class EquityAgent:
         s1 = sr_1y.get("S1"); r1 = sr_1y.get("R1")
         st_rr = compute_rr(price, s1, r1, price) if all(x for x in [price, s1, r1]) else {"valid": False, "error": "Insufficient level data"}
 
+        gaps = []
+        if info.get("_degraded_source"):
+            gaps.append(f"live quote unavailable — using {info['_degraded_source']}")
+        if fund.get("roce") is None and fund.get("de") is None:
+            gaps.append("fundamentals recomputation incomplete (ROCE/D-E unavailable)")
+        if not q_text or "No " in q_text:
+            gaps.append("latest quarterly results unavailable")
+        if risk.get("score") is None:
+            gaps.append("risk score unavailable")
+        # 2Y gap is checked after sw2_res/sw2_sup are computed below
+
         # NOTE: support_resistance()'s classic pivot formula (Pivot=(H+L+C)/3)
         # only reads the LAST row of the input df — it is insensitive to
         # whether 1Y or 2Y of history was fetched, so sr_2y's S2/R2 would be
@@ -208,12 +252,21 @@ class EquityAgent:
         lt_stop   = min(sw2_sup) if sw2_sup else sr_2y.get("S2") or sr_1y.get("S2")
         lt_rr = compute_rr(price, lt_stop, lt_target, price) if all(x for x in [price, lt_stop, lt_target]) else {"valid": False, "error": "Insufficient level data"}
 
+        if not sw2_res and not sw2_sup:
+            gaps.append("2Y structural levels unavailable")
+        confidence = "High"
+        if any("fundamentals recomputation" in g or "live quote unavailable" in g for g in gaps) or len(gaps) >= 2:
+            confidence = "Low"
+        elif gaps:
+            confidence = "Medium"
+
         return {
             "sym": sym, "comp": comp, "price": price, "fund": fund,
             "ta_1y": ta_1y, "sr_1y": sr_1y, "ta_2y": ta_2y, "sr_2y": sr_2y,
             "lt_stop": lt_stop, "lt_target": lt_target,
             "risk": risk, "sent": sent, "q_note": q_note, "news": news,
             "st_rr": st_rr, "lt_rr": lt_rr, "df_ta_1y": df_ta_1y,
+            "confidence": confidence, "confidence_gaps": gaps,
         }
 
     def _bundle_text(self, b: dict) -> str:
@@ -226,9 +279,15 @@ class EquityAgent:
         pats_str = "; ".join(pats) if pats else "No significant signals"
         stdir = "BULLISH" if (ta.get("Supertrend_Dir") or 0) > 0 else "BEARISH"
 
+        gaps = b.get("confidence_gaps") or []
+        conf_line = f"DATA CONFIDENCE: {b.get('confidence', 'High')}"
+        if gaps:
+            conf_line += " — gaps: " + "; ".join(gaps)
+
         lines = [
             f"=== {b['comp']} ({b['sym']}.NS) ===",
             f"CMP ₹{b['price']}",
+            conf_line,
             "",
             "--- Fundamentals ---",
             to_text(fund),
@@ -295,6 +354,7 @@ class EquityAgent:
         return conj_hits >= 1 and len(msg) > 45
 
     _NUM_RE = re.compile(r'-?\d+(?:,\d{3})*(?:\.\d+)?')
+    _CITED_NUM_RE = re.compile(r'-?\d+(?:,\d{3})*(?:\.\d+)?(?=\s*\[\^\w+\])')
 
     def _grounding_note(self, llm_out: str, data_text: str) -> str:
         """
@@ -303,10 +363,16 @@ class EquityAgent:
         fed to the LLM. Not a proof of correctness (numbers can coincidentally
         match), but catches the common failure mode of an invented figure.
         Flags for a human glance rather than silently trusting the model.
+
+        Numbers immediately followed by a [^key] citation marker are exempt —
+        the marker itself points to a real derivation (see cited_footnotes()),
+        so they'd otherwise be false positives whenever formatting differs
+        from the raw data block (e.g. "24.30" in prose vs "24.3" in the bundle).
         """
-        data_nums = {n.replace(",", "") for n in self._NUM_RE.findall(data_text)}
-        out_nums  = [n.replace(",", "") for n in self._NUM_RE.findall(llm_out)]
-        out_nums  = [n for n in out_nums if len(n.replace(".", "")) >= 2]
+        data_nums  = {n.replace(",", "") for n in self._NUM_RE.findall(data_text)}
+        cited_nums = {n.replace(",", "") for n in self._CITED_NUM_RE.findall(llm_out)}
+        out_nums   = [n.replace(",", "") for n in self._NUM_RE.findall(llm_out)]
+        out_nums   = [n for n in out_nums if len(n.replace(".", "")) >= 2 and n not in cited_nums]
         if not out_nums:
             return ""
         unmatched = [n for n in out_nums if n not in data_nums]
@@ -322,11 +388,19 @@ class EquityAgent:
     # ── Unified answer ─────────────────────────────────────────────────────────
 
     def _answer(self, tickers: list[str], msg: str) -> tuple[str, str]:
+        """Returns the final (text, chart) of _answer_stream() — see there for logic."""
+        result = None
+        for result in self._answer_stream(tickers, msg):
+            pass
+        return result
+
+    def _answer_stream(self, tickers: list[str], msg: str):
         """
         Answers any question about 1+ tickers: fetches the full data bundle for
         each, always includes the verbatim user question in the prompt, and
         lets the LLM decide response shape (direct answer first, full report
         structure only for generic asks) instead of routing to a rigid template.
+        Yields (text_so_far, chart) — chart is None until the final yield.
         """
         bundles = []
         errors  = []
@@ -343,7 +417,8 @@ class EquityAgent:
 
         if not bundles:
             detail = "; ".join(errors) if errors else "unknown error"
-            return f"⚠️ Could not fetch data for {', '.join(tickers)}.\n\nDetails: {detail}\n\nVerify tickers are valid NSE symbols.", None
+            yield f"⚠️ Could not fetch data for {', '.join(tickers)}.\n\nDetails: {detail}\n\nVerify tickers are valid NSE symbols.", None
+            return
 
         order = {t: i for i, t in enumerate(tickers)}
         bundles.sort(key=lambda b: order.get(b["sym"], 99))
@@ -385,8 +460,12 @@ class EquityAgent:
         )
 
         max_tokens = TOKENS_COMPLEX if complex_q else TOKENS_SYNTHESIS
-        llm_out = self._chat(prompt, temperature=0.2, max_tokens=max_tokens)
-        llm_out += self._grounding_note(llm_out, data_text)
+        acc = ""
+        for chunk in self._chat_stream(prompt, temperature=0.2, max_tokens=max_tokens):
+            acc += chunk
+            yield acc, None
+
+        llm_out = acc + self._grounding_note(acc, data_text)
 
         chart = None
         extra = ""
@@ -395,9 +474,13 @@ class EquityAgent:
             df_chart = get_ohlcv(bundles[0]["sym"], period, interval)
             df_ta_chart = compute_all(df_chart.copy()) if not df_chart.empty else bundles[0]["df_ta_1y"]
             chart = candlestick(df_ta_chart, bundles[0]["sym"], bundles[0]["comp"], tflabel)
-            extra = "\n\n---\n\n" + indicator_breakdown(bundles[0]["ta_1y"]) + "\n\n" + calc_breakdown(bundles[0]["fund"])
+            extra = (
+                "\n\n---\n\n" + indicator_breakdown(bundles[0]["ta_1y"])
+                + cited_footnotes(acc, bundles[0]["fund"])
+                + dcf_section(bundles[0]["fund"])
+            )
 
-        return llm_out + extra, chart
+        yield llm_out + extra, chart
 
     # ── Backtest & market overview (kept separate — different data shapes) ─────
 
@@ -417,6 +500,12 @@ class EquityAgent:
             return f"⚠️ Backtest error: {e}"
 
     def _market_overview(self) -> str:
+        text = ""
+        for text, _ in self._market_overview_stream():
+            pass
+        return text
+
+    def _market_overview_stream(self):
         try:
             news  = market_news()
             macro = get_macro()
@@ -442,9 +531,12 @@ Write:
 ### Trade Ideas from News
 ### Risk Events This Week
 """
-            return self._chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
+            acc = ""
+            for chunk in self._chat_stream(prompt, temperature=0.3, max_tokens=TOKENS_AGENT):
+                acc += chunk
+                yield acc, None
         except Exception as e:
-            return f"⚠️ Market overview error: {e}"
+            yield f"⚠️ Market overview error: {e}", None
 
     # ── Portfolio ──────────────────────────────────────────────────────────────
 

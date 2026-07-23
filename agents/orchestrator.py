@@ -116,20 +116,39 @@ class Orchestrator:
         self._last_tab = "equity"
 
     def process(self, message: str) -> tuple[str, object, str | None, str | None, str | None, str]:
-        """Returns (text, chart, pdf_path, md_path, csv_path, tab_used)."""
+        """Returns (text, chart, pdf_path, md_path, csv_path, tab_used) — the final result of process_stream()."""
+        result = None
+        for result in self.process_stream(message):
+            pass
+        return result
+
+    def process_stream(self, message: str):
+        """
+        Streaming counterpart to process(): yields (text, chart, pdf_path,
+        md_path, csv_path, tab_used) with text growing on each yield. Only
+        EquityAgent streams incrementally — report/mf/screener/alert/planning
+        responses are consumed as finished documents (a saved report, a CSV
+        export), not read live, so they yield their single finished result.
+        """
         tab = route(message, last_tab=self._last_tab)
         self._last_tab = tab
         agent = self._agents[tab]
 
+        if tab == "equity" and hasattr(agent, "process_stream"):
+            for text, chart in agent.process_stream(message):
+                yield text, chart, None, None, None, tab
+            return
+
         if tab == "report":
             text, chart, pdf_path, md_path = agent.process(message)
-            return text, chart, pdf_path, md_path, None, tab
+            yield text, chart, pdf_path, md_path, None, tab
+            return
 
         text, chart = agent.process(message)
         csv_path = None
         if tab == "screener":
             csv_path = agent.export_csv()
-        return text, chart, None, None, csv_path, tab
+        yield text, chart, None, None, csv_path, tab
 
     def generate_suggestions(self, last_response: str, last_query: str) -> list[str]:
         agent = self._agents.get(self._last_tab, self._agents["equity"])

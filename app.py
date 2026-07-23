@@ -110,9 +110,23 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     text       = ""
     try:
         orch = get_orchestrator(user_id)
-        text, chart, pdf_path, md_path, csv_path, tab_used = orch.process(clean)
-        if chart is not None:
-            chart_fig = chart
+        tab_used = "equity"
+        # Equity Q&A streams token-by-token (see EquityAgent.process_stream);
+        # every other specialist yields exactly once with its finished
+        # result, so this loop renders identically for both — it just runs
+        # once for a non-streaming tab.
+        for text, chart, pdf_path, md_path, csv_path, tab_used in orch.process_stream(clean):
+            if chart is not None:
+                chart_fig = chart
+            streaming_hist = history + [
+                {"role": "user",      "content": message},
+                {"role": "assistant", "content": f"*🔀 Routed to: {_TAB_LABELS.get(tab_used, tab_used)}*\n\n" + text},
+            ]
+            yield (
+                "", streaming_hist, gr.update(value=chart_fig, visible=chart_fig is not None),
+                suggestions, no_file, no_file, no_file,
+            ) + _make_btn_updates(suggestions)
+
         new_sugg = orch.generate_suggestions(text, clean)
         text = f"*🔀 Routed to: {_TAB_LABELS.get(tab_used, tab_used)}*\n\n" + text
         if pdf_path:
