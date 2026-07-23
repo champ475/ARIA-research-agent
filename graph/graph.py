@@ -1,10 +1,10 @@
 """
-Graph assembly (RFC_AGENTIC_RESEARCH_GRAPH.md Sec4). Wired so far:
-QueryAnalyzer -> Planner -> [ResearchExecutor <-> execute_task_node loop] ->
-EvidenceSummarizer -> Reflection -> Verification -> ConclusionBuilder (stub)
--> CommunicationLayer (stub). The real ConclusionBuilder/CommunicationLayer
-land in Phase 5. Single-ticker equity queries only for now (tool catalogue
-scope, graph/tool_catalogue.py).
+Graph assembly (RFC_AGENTIC_RESEARCH_GRAPH.md Sec4). Full node set is now
+wired: QueryAnalyzer -> Planner -> [ResearchExecutor <-> execute_task_node
+loop] -> EvidenceSummarizer -> Reflection -> Verification ->
+ConclusionBuilder -> CommunicationLayer. Single-ticker equity queries only
+for now (tool catalogue scope, graph/tool_catalogue.py) — report/mf/
+screener/alert/planning intents are added in Phase 7.
 
 Reflection's loop-back skips Planner and routes straight to
 ResearchExecutor: Reflection already builds and upserts new Tasks itself
@@ -21,7 +21,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from agents.llm_client import LLMClient
-from graph.journal import log_decision
+from graph.nodes.communication_layer import build_communication_layer_node
+from graph.nodes.conclusion_builder import conclusion_builder
 from graph.nodes.evidence_summarizer import evidence_summarizer
 from graph.nodes.execute_task import execute_task_node
 from graph.nodes.planner import build_planner_node
@@ -32,52 +33,12 @@ from graph.nodes.verification import build_verification_node
 from graph.state import GraphState
 
 
-def _conclusion_builder_stub(state: GraphState) -> dict:
-    """Placeholder until Phase 5's real ConclusionBuilder (deterministic,
-    evidence -> Conclusion)."""
-    return {
-        "conclusions": [],
-        **log_decision(
-            "ConclusionBuilder",
-            "stub passthrough",
-            "real implementation lands in Phase 5",
-        ),
-    }
-
-
-def _communication_layer_stub(state: GraphState) -> dict:
-    """Placeholder until Phase 5's real CommunicationLayer. Reports the
-    evidence actually collected so ResearchExecutor's output is verifiable
-    end to end before Reflection/Verification/ConclusionBuilder exist."""
-    objective = state.get("objective") or "(no objective classified)"
-    task_count = len(state.get("tasks") or [])
-    done = sum(1 for t in (state.get("tasks") or []) if t["status"] == "done")
-    evidence_count = len(state.get("evidence") or [])
-    issue_count = len(state.get("verification_issues") or [])
-    text = (
-        f"(stub report) Objective: {objective}\n\n"
-        f"Planner generated {task_count} task(s), {done} completed. "
-        f"ResearchExecutor collected {evidence_count} evidence item(s). "
-        f"Verification found {issue_count} unresolved issue(s). "
-        f"ConclusionBuilder is not implemented yet (Phase 5) — this is a raw "
-        f"summary, not a verified report."
-    )
-    return {
-        "final_report": text,
-        "chart_html": "",
-        **log_decision(
-            "CommunicationLayer",
-            "stub passthrough",
-            "real implementation lands in Phase 5",
-        ),
-    }
-
-
 def build_graph(
     query_analyzer_client: LLMClient | None = None,
     planner_client: LLMClient | None = None,
     reflection_client: LLMClient | None = None,
     verification_client: LLMClient | None = None,
+    communication_client: LLMClient | None = None,
 ) -> CompiledStateGraph:
     graph = StateGraph(GraphState)
 
@@ -88,8 +49,8 @@ def build_graph(
     graph.add_node("EvidenceSummarizer", evidence_summarizer)
     graph.add_node("Reflection", build_reflection_node(reflection_client))
     graph.add_node("Verification", build_verification_node(verification_client))
-    graph.add_node("ConclusionBuilder", _conclusion_builder_stub)
-    graph.add_node("CommunicationLayer", _communication_layer_stub)
+    graph.add_node("ConclusionBuilder", conclusion_builder)
+    graph.add_node("CommunicationLayer", build_communication_layer_node(communication_client))
 
     graph.add_edge(START, "QueryAnalyzer")
     graph.add_edge("QueryAnalyzer", "Planner")

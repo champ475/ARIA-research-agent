@@ -74,9 +74,26 @@ def build_communication_layer_node(client: LLMClient | None = None) -> Callable[
         conclusions = state.get("conclusions", [])
         entities = state.get("entities", [])
         evidence = state.get("evidence", [])
+        query = state.get("query", "")
+
+        if not conclusions and state.get("complexity") == "simple":
+            # Trivial path: Planner deliberately generated no tasks (RFC's
+            # "avoid unnecessary tool execution"), so there was never any
+            # evidence to build conclusions from — this isn't a research
+            # failure, just a question that doesn't need research. Answer
+            # directly instead of reporting a gap that was never a gap.
+            report = client.ask(query or objective, max_tokens=TOKENS_SYNTHESIS)
+            return {
+                "final_report": report,
+                "chart_html": None,
+                "confidence_summary": {},
+                **log_decision(
+                    "CommunicationLayer", "answered directly, no research needed", "complexity=simple"
+                ),
+            }
 
         if not conclusions:
-            report = f"I wasn't able to verify enough evidence to answer: {objective or state.get('query', '')}"
+            report = f"I wasn't able to verify enough evidence to answer: {objective or query}"
             return {
                 "final_report": report,
                 "chart_html": None,
