@@ -13,6 +13,13 @@ Verification at all.
    numeric fields disagree beyond a tolerance.
 3. LLM judge — asks whether the evidence actually supports the objective;
    only reached when 1-2 are clean.
+
+Any stage that finds issues increments loop_count by 1, unconditionally —
+this is the same shared budget Reflection increments when it queues new
+tasks. Without Verification also incrementing it, a Reflection<->Verification
+ping-pong (Verification flags something Reflection's own lens never
+independently reports as "missing") would never terminate, since Reflection
+alone only advances the counter when it decides to add work.
 """
 from __future__ import annotations
 
@@ -186,6 +193,7 @@ def build_verification_node(client: LLMClient | None = None) -> Callable[[GraphS
         if stage1_issues:
             return {
                 "verification_issues": stage1_issues,
+                "loop_count": 1,
                 **log_decision(
                     "Verification",
                     f"{len(stage1_issues)} issue(s) at deterministic stage",
@@ -197,6 +205,7 @@ def build_verification_node(client: LLMClient | None = None) -> Callable[[GraphS
         if stage2_issues:
             return {
                 "verification_issues": stage2_issues,
+                "loop_count": 1,
                 **log_decision(
                     "Verification",
                     f"{len(stage2_issues)} issue(s) at semantic stage",
@@ -211,8 +220,16 @@ def build_verification_node(client: LLMClient | None = None) -> Callable[[GraphS
             temperature=0.0,
         )
         stage3_issues = _parse_llm_issues(raw)
+        # loop_count is a shared budget incremented by whichever side (Reflection
+        # or Verification) is asking for another pass — this is what keeps a
+        # Reflection<->Verification ping-pong (Verification flags something
+        # Reflection's own lens never independently notices as "missing")
+        # finite even though Reflection itself only increments when IT decides
+        # to queue new tasks.
+        extra = {"loop_count": 1} if stage3_issues else {}
         return {
             "verification_issues": stage3_issues,
+            **extra,
             **log_decision(
                 "Verification",
                 f"{len(stage3_issues)} issue(s) at llm_judge stage" if stage3_issues else "clean, all stages passed",

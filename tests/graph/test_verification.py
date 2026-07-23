@@ -146,3 +146,33 @@ class TestVerificationJournal:
         node = build_verification_node(stub)
         result = node({"evidence": [_evidence()], "tasks": [_task()]})
         assert result["research_journal"][0]["node"] == "Verification"
+
+
+class TestVerificationLoopCount:
+    def test_deterministic_stage_issue_increments_loop_count(self):
+        stub = _StubClient(json.dumps({"issues": []}))
+        broken = _evidence(citation_key="")
+        node = build_verification_node(stub)
+        result = node({"evidence": [broken], "tasks": []})
+        assert result["loop_count"] == 1
+
+    def test_semantic_stage_issue_increments_loop_count(self):
+        stub = _StubClient(json.dumps({"issues": []}))
+        ev = _evidence(confidence=0.2)
+        node = build_verification_node(stub)
+        result = node({"evidence": [ev], "tasks": []})
+        assert result["loop_count"] == 1
+
+    def test_llm_judge_issue_increments_loop_count(self):
+        stub = _StubClient(json.dumps({
+            "issues": [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}],
+        }))
+        node = build_verification_node(stub)
+        result = node({"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}})
+        assert result["loop_count"] == 1
+
+    def test_clean_verification_does_not_increment_loop_count(self):
+        stub = _StubClient(json.dumps({"issues": []}))
+        node = build_verification_node(stub)
+        result = node({"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}})
+        assert "loop_count" not in result
