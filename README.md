@@ -53,6 +53,8 @@ Just type what you want in the chat — ARIA routes it to the right specialist a
 > "What's the RSI and MACD on INFY?"
 > "Backtest a moving average crossover on TATAMOTORS"
 
+Responses stream in live, flag a **DATA CONFIDENCE** level (High/Medium/Low) whenever underlying data is incomplete, and carry footnote citations (`[^pe]`, `[^roce]`, etc.) back to the exact number they're based on — so a verdict answered off thin data reads with less conviction than one backed by a full data set.
+
 ### 📄 Reports
 > "Generate an IC report for RELIANCE"
 > "Write a result update for TCS"
@@ -83,6 +85,13 @@ Just type what you want in the chat — ARIA routes it to the right specialist a
 Every alert fires **once** — you get a Telegram message, and the alert switches itself off so you don't get spammed. Set a new one anytime.
 
 **Conditions you can set alerts on:** price above/below a level, % price move, RSI crossing a level, MACD bullish/bearish crossover, moving-average golden/death cross, Bollinger Band breakout, volume spike, new 52-week high/low, bulk deal activity, and portfolio P&L threshold.
+
+### 🎯 Financial Planning
+> "Help me plan for retirement in 20 years"
+> "I have ₹10L to invest for a house down payment in 5 years"
+> "Build me an investment strategy — I'm 28, moderate risk"
+
+ARIA asks a few questions to fill in your profile (age, capital, horizon, goal, risk tolerance — remembered across sessions), then designs a multi-asset allocation grounded in real fund/stock data rather than a generic template.
 
 ### 📌 Watchlist
 Use the Watchlist tab to add/remove stocks you're tracking — separate from alerts, just a quick-glance list.
