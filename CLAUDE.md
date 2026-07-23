@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**ARIA v2** (Autonomous Research & Investment Analyst) is a Python multi-agent investment research platform for Indian equity markets (NSE/BSE). It provides AI-powered stock analysis, institutional-grade report generation, mutual fund comparison, and stock screening via a Gradio web UI.
+**ARIA v2** (Autonomous Research & Investment Analyst) is a Python multi-agent investment research platform for Indian equity markets (NSE/BSE). It provides AI-powered stock analysis, institutional-grade report generation, mutual fund comparison, stock screening, portfolio/alert management, and goal-based financial planning via a Gradio chat UI.
 
 ## Setup & Running
 
@@ -21,19 +21,19 @@ python app.py
 # Opens at http://localhost:7860
 ```
 
-No build step required. No test suite exists — testing is done manually via the Gradio UI.
+No build step required. `pytest` test suite exists under `tests/` (unit tests for `tools/analysis/*` and the `graph/` LangGraph nodes) — run with `python -m pytest tests/ -q`. UI-level flows are still verified manually via Gradio.
 
 ## Architecture
 
 ### Entry Point & UI
-`app.py` builds a 4-tab Gradio interface (Equity Research, Report Generator, Mutual Funds, Screener). Agents are lazily initialized on first tab activation. Each tab has an independent agent instance with its own LLM conversation history.
+`app.py` builds a 2-tab Gradio interface (Chat, Watchlist) with an auth gate (`utils/auth.py`). All specialist domains (equity, reports, mutual funds, screener, alerts, planning) are routed through the single Chat tab via `agents/orchestrator.py::route()` — a deterministic keyword-set scorer, not per-domain tabs. Agents are lazily initialized per user session (`get_orchestrator(user_id)`), each with its own LLM conversation history.
 
 ### Agent Layer (`agents/`)
-Each of the 4 agents (`equity_agent.py`, `report_agent.py`, `mf_agent.py`, `screener_agent.py`) extends `BaseAgent` in `base_agent.py`. The agent flow is:
+6 specialist agents — `equity_agent.py`, `report_agent.py`, `mf_agent.py`, `screener_agent.py`, `alert_agent.py`, `planning_agent.py` — plus `orchestrator.py` (routing) and `graph_orchestrator.py` (LangGraph adapter, behind `USE_LANGGRAPH_ORCHESTRATOR`). Each agent constructs its own `LLMClient`; `BaseAgent` is a lightweight shared base (`ask()`/`chat()`). The agent flow is:
 1. Parse user intent from message (keyword/pattern matching)
 2. Call tools to fetch and analyze data
 3. Synthesize results via LLM
-4. Return `(markdown_text, chart_html)` tuple
+4. Return `(markdown_text, chart_html)` tuple — only `EquityAgent` streams token-by-token
 
 ### LLM Provider (`agents/llm_client.py`)
 `LLMClient` wraps Groq and Gemini providers with:
@@ -49,10 +49,10 @@ Primary model: `llama-3.3-70b-versatile`. Fast model: `gemma2-9b-it`. Fallback: 
 - `tools/charts/builder.py` — Plotly candlestick charts and heatmaps
 
 ### Configuration (`config.py`)
-Central source of truth for: LLM token budgets (`TOKENS_SYNTHESIS=1500`, `TOKENS_AGENT=800`), sector universe (120+ NSE stocks across 9 sectors), technical analysis defaults (RSI 14, MACD 12/26/9, BB 20), risk thresholds, and data source URLs.
+Central source of truth for: LLM token budgets (`TOKENS_SYNTHESIS=2000`, `TOKENS_COMPLEX=3000`, `TOKENS_AGENT=800`, `TOKENS_FAST=200`), sector universe (~100 NSE stocks across 9 sectors, `NIFTY200`/`SECTOR_UNIVERSE`), technical analysis defaults (RSI 14, MACD 12/26/9, BB 20), risk thresholds, and data source URLs.
 
 ### Persistence (`utils/db.py`)
-SQLite database with tables: `portfolio`, `watchlist`, `alerts`, `reports`, `screeners`. Initialized at startup via `init_db()`.
+Postgres (Neon), via `psycopg2.pool.ThreadedConnectionPool`. Tables: `users`, `sessions`, `portfolio`, `watchlist`, `alerts`, `chat_sessions`, `chat_history`, `saved_screeners`, `reports`, `pdf_cache`, `financial_profiles`, `cache_meta`. Initialized at startup via `init_db()`. A leftover `data/aria.db` SQLite file exists in-repo but is unread by current code.
 
 ### Ticker Resolution (`utils/helpers.py`)
 Maps common aliases to NSE symbols (e.g. `"SBI"` → `"SBIN"`, `"HUL"` → `"HINDUNILVR"`). All tickers must be suffixed with `.NS` for NSE or `.BO` for BSE when passed to yfinance.
