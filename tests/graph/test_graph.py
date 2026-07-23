@@ -1,6 +1,9 @@
 import json
 from unittest.mock import patch
 
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
 from graph.graph import build_graph
 
 
@@ -170,15 +173,92 @@ class TestReflectionVerificationLoop:
         node_order = [e["node"] for e in result["research_journal"]]
         assert node_order[-1] == "CommunicationLayer"
 
-    def test_verification_issue_loops_back_to_reflection_then_terminates(self):
+    def test_verification_issue_loops_back_to_reflection_then_pauses_for_review(self):
         # Reflection is always satisfied (no gaps from its own lens), but
         # Verification keeps finding a low-confidence issue — this is the
         # ping-pong case Verification's own loop_count increment exists for.
-        result = self._run(
-            reflection_response={"missing": []},
-            verification_response={"issues": [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}]},
-        )
-        node_order = [e["node"] for e in result["research_journal"]]
+        # Once the loop budget is exhausted, VerificationGate (Phase 6) pauses
+        # for human review instead of silently reaching CommunicationLayer.
+        qa = _StubClient(json.dumps({
+            "intent": "equity", "objective": "analyse RELIANCE fundamentals", "complexity": "moderate",
+        }))
+        planner = _StubClient(json.dumps({"tools": ["fetch_info"]}))
+        reflection = _StubClient(json.dumps({"missing": []}))
+        verification = _StubClient(json.dumps({
+            "issues": [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}],
+        }))
+        communication = _StubClient("Stub final report text.")
+        with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}), \
+             patch("graph.tool_catalogue.get_financials", return_value={"totalRevenue": 900000}), \
+             patch("tools.data.evidence_cache.evidence_cache_get", return_value=None), \
+             patch("tools.data.evidence_cache.evidence_cache_put", return_value=None):
+            graph = build_graph(
+                query_analyzer_client=qa, planner_client=planner,
+                reflection_client=reflection, verification_client=verification,
+                communication_client=communication, checkpointer=InMemorySaver(),
+            )
+            config = {"configurable": {"thread_id": "test-thread"}}
+            paused = graph.invoke({"query": "analyse RELIANCE fundamentals", "max_loops": 2}, config=config)
+            assert "__interrupt__" in paused
+            assert paused["__interrupt__"][0].value["type"] == "verification_gate"
+
+            resumed = graph.invoke(Command(resume=True), config=config)
+
+        node_order = [e["node"] for e in resumed["research_journal"]]
         assert node_order.count("Verification") >= 2
-        assert result["loop_count"] <= result["max_loops"]
+        assert resumed["loop_count"] <= resumed["max_loops"]
         assert node_order[-1] == "CommunicationLayer"
+        assert resumed["final_report"] == "Stub final report text."
+
+
+class TestHumanInTheLoopGates:
+    """Covers Phase 6: ResearchConfirmation and VerificationGate actually
+    pause the graph (via a real checkpointer) and resume correctly — both
+    the approve and decline paths."""
+
+    def _build_with_many_tasks(self):
+        qa = _StubClient(json.dumps({
+            "intent": "equity", "objective": "compare RELIANCE and TCS", "complexity": "complex",
+        }))
+        # 6 entities x 1 tool = 6 tasks, over the complex-gate threshold of 5.
+        planner = _StubClient(json.dumps({"tools": ["fetch_info"]}))
+        reflection = _StubClient(json.dumps({"missing": []}))
+        verification = _StubClient(json.dumps({"issues": []}))
+        communication = _StubClient("Comparison report text.")
+        graph = build_graph(
+            query_analyzer_client=qa, planner_client=planner,
+            reflection_client=reflection, verification_client=verification,
+            communication_client=communication, checkpointer=InMemorySaver(),
+        )
+        return graph
+
+    def test_research_confirmation_pauses_for_complex_plan(self):
+        graph = self._build_with_many_tasks()
+        config = {"configurable": {"thread_id": "rc-test-1"}}
+        with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}):
+            paused = graph.invoke(
+                {"query": "RELIANCE TCS INFY HDFC WIPRO ITC compare", "max_loops": 2}, config=config
+            )
+        assert "__interrupt__" in paused
+        assert paused["__interrupt__"][0].value["type"] == "research_confirmation"
+
+    def test_research_confirmation_approved_resumes_and_completes(self):
+        graph = self._build_with_many_tasks()
+        config = {"configurable": {"thread_id": "rc-test-2"}}
+        with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}), \
+             patch("tools.data.evidence_cache.evidence_cache_get", return_value=None), \
+             patch("tools.data.evidence_cache.evidence_cache_put", return_value=None):
+            graph.invoke({"query": "RELIANCE TCS INFY HDFC WIPRO ITC compare", "max_loops": 2}, config=config)
+            resumed = graph.invoke(Command(resume=True), config=config)
+        assert resumed["final_report"] == "Comparison report text."
+        assert all(t["status"] == "done" for t in resumed["tasks"])
+
+    def test_research_confirmation_declined_skips_research_entirely(self):
+        graph = self._build_with_many_tasks()
+        config = {"configurable": {"thread_id": "rc-test-3"}}
+        with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}):
+            graph.invoke({"query": "RELIANCE TCS INFY HDFC WIPRO ITC compare", "max_loops": 2}, config=config)
+            resumed = graph.invoke(Command(resume=False), config=config)
+        assert "declined" in resumed["final_report"]
+        assert all(t["status"] == "skipped" for t in resumed["tasks"])
+        assert "__interrupt__" not in resumed  # run completed, didn't pause again
