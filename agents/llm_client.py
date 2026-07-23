@@ -8,9 +8,18 @@ import time
 import logging
 import threading
 from config import (
-    GROQ_API_KEYS, GROQ_MODEL, GEMINI_API_KEY, GEMINI_MODEL,
+    GROQ_API_KEYS, GROQ_MODEL, GROQ_MODEL_FAST, GEMINI_API_KEY, GEMINI_MODEL,
     PREFERRED_PROVIDER, MAX_RETRIES,
-    TOKENS_SYNTHESIS, LLM_TEMPERATURE,
+    TOKENS_SYNTHESIS, TOKENS_FAST, LLM_TEMPERATURE,
+)
+from agents.conversation_memory import ConversationMemory
+
+_SUMMARY_PROMPT = (
+    "Existing summary of earlier conversation (may be empty):\n{old}\n\n"
+    "New older messages to fold in:\n{chunk}\n\n"
+    "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
+    "tickers, and decisions mentioned, so later replies stay consistent with this history. "
+    "Return only the summary text."
 )
 
 log = logging.getLogger(__name__)
@@ -56,10 +65,18 @@ class _GroqProvider:
         except ImportError:
             raise ImportError("Run: pip install groq")
         self._system  = system
-        self._history: list[dict] = []
+        self._memory  = ConversationMemory(cap=20, summarizer=self._summarize)
 
     def _client(self):
         return self._Groq(api_key=_groq_rotator.next())
+
+    def _summarize(self, old_summary: str, chunk_text: str) -> str:
+        prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
+        r = self._client().chat.completions.create(
+            model=GROQ_MODEL_FAST, messages=[{"role": "user", "content": prompt}],
+            temperature=0.2, max_tokens=TOKENS_FAST,
+        )
+        return r.choices[0].message.content.strip()
 
     def ask(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
         msgs = [{"role": "system", "content": self._system},
@@ -71,19 +88,19 @@ class _GroqProvider:
         return r.choices[0].message.content.strip()
 
     def chat(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
-        self._history.append({"role": "user", "content": msg})
-        msgs = [{"role": "system", "content": self._system}] + self._history[-20:]
+        self._memory.add_user(msg)
+        msgs = [{"role": "system", "content": self._system}] + self._memory.context()
         r = self._client().chat.completions.create(
             model=model or GROQ_MODEL, messages=msgs,
             temperature=temperature, max_tokens=max_tokens,
         )
         reply = r.choices[0].message.content.strip()
-        self._history.append({"role": "assistant", "content": reply})
+        self._memory.add_assistant(reply)
         return reply
 
     def stream(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None):
-        self._history.append({"role": "user", "content": msg})
-        msgs = [{"role": "system", "content": self._system}] + self._history[-20:]
+        self._memory.add_user(msg)
+        msgs = [{"role": "system", "content": self._system}] + self._memory.context()
         chunks: list[str] = []
         try:
             events = self._client().chat.completions.create(
@@ -97,15 +114,15 @@ class _GroqProvider:
                     yield delta
         except Exception:
             if not chunks:
-                self._history.pop()   # never produced output — don't leave an orphan turn
+                self._memory.pop_last()   # never produced output — don't leave an orphan turn
             raise
-        self._history.append({"role": "assistant", "content": "".join(chunks)})
+        self._memory.add_assistant("".join(chunks))
 
     def reset(self):
-        self._history.clear()
+        self._memory.clear()
 
     def load_history(self, messages: list[dict]):
-        self._history = list(messages[-20:])
+        self._memory.load(messages)
 
 
 class _GeminiProvider:
@@ -125,7 +142,13 @@ class _GeminiProvider:
         except ImportError:
             raise ImportError("Run: pip install google-genai")
         self._system  = system
-        self._history: list[dict] = []
+        self._memory  = ConversationMemory(cap=20, summarizer=self._summarize)
+
+    def _summarize(self, old_summary: str, chunk_text: str) -> str:
+        prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
+        cfg = self._types.GenerateContentConfig(temperature=0.2, max_output_tokens=TOKENS_FAST)
+        r = self._client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=cfg)
+        return r.text.strip()
 
     def ask(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
         # model override is a Groq-only concept (fast vs primary model) — Gemini
@@ -139,37 +162,44 @@ class _GeminiProvider:
         )
         return r.text.strip()
 
-    def chat(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
-        self._history.append({"role": "user", "content": msg})
+    def _system_and_contents(self):
+        """Gemini's Content only accepts user/model roles — a summary system
+        message from ConversationMemory gets folded into system_instruction
+        instead of injected as a fake turn."""
+        ctx = self._memory.context()
+        system = self._system
+        turns = ctx
+        if ctx and ctx[0]["role"] == "system":
+            system = f"{self._system}\n\n{ctx[0]['content']}"
+            turns = ctx[1:]
         contents = [
             self._types.Content(
                 role="user" if t["role"] == "user" else "model",
                 parts=[self._types.Part(text=t["content"])],
             )
-            for t in self._history[-20:]
+            for t in turns
         ]
+        return system, contents
+
+    def chat(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
+        self._memory.add_user(msg)
+        system, contents = self._system_and_contents()
         cfg = self._types.GenerateContentConfig(
-            system_instruction=self._system,
+            system_instruction=system,
             temperature=temperature, max_output_tokens=max_tokens,
         )
         r = self._client.models.generate_content(
             model=GEMINI_MODEL, contents=contents, config=cfg,
         )
         reply = r.text.strip()
-        self._history.append({"role": "assistant", "content": reply})
+        self._memory.add_assistant(reply)
         return reply
 
     def stream(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None):
-        self._history.append({"role": "user", "content": msg})
-        contents = [
-            self._types.Content(
-                role="user" if t["role"] == "user" else "model",
-                parts=[self._types.Part(text=t["content"])],
-            )
-            for t in self._history[-20:]
-        ]
+        self._memory.add_user(msg)
+        system, contents = self._system_and_contents()
         cfg = self._types.GenerateContentConfig(
-            system_instruction=self._system,
+            system_instruction=system,
             temperature=temperature, max_output_tokens=max_tokens,
         )
         chunks: list[str] = []
@@ -183,15 +213,15 @@ class _GeminiProvider:
                     yield delta
         except Exception:
             if not chunks:
-                self._history.pop()
+                self._memory.pop_last()
             raise
-        self._history.append({"role": "assistant", "content": "".join(chunks)})
+        self._memory.add_assistant("".join(chunks))
 
     def reset(self):
-        self._history.clear()
+        self._memory.clear()
 
     def load_history(self, messages: list[dict]):
-        self._history = list(messages[-20:])
+        self._memory.load(messages)
 
 
 # ── Unified client ────────────────────────────────────────────────────────────
