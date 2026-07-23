@@ -7,6 +7,8 @@ langgraph>=0.2.0
 langchain-core>=0.3.0
 langchain-groq>=0.2.0
 langchain-google-genai>=2.0.0
+langgraph-checkpoint-postgres>=2.0.0
+psycopg[binary,pool]>=3.1.0
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 yfinance>=0.2.40
