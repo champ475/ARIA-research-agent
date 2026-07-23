@@ -61,33 +61,33 @@ class _GroqProvider:
     def _client(self):
         return self._Groq(api_key=_groq_rotator.next())
 
-    def ask(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
+    def ask(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
         msgs = [{"role": "system", "content": self._system},
                 {"role": "user",   "content": prompt}]
         r = self._client().chat.completions.create(
-            model=GROQ_MODEL, messages=msgs,
+            model=model or GROQ_MODEL, messages=msgs,
             temperature=temperature, max_tokens=max_tokens,
         )
         return r.choices[0].message.content.strip()
 
-    def chat(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
+    def chat(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
         self._history.append({"role": "user", "content": msg})
         msgs = [{"role": "system", "content": self._system}] + self._history[-20:]
         r = self._client().chat.completions.create(
-            model=GROQ_MODEL, messages=msgs,
+            model=model or GROQ_MODEL, messages=msgs,
             temperature=temperature, max_tokens=max_tokens,
         )
         reply = r.choices[0].message.content.strip()
         self._history.append({"role": "assistant", "content": reply})
         return reply
 
-    def stream(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS):
+    def stream(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None):
         self._history.append({"role": "user", "content": msg})
         msgs = [{"role": "system", "content": self._system}] + self._history[-20:]
         chunks: list[str] = []
         try:
             events = self._client().chat.completions.create(
-                model=GROQ_MODEL, messages=msgs,
+                model=model or GROQ_MODEL, messages=msgs,
                 temperature=temperature, max_tokens=max_tokens, stream=True,
             )
             for event in events:
@@ -127,7 +127,9 @@ class _GeminiProvider:
         self._system  = system
         self._history: list[dict] = []
 
-    def ask(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
+    def ask(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
+        # model override is a Groq-only concept (fast vs primary model) — Gemini
+        # is already the fallback tier, so it always uses GEMINI_MODEL.
         cfg = self._types.GenerateContentConfig(
             system_instruction=self._system,
             temperature=temperature, max_output_tokens=max_tokens,
@@ -137,7 +139,7 @@ class _GeminiProvider:
         )
         return r.text.strip()
 
-    def chat(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
+    def chat(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
         self._history.append({"role": "user", "content": msg})
         contents = [
             self._types.Content(
@@ -157,7 +159,7 @@ class _GeminiProvider:
         self._history.append({"role": "assistant", "content": reply})
         return reply
 
-    def stream(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS):
+    def stream(self, msg: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None):
         self._history.append({"role": "user", "content": msg})
         contents = [
             self._types.Content(
@@ -243,13 +245,13 @@ class LLMClient:
     def provider(self) -> str:
         return self._active
 
-    def ask(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
-        return self._call("ask", prompt, temperature, max_tokens)
+    def ask(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
+        return self._call("ask", prompt, temperature, max_tokens, model)
 
-    def chat(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS) -> str:
-        return self._call("chat", prompt, temperature, max_tokens)
+    def chat(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None) -> str:
+        return self._call("chat", prompt, temperature, max_tokens, model)
 
-    def stream(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS):
+    def stream(self, prompt: str, temperature: float = LLM_TEMPERATURE, max_tokens: int = TOKENS_SYNTHESIS, model: str | None = None):
         """
         Yields incremental text chunks. Falls back Groq -> Gemini only if a
         provider fails before yielding anything — once tokens are already on
@@ -264,7 +266,7 @@ class LLMClient:
                 continue
             started = False
             try:
-                for chunk in provider.stream(prompt, temperature, max_tokens):
+                for chunk in provider.stream(prompt, temperature, max_tokens, model):
                     started = True
                     self._active = provider.name
                     yield chunk
@@ -292,14 +294,14 @@ class LLMClient:
         if self._primary:   self._primary.load_history(messages)
         if self._secondary: self._secondary.load_history(messages)
 
-    def _call(self, method: str, prompt: str, temperature: float, max_tokens: int) -> str:
+    def _call(self, method: str, prompt: str, temperature: float, max_tokens: int, model: str | None = None) -> str:
         last_err = None
         for attempt in range(MAX_RETRIES + 1):
             for provider in [self._primary, self._secondary]:
                 if provider is None:
                     continue
                 try:
-                    result = getattr(provider, method)(prompt, temperature, max_tokens)
+                    result = getattr(provider, method)(prompt, temperature, max_tokens, model)
                     self._active = provider.name
                     return result
                 except Exception as e:
