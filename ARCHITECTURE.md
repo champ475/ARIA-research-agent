@@ -16,6 +16,92 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-07-23 — Recurring alerts with cooldown, instead of fire-once-only
+
+**Problem.** `alerts` fired once then permanently deactivated
+(`active=FALSE`) — flagged in the architecture audit as a real product gap:
+a user watching "TCS above 3500" gets exactly one notification even if they
+want to be told every time it happens (e.g. a recurring RSI oversold signal
+for a swing-trading workflow).
+
+**Alternatives considered.**
+- Make all alerts recurring by default — rejected: a condition like
+  `price_above` that stays true would fire every 5-minute cron tick with no
+  cooldown, spamming Telegram. Fire-once is the safer default.
+- Recurring with no cooldown, relying on the condition itself going false
+  and true again to naturally re-arm (e.g. only fire `price_above` on the
+  crossing, not while-true) — rejected because several alert types
+  (`bulk_deal`, `week52_high`) don't have a clean "de-arm" signal to detect
+  the condition going false again; a time-based cooldown is simpler and
+  uniform across all 14 alert types.
+
+**Final decision.** Added `recurring BOOLEAN DEFAULT FALSE` and
+`cooldown_hours INTEGER DEFAULT 24` columns to `alerts` (migration-safe
+`ALTER TABLE ADD COLUMN IF NOT EXISTS` in `init_db()`, so existing rows stay
+one-shot). `AlertAgent` detects recurring phrasing ("recurring", "every
+time", "keep alerting", etc.) at creation time. `scripts/check_alerts.py`
+skips evaluation entirely for alerts still inside their cooldown window
+(`in_cooldown()`), and on fire, recurring alerts stay `active=TRUE` with
+`triggered_at` refreshed instead of deactivating.
+
+**Trade-offs.** Cooldown is per-alert wall-clock time, not condition-aware —
+a recurring `price_above` alert could still re-fire on the *same* sustained
+breach after 24h even though the price never dipped back below threshold in
+between. Accepted as a reasonable default; users who want strict
+re-arm-on-reset semantics should use one-shot alerts today.
+
+**Future improvements.** Condition-aware re-arming (only re-fire once the
+underlying condition has gone false and become true again) would close the
+above gap for `price_above`/`price_below`/indicator-cross types, but not for
+level-hit types (`week52_high`, `bulk_deal`) where "re-arm" doesn't have an
+obvious analogous reset state.
+
+---
+
+## 2026-07-23 — Conversation summarization instead of silent truncation
+
+**Problem.** `LLMClient`'s per-provider conversation history capped at the
+last 20 messages sent to the model — anything older was simply dropped, not
+summarized. Flagged as an open gap in the architecture audit: a long chat
+thread would silently lose a user's stated goal, a ticker discussed 30 turns
+back, or an earlier decision, with no signal to the model that context was
+missing.
+
+**Alternatives considered.**
+- Increase the window (e.g. cap at 50 instead of 20) — doesn't fix the
+  problem, just delays it, and increases per-call token cost/latency for
+  every single turn regardless of whether the conversation is actually long.
+- Summarize on every call regardless of whether anything overflowed — wastes
+  a full extra LLM call per turn even for short conversations that never hit
+  the cap.
+- Vector-store/embedding retrieval over full history — the codebase has no
+  retrieval layer anywhere (per the audit, all "retrieval" is deterministic
+  structured-data fetching) and this would be a much larger architectural
+  addition for a problem a cheap summarization pass already solves well
+  enough.
+
+**Final decision.** New `agents/conversation_memory.py::ConversationMemory`
+keeps the same 20-message window sent to the model (no added cost on the
+common case) but folds whatever falls out of that window into a running
+summary via one `GROQ_MODEL_FAST`/`GEMINI_MODEL` call, *only* the first time
+a given chunk overflows (tracked via a cursor, not re-summarized every
+turn), prepended as a system message ahead of the recent turns. Also
+deduplicates the near-identical history-management code that was previously
+copy-pasted between `_GroqProvider` and `_GeminiProvider`.
+
+**Trade-offs.** Adds one cheap LLM call per ~10-message overflow chunk (not
+per turn) — small, bounded added latency/cost only for genuinely long
+conversations. Summarization failures degrade gracefully to the old
+plain-truncation behavior and retry next turn, but a persistently failing
+summarizer means that chunk's context is lost, same as before this change.
+
+**Future improvements.** No eval exists for summary quality/faithfulness —
+if hallucination-in-summary becomes a concern, would need a small labeled
+set to check the summary doesn't drop safety-relevant facts (e.g. portfolio
+holdings mentioned early in a planning conversation).
+
+---
+
 ## 2026-07-23 — Data confidence tiering + inline citations
 
 **Problem.** Report output stated ratios and directional calls with uniform
