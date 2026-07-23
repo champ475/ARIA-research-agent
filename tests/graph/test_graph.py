@@ -17,9 +17,11 @@ def _build(qa_response: dict, planner_response: dict = None, reflection_response
     planner = _StubClient(json.dumps(planner_response or {}))
     reflection = _StubClient(json.dumps(reflection_response if reflection_response is not None else {"missing": []}))
     verification = _StubClient(json.dumps(verification_response if verification_response is not None else {"issues": []}))
+    communication = _StubClient("Stub final report text.")
     return build_graph(
         query_analyzer_client=qa, planner_client=planner,
         reflection_client=reflection, verification_client=verification,
+        communication_client=communication,
     )
 
 
@@ -69,6 +71,7 @@ class TestResearchExecutorEndToEnd:
         planner = _StubClient(json.dumps({"tools": ["compute_fundamentals"]}))
         reflection = _StubClient(json.dumps({"missing": []}))
         verification = _StubClient(json.dumps({"issues": []}))
+        communication = _StubClient("Stub final report text.")
         with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}), \
              patch("graph.tool_catalogue.get_financials", return_value={"totalRevenue": 900000}), \
              patch("graph.tool_catalogue.compute_fundamental_ratios", return_value={"pe": 24.3}), \
@@ -77,6 +80,7 @@ class TestResearchExecutorEndToEnd:
             graph = build_graph(
                 query_analyzer_client=qa, planner_client=planner,
                 reflection_client=reflection, verification_client=verification,
+                communication_client=communication,
             )
             return graph.invoke({"query": "analyse RELIANCE fundamentals only"})
 
@@ -109,6 +113,13 @@ class TestResearchExecutorEndToEnd:
         assert "RELIANCE" in result["evidence_summary"]
         assert "fundamental_ratio" in result["evidence_summary"]["RELIANCE"]
 
+    def test_full_pipeline_produces_conclusions_and_real_report(self):
+        result = self._run_with_mocked_tools()
+        assert result["conclusions"]
+        assert any(c["citation_key"] == "pe" for c in result["conclusions"])
+        assert result["final_report"] == "Stub final report text."
+        assert result["confidence_summary"]
+
 
 class TestReflectionVerificationLoop:
     """Covers Phase 4: the Reflection<->ResearchExecutor and
@@ -123,6 +134,7 @@ class TestReflectionVerificationLoop:
         planner = _StubClient(json.dumps({"tools": ["fetch_info"]}))
         reflection = _StubClient(json.dumps(reflection_response))
         verification = _StubClient(json.dumps(verification_response or {"issues": []}))
+        communication = _StubClient("Stub final report text.")
         with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}), \
              patch("graph.tool_catalogue.get_financials", return_value={"totalRevenue": 900000}), \
              patch("tools.data.evidence_cache.evidence_cache_get", return_value=None), \
@@ -130,6 +142,7 @@ class TestReflectionVerificationLoop:
             graph = build_graph(
                 query_analyzer_client=qa, planner_client=planner,
                 reflection_client=reflection, verification_client=verification,
+                communication_client=communication,
             )
             return graph.invoke({"query": query, "max_loops": 2})
 

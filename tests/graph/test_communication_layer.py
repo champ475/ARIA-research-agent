@@ -33,15 +33,28 @@ class TestCommunicationLayerNoConclusions:
     def test_reports_inability_to_answer_without_calling_llm(self):
         stub = _StubClient("should not be used")
         node = build_communication_layer_node(stub)
-        result = node({"conclusions": [], "objective": "analyse RELIANCE", "entities": [], "evidence": []})
+        result = node({
+            "conclusions": [], "objective": "analyse RELIANCE", "entities": [], "evidence": [],
+            "complexity": "moderate",
+        })
         assert "wasn't able to verify" in result["final_report"]
         assert stub.last_prompt is None
 
     def test_confidence_summary_empty(self):
         stub = _StubClient("x")
         node = build_communication_layer_node(stub)
-        result = node({"conclusions": [], "objective": "x", "entities": [], "evidence": []})
+        result = node({"conclusions": [], "objective": "x", "entities": [], "evidence": [], "complexity": "moderate"})
         assert result["confidence_summary"] == {}
+
+    def test_trivial_query_answered_directly_not_reported_as_a_gap(self):
+        stub = _StubClient("PE stands for price-to-earnings ratio.")
+        node = build_communication_layer_node(stub)
+        result = node({
+            "conclusions": [], "objective": "explain PE ratio", "entities": [], "evidence": [],
+            "complexity": "simple", "query": "what does PE mean",
+        })
+        assert result["final_report"] == "PE stands for price-to-earnings ratio."
+        assert stub.last_prompt is not None
 
 
 class TestCommunicationLayerReport:
