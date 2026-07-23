@@ -8,7 +8,6 @@ Callers feed these straight into gr.Plot().
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
-import numpy as np
 from tools.analysis.technical import compute_all
 
 BG     = "#131722"

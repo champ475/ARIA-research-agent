@@ -4,7 +4,6 @@ Recomputes ALL ratios from raw financials — never blindly trusts upstream yfin
 Provides full calculation transparency for explainability.
 """
 
-import numpy as np
 import pandas as pd
 from utils.helpers import safe_float, fmt_num, pct, safe_val
 

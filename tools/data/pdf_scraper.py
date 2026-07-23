@@ -1,14 +1,13 @@
 """
 tools/data/pdf_scraper.py
 Scrapes annual reports and quarterly results PDFs from NSE/BSE.
-Extracts text using pdfplumber. Caches in SQLite.
+Extracts text using pdfplumber. Caches in Postgres (pdf_cache table).
 """
 
 import requests
 import pdfplumber
 import io
 import logging
-from bs4 import BeautifulSoup
 from utils.db import pdf_cache_get, pdf_cache_set
 
 log = logging.getLogger(__name__)

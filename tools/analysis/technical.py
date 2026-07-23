@@ -10,14 +10,13 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 try:
     from ta.momentum   import RSIIndicator, StochasticOscillator
-    from ta.trend      import MACD, SMAIndicator, EMAIndicator, ADXIndicator
+    from ta.trend      import MACD, ADXIndicator
     from ta.volatility import BollingerBands, AverageTrueRange
     TA_OK = True
 except ImportError:
     TA_OK = False
 
 from config import TA_RSI_PERIOD, TA_MACD_FAST, TA_MACD_SLOW, TA_MACD_SIGNAL, TA_BB_PERIOD
-from utils.helpers import safe_float
 
 
 def compute_all(df: pd.DataFrame) -> pd.DataFrame:

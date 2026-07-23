@@ -6,7 +6,6 @@ Creates the DB and all tables on first run.
 """
 
 import json
-import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 from config import DATABASE_URL

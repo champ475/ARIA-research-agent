@@ -9,7 +9,7 @@ import csv
 import re
 import tempfile
 from agents.llm_client import LLMClient
-from config import TOKENS_AGENT, TOKENS_FAST
+from config import TOKENS_AGENT
 
 from tools.screener          import parse_query, run as screener_run, to_markdown as screener_md
 from tools.data.nse_scraper  import get_top_movers, get_bulk_deals, get_block_deals

@@ -5,18 +5,17 @@ Produces Goldman Sachs / Motilal Oswal style equity research reports.
 Report types: Initiating Coverage, Result Update, Sector Thematic, Quick Note
 """
 
-import re
 from agents.llm_client import LLMClient
 from config import TOKENS_SYNTHESIS, TOKENS_AGENT
 
-from tools.data.fetcher      import get_info, get_ohlcv, get_financials, get_macro, get_sector_peers, get_recommendations
+from tools.data.fetcher      import get_info, get_ohlcv, get_financials, get_macro, get_recommendations
 from tools.data.pdf_scraper  import get_latest_quarterly_results, get_annual_report_text
 from tools.data.news_fetcher import company_news, market_news
 from tools.analysis.technical   import compute_all, snapshot, support_resistance
 from tools.analysis.fundamental import compute, to_text
 from tools.analysis.sentiment   import analyse
 from tools.analysis.risk        import assess
-from utils.helpers              import clean_ticker, now_ist, trim_text, parse_intent, resolve_ticker, STOP_WORDS
+from utils.helpers              import now_ist, trim_text, resolve_ticker
 from utils.db                   import report_save, report_list
 import os
 from config import REPORTS_DIR

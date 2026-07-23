@@ -9,7 +9,7 @@ import json
 import re
 
 from agents.llm_client import LLMClient
-from config import TOKENS_AGENT, TOKENS_FAST
+from config import TOKENS_FAST
 from utils.db import alert_add, alert_list, alert_remove, alert_pause, alert_resume
 from utils.helpers import extract_entity, clean_ticker, validate_ticker
 

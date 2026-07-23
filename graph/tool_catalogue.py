@@ -12,7 +12,7 @@ in Phase 7 as each intent is brought onto the graph.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 from tools.data.fetcher import get_info, get_financials, get_ohlcv

@@ -7,8 +7,6 @@ NAV, fund details, top holdings, returns.
 import time
 import requests
 import pandas as pd
-from io import StringIO
-from datetime import datetime
 import logging
 
 log = logging.getLogger(__name__)

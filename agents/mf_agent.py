@@ -5,7 +5,7 @@ Analyses MF schemes, categories, and comparisons using AMFI data.
 """
 
 from agents.llm_client import LLMClient
-from config import TOKENS_AGENT, TOKENS_FAST, TOKENS_COMPLEX
+from config import TOKENS_AGENT, TOKENS_COMPLEX
 from tools.data.amfi import get_all_nav, search_fund, get_category_funds, get_mf_comparison, format_fund_search_results
 from tools.data.news_fetcher import google_news
 from utils.helpers import now_ist
