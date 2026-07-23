@@ -21,15 +21,24 @@ LOADING_HTML = (
 )
 
 # ── Lazy orchestrator loader ──────────────────────────────────────────────────
-# One Orchestrator per user — it owns all four specialist agents internally
-# and routes each message to the right one, so the UI only ever talks to a
-# single chat surface instead of one tab per agent.
+# One Orchestrator per user. USE_LANGGRAPH_ORCHESTRATOR (config.py, default
+# false) swaps in GraphOrchestrator (agents/graph_orchestrator.py) — the
+# LangGraph research-graph engine, see RFC_AGENTIC_RESEARCH_GRAPH.md — behind
+# the same process()/process_stream() interface, so nothing else in this
+# file needs to change to try it. Current graph scope is single-ticker
+# equity queries only (graph/tool_catalogue.py); the flag defaults off until
+# Phase 7 extends coverage to the other intents.
 _orchestrators = {}
 
 def get_orchestrator(user_id: int):
     if user_id not in _orchestrators:
-        from agents.orchestrator import Orchestrator
-        _orchestrators[user_id] = Orchestrator(user_id)
+        from config import USE_LANGGRAPH_ORCHESTRATOR
+        if USE_LANGGRAPH_ORCHESTRATOR:
+            from agents.graph_orchestrator import GraphOrchestrator
+            _orchestrators[user_id] = GraphOrchestrator(user_id)
+        else:
+            from agents.orchestrator import Orchestrator
+            _orchestrators[user_id] = Orchestrator(user_id)
     return _orchestrators[user_id]
 
 
