@@ -114,9 +114,14 @@ def init_db():
             threshold     REAL,
             active        BOOLEAN DEFAULT TRUE,
             created_at    TIMESTAMPTZ DEFAULT now(),
-            triggered_at  TIMESTAMPTZ
+            triggered_at  TIMESTAMPTZ,
+            recurring     BOOLEAN DEFAULT FALSE,
+            cooldown_hours INTEGER DEFAULT 24
         );
         CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts (active) WHERE active = TRUE;
+        -- Migration for DBs created before recurring alerts existed.
+        ALTER TABLE alerts ADD COLUMN IF NOT EXISTS recurring BOOLEAN DEFAULT FALSE;
+        ALTER TABLE alerts ADD COLUMN IF NOT EXISTS cooldown_hours INTEGER DEFAULT 24;
 
         CREATE TABLE IF NOT EXISTS chat_sessions (
             id          SERIAL PRIMARY KEY,
@@ -377,11 +382,12 @@ def screener_list(user_id: int) -> list[dict]:
 
 # ── Alert helpers ─────────────────────────────────────────────────────────────
 
-def alert_add(user_id: int, symbol: str, alert_type: str, condition: str, threshold: float | None) -> int:
+def alert_add(user_id: int, symbol: str, alert_type: str, condition: str, threshold: float | None,
+              recurring: bool = False, cooldown_hours: int = 24) -> int:
     row = _query(
-        "INSERT INTO alerts (user_id, symbol, alert_type, condition, threshold) "
-        "VALUES (%s,%s,%s,%s,%s) RETURNING id",
-        (user_id, symbol.upper(), alert_type, condition, threshold),
+        "INSERT INTO alerts (user_id, symbol, alert_type, condition, threshold, recurring, cooldown_hours) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        (user_id, symbol.upper(), alert_type, condition, threshold, recurring, cooldown_hours),
         fetch="one", commit=True,
     )
     return row["id"]
@@ -422,12 +428,20 @@ def alert_resume(user_id: int, alert_id: int):
     )
 
 
-def alert_mark_triggered(alert_id: int):
-    """Called only by scripts/check_alerts.py — fires once, then deactivates."""
-    _query(
-        "UPDATE alerts SET active=FALSE, triggered_at=now() WHERE id=%s",
-        (alert_id,), fetch=None, commit=True,
-    )
+def alert_mark_triggered(alert_id: int, recurring: bool = False):
+    """Called only by scripts/check_alerts.py. One-shot alerts deactivate on
+    fire; recurring alerts stay active — check_alerts.py's cooldown_hours
+    check prevents them from re-firing on every 5-min cron tick."""
+    if recurring:
+        _query(
+            "UPDATE alerts SET triggered_at=now() WHERE id=%s",
+            (alert_id,), fetch=None, commit=True,
+        )
+    else:
+        _query(
+            "UPDATE alerts SET active=FALSE, triggered_at=now() WHERE id=%s",
+            (alert_id,), fetch=None, commit=True,
+        )
 
 
 def alert_get_active_all() -> list[dict]:

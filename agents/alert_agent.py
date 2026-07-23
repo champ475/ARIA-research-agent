@@ -28,6 +28,11 @@ _ALERT_TYPES = [
     "week52_high", "week52_low", "bulk_deal", "portfolio_pnl",
 ]
 
+_RECURRING_KW = [
+    "recurring", "every time", "each time", "repeatedly", "keep alerting",
+    "keep notifying", "every day", "daily alert", "don't deactivate", "dont deactivate",
+]
+
 _LIST_KW   = ["list my alert", "show my alert", "my alerts", "active alerts", "show alerts"]
 _CANCEL_KW = ["cancel", "delete", "remove", "stop alert"]
 _PAUSE_KW  = ["pause"]
@@ -104,11 +109,17 @@ class AlertAgent:
                 "\"notify me on a MACD bullish crossover\"?"
             )
 
-        alert_id = alert_add(self._user_id, symbol, alert_type, condition, threshold)
+        recurring = any(k in msg.lower() for k in _RECURRING_KW)
+        alert_id = alert_add(self._user_id, symbol, alert_type, condition, threshold, recurring=recurring)
+        lifecycle = (
+            "It's recurring — you'll get notified again if it re-triggers after a 24h cooldown."
+            if recurring else
+            "You'll get a Telegram notification when this triggers. It fires once, then deactivates."
+        )
         return (
             f"✅ Alert created (#{alert_id})\n\n"
             f"**{symbol}** — {condition}\n\n"
-            "You'll get a Telegram notification when this triggers. It fires once, then deactivates."
+            f"{lifecycle}"
         )
 
     def _regex_extract(self, msg: str, symbol: str):
@@ -151,10 +162,11 @@ class AlertAgent:
         alerts = alert_list(self._user_id)
         if not alerts:
             return "You have no alerts yet. Try \"alert me if TCS drops below 3500\"."
-        lines = ["## Your Alerts\n", "| # | Symbol | Condition | Status | Created |", "|---|--------|-----------|--------|---------|"]
+        lines = ["## Your Alerts\n", "| # | Symbol | Condition | Status | Recurring | Created |", "|---|--------|-----------|--------|-----------|---------|"]
         for a in alerts:
             status = "🟢 Active" if a["active"] else ("🔔 Triggered" if a["triggered_at"] else "⏸️ Paused")
-            lines.append(f"| {a['id']} | {a['symbol']} | {a['condition']} | {status} | {a['created_at'].strftime('%Y-%m-%d')} |")
+            recurring = "🔁 Yes" if a.get("recurring") else "No"
+            lines.append(f"| {a['id']} | {a['symbol']} | {a['condition']} | {status} | {recurring} | {a['created_at'].strftime('%Y-%m-%d')} |")
         return "\n".join(lines)
 
     def _match_alert(self, msg: str):

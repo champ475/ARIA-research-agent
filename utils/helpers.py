@@ -85,6 +85,9 @@ STOP_WORDS = {
     "CROSS", "CROSSES", "CROSSING", "DROPS", "DROP", "GOES", "GO",
     "ABOVE", "BELOW", "THRESHOLD", "CANCEL", "DELETE", "REMOVE",
     "PAUSE", "RESUME", "REACTIVATE", "UNPAUSE", "ACTIVE",
+    # Recurring-alert phrasing ("alert me every time X", "recurring alert if Y") —
+    # same class of bug as above: capitalized, common in alert phrasing, not tickers.
+    "TIME", "TIMES", "KEEP", "REPEATEDLY", "RECURRING", "DEACTIVATE", "DEACTIVATES",
 }
 
 
@@ -224,11 +227,21 @@ def extract_entity(query: str) -> str | None:
     if m:
         return m.group(1)
 
-    # 3. Extract capitalised tokens, filter stop-words
+    # 3. Extract capitalised tokens, filter stop-words. Prefer a token that's
+    #    already a known curated ticker over the first non-stopword generic
+    #    word — STOP_WORDS is a maintained blocklist that can never keep up
+    #    with every phrasing ("recurring alert if RELIANCE...": "RECURRING"
+    #    might slip through before someone adds it, but RELIANCE is always a
+    #    stronger signal). Falls back to first-token order for genuinely
+    #    unrecognized tickers not yet in the curated universe.
+    from config import STOCK_UNIVERSE
     tokens = re.findall(r'\b([A-Z][A-Z0-9\-&]{1,14})\b', upper)
-    for t in tokens:
-        if t not in STOP_WORDS and len(t) >= 2:
+    candidates = [t for t in tokens if t not in STOP_WORDS and len(t) >= 2]
+    for t in candidates:
+        if t in STOCK_UNIVERSE or t in TICKER_ALIASES:
             return TICKER_ALIASES.get(t, t)
+    if candidates:
+        return TICKER_ALIASES.get(candidates[0], candidates[0])
 
     return None
 

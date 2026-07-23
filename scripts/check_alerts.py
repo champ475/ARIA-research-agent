@@ -13,7 +13,7 @@ Requires env vars: DATABASE_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
 
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -169,6 +169,19 @@ _INDICATOR_TYPES = {
 }
 
 
+def in_cooldown(alert: dict) -> bool:
+    """Recurring alerts that already fired must wait out cooldown_hours before
+    re-firing, or a condition that stays true (e.g. price_above once crossed)
+    would spam a notification every 5-min cron tick."""
+    if not alert.get("recurring") or alert.get("triggered_at") is None:
+        return False
+    cooldown = alert.get("cooldown_hours") or 24
+    triggered_at = alert["triggered_at"]
+    if triggered_at.tzinfo is None:
+        triggered_at = triggered_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - triggered_at < timedelta(hours=cooldown)
+
+
 def evaluate(conn, alert: dict) -> str | None:
     symbol, atype, threshold = alert["symbol"], alert["alert_type"], alert["threshold"]
     if atype in ("price_above", "price_below"):
@@ -196,17 +209,23 @@ def main():
         alerts = cur.fetchall()
         print(f"Evaluating {len(alerts)} active alert(s).")
         for alert in alerts:
+            alert = dict(alert)
+            if in_cooldown(alert):
+                continue
             try:
-                msg = evaluate(conn, dict(alert))
+                msg = evaluate(conn, alert)
             except Exception as e:
                 print(f"Error evaluating alert {alert['id']} ({alert['symbol']}): {e}")
                 continue
             if msg:
                 send_telegram(msg)
-                cur.execute(
-                    "UPDATE alerts SET active=FALSE, triggered_at=now() WHERE id=%s",
-                    (alert["id"],),
-                )
+                if alert.get("recurring"):
+                    cur.execute("UPDATE alerts SET triggered_at=now() WHERE id=%s", (alert["id"],))
+                else:
+                    cur.execute(
+                        "UPDATE alerts SET active=FALSE, triggered_at=now() WHERE id=%s",
+                        (alert["id"],),
+                    )
                 conn.commit()
                 print(f"Fired alert {alert['id']}: {msg}")
     finally:
