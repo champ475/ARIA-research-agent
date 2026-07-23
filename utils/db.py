@@ -183,6 +183,25 @@ def init_db():
             profile     JSONB NOT NULL DEFAULT '{}',
             updated_at  TIMESTAMPTZ DEFAULT now()
         );
+
+        -- Shared, tool-keyed evidence cache for the research graph (see
+        -- graph/tool_catalogue.py, RFC_AGENTIC_RESEARCH_GRAPH.md Sec8). Not
+        -- per-tenant — same reasoning as pdf_cache/cache_meta, a fundamental
+        -- ratio for RELIANCE is the same fact regardless of which user asked.
+        -- TTL enforcement is application-side (tools/data/evidence_cache.py)
+        -- keyed by evidence_type, not a DB-level expiry.
+        CREATE TABLE IF NOT EXISTS evidence_cache (
+            id             SERIAL PRIMARY KEY,
+            tool           TEXT NOT NULL,
+            args_hash      TEXT NOT NULL,
+            entity         TEXT NOT NULL,
+            evidence_type  TEXT NOT NULL,
+            payload        JSONB NOT NULL,
+            confidence     REAL NOT NULL DEFAULT 1.0,
+            fetched_at     TIMESTAMPTZ DEFAULT now(),
+            UNIQUE (tool, args_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_evidence_cache_entity ON evidence_cache (entity, evidence_type);
         """)
         conn.commit()
     finally:
@@ -442,6 +461,26 @@ def profile_upsert(user_id: int, updates: dict) -> dict:
         (user_id, json.dumps(current), json.dumps(current)), fetch=None, commit=True,
     )
     return current
+
+
+# ── Evidence cache helpers (research graph, see tools/data/evidence_cache.py) ─
+
+def evidence_cache_get(tool: str, args_hash: str) -> dict | None:
+    return _query(
+        "SELECT payload, confidence, fetched_at FROM evidence_cache WHERE tool=%s AND args_hash=%s",
+        (tool, args_hash), fetch="one",
+    )
+
+
+def evidence_cache_put(tool: str, args_hash: str, entity: str, evidence_type: str, payload: dict, confidence: float = 1.0) -> None:
+    _query(
+        "INSERT INTO evidence_cache (tool, args_hash, entity, evidence_type, payload, confidence) "
+        "VALUES (%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (tool, args_hash) DO UPDATE "
+        "SET payload=EXCLUDED.payload, confidence=EXCLUDED.confidence, fetched_at=now()",
+        (tool, args_hash, entity, evidence_type, json.dumps(payload, default=str), confidence),
+        fetch=None, commit=True,
+    )
 
 
 def profile_clear(user_id: int):
