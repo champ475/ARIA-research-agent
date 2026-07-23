@@ -188,7 +188,6 @@ Write a helpful response:
         return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
 
     def _category(self, category: str, msg: str) -> str:
-        nav_df = self._get_nav()
         funds  = get_category_funds(category, top_n=12)
         table  = format_fund_search_results(funds)
         news   = google_news(f"India {category} mutual fund 2025", n=5)

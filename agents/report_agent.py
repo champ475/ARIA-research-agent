@@ -50,6 +50,23 @@ HANDLING COMPLEX / MULTI-PART REQUESTS:
 """
 
 
+def _format_recs(recs_df) -> str:
+    """Latest analyst recommendation-count row from yfinance's recommendations
+    frame, e.g. 'strongBuy=8, buy=12, hold=5, sell=1, strongSell=0'."""
+    if recs_df is None or recs_df.empty:
+        return "No analyst recommendation data available"
+    try:
+        latest = recs_df.iloc[-1]
+        parts = [
+            f"{col}={int(latest[col])}"
+            for col in ("strongBuy", "buy", "hold", "sell", "strongSell")
+            if col in latest.index and latest[col]
+        ]
+        return ", ".join(parts) if parts else "No analyst recommendation data available"
+    except Exception:
+        return "No analyst recommendation data available"
+
+
 class ReportAgent:
 
     def __init__(self, user_id: int):
@@ -185,6 +202,7 @@ Risk score: {risk['score']}/100 — {risk['level']} | Sentiment: {sent['label']}
 DCF: Bear ₹{dcf.get('Bear') or (dcf.get('Bear') or dcf.get('bear', 'N/A'))} | Base ₹{dcf.get('Base') or (dcf.get('Base') or dcf.get('base', 'N/A'))} | Bull ₹{dcf.get('Bull') or (dcf.get('Bull') or dcf.get('bull', 'N/A'))}
 Quarterly results: {q_note}
 Annual report highlights: {a_note}
+Street consensus (analyst ratings): {_format_recs(recs_df)}
 
 Write the FULL report with these EXACT sections (professional brokerage style):
 
@@ -252,6 +270,7 @@ Write the FULL report with these EXACT sections (professional brokerage style):
 ## Rating & Price Target
 **Rating:** [RATING] | **Target:** ₹[TP] (12-month) | **Stop-loss:** ₹[SL]
 **Previous Rating:** N/A (Initiating Coverage)
+**Street Consensus:** (state how your rating compares to the analyst ratings given above, if any)
 
 ---
 *ARIA Research | Analyst: ARIA AI | Date: {now_ist()}*
