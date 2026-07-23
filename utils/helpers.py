@@ -326,8 +326,8 @@ def _known_intents() -> set[str]:
 
 def is_known_ticker(ticker: str) -> bool:
     """Cheap, no-network membership check against the curated sector universe."""
-    from config import NIFTY200
-    return ticker in NIFTY200
+    from config import STOCK_UNIVERSE
+    return ticker in STOCK_UNIVERSE
 
 
 def ticker_has_market_data(ticker: str) -> bool:
@@ -366,13 +366,13 @@ def llm_resolve_query(query: str, client) -> dict:
     (network, parse, or malformed-JSON error), so callers never need a try/except.
     """
     import json
-    from config import NIFTY200, TOKENS_FAST
+    from config import STOCK_UNIVERSE, TOKENS_FAST
 
     global _VALID_LLM_INTENTS
     if _VALID_LLM_INTENTS is None:
         _VALID_LLM_INTENTS = _known_intents()
 
-    universe = ", ".join(NIFTY200)
+    universe = ", ".join(STOCK_UNIVERSE)
     prompt = (
         "You are a strict entity/intent extractor for an Indian stock-market chatbot. "
         "Do not explain, do not add commentary — output ONLY a single JSON object.\n\n"

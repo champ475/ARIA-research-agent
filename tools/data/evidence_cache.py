@@ -2,7 +2,7 @@
 Evidence cache (RFC_AGENTIC_RESEARCH_GRAPH.md Sec8). Extends the existing
 tools/data/cache.py Parquet-cache pattern to graph Evidence: keyed by
 (tool, args_hash) in Postgres (utils/db.py's evidence_cache table, shared
-across users like pdf_cache/cache_meta), with a per-evidence-type TTL
+across users like pdf_cache), with a per-evidence-type TTL
 enforced here rather than at the DB level. ResearchExecutor checks this
 before calling a tool so a reflection loop that re-plans the same fetch
 reuses the answer instead of re-fetching.

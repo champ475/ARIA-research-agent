@@ -133,4 +133,6 @@ SECTOR_UNIVERSE = {
     ],
 }
 
-NIFTY200 = [s for stocks in SECTOR_UNIVERSE.values() for s in stocks]
+# Flattened stock universe across all sectors — historically named NIFTY200 but
+# is actually ~100 curated NSE stocks, not the NIFTY 200 index constituents.
+STOCK_UNIVERSE = [s for stocks in SECTOR_UNIVERSE.values() for s in stocks]

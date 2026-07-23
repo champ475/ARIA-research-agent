@@ -2,7 +2,7 @@
 
 import re
 import yfinance as yf
-from config import NIFTY200, SECTOR_UNIVERSE
+from config import STOCK_UNIVERSE, SECTOR_UNIVERSE
 from utils.helpers import safe_float
 
 
@@ -43,7 +43,7 @@ def parse_query(query: str) -> dict:
 
 
 def run(filters: dict, max_stocks: int = 30) -> list[dict]:
-    universe = SECTOR_UNIVERSE.get(filters.get("sector",""), NIFTY200)[:max_stocks]
+    universe = SECTOR_UNIVERSE.get(filters.get("sector",""), STOCK_UNIVERSE)[:max_stocks]
     results  = []
     for sym in universe:
         try:

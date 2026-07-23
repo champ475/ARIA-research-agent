@@ -118,12 +118,6 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts (active) WHERE active = TRUE;
 
-        CREATE TABLE IF NOT EXISTS cache_meta (
-            key         TEXT PRIMARY KEY,
-            fetched_at  TIMESTAMPTZ NOT NULL,
-            ttl_seconds INTEGER DEFAULT 3600
-        );
-
         CREATE TABLE IF NOT EXISTS chat_sessions (
             id          SERIAL PRIMARY KEY,
             user_id     INTEGER NOT NULL REFERENCES users(id),
@@ -162,7 +156,7 @@ def init_db():
         );
 
         -- pdf_cache is a shared, symbol-keyed fetch cache (not per-tenant data),
-        -- so it intentionally has no user_id — same reasoning as cache_meta.
+        -- so it intentionally has no user_id.
         CREATE TABLE IF NOT EXISTS pdf_cache (
             id            SERIAL PRIMARY KEY,
             symbol        TEXT NOT NULL,
@@ -186,7 +180,7 @@ def init_db():
 
         -- Shared, tool-keyed evidence cache for the research graph (see
         -- graph/tool_catalogue.py, RFC_AGENTIC_RESEARCH_GRAPH.md Sec8). Not
-        -- per-tenant — same reasoning as pdf_cache/cache_meta, a fundamental
+        -- per-tenant — same reasoning as pdf_cache, a fundamental
         -- ratio for RELIANCE is the same fact regardless of which user asked.
         -- TTL enforcement is application-side (tools/data/evidence_cache.py)
         -- keyed by evidence_type, not a DB-level expiry.
