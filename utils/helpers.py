@@ -153,6 +153,37 @@ def trim_text(text: str, max_words: int = 150) -> str:
     return " ".join(words[:max_words]) + " ...[truncated]"
 
 
+def parse_screener_name(query: str) -> str:
+    """Extract a screener name from a "save this screener as X" style
+    message. Prefers a quoted name (so multi-word names with filler words
+    like "as"/"screener" in them parse correctly); falls back to whatever
+    follows the last "as" if unquoted; defaults to "My Screener" if neither
+    pattern is found. Shared by agents/screener_agent.py and
+    graph/tool_catalogue.py so both save under the same name for the same
+    message."""
+    quoted = re.search(r'["\']([^"\']+)["\']', query)
+    if quoted:
+        return quoted.group(1).strip()
+    trailing_as = re.search(r'\bas\s+([a-zA-Z0-9\s]+)$', query, re.I)
+    if trailing_as:
+        return trailing_as.group(1).strip()
+    return "My Screener"
+
+
+def detect_report_type(lower: str) -> str:
+    """Classify a (lowercased) report-domain message into IC/RU/QN/ST.
+    Shared by agents/report_agent.py and graph/nodes/communication_layer.py
+    so both the legacy and graph-based report paths pick the same report
+    shape for the same query."""
+    if any(k in lower for k in ["earnings", "results", "quarterly", "q1", "q2", "q3", "q4", "guidance"]):
+        return "RU"
+    if any(k in lower for k in ["quick", "flash", "brief", "short", "1 page"]):
+        return "QN"
+    if any(k in lower for k in ["sector", "theme", "thematic", "industry"]):
+        return "ST"
+    return "IC"
+
+
 # ── Intent-first query parser ─────────────────────────────────────────────────
 
 # Ordered intent keywords — checked in order, first match wins

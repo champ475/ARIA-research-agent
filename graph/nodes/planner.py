@@ -6,8 +6,20 @@ resolved deterministically from ToolSpec.depends_on (graph.tool_catalogue) —
 never trusted to the LLM, since a wrong dependency edge silently corrupts
 ResearchExecutor's fan-out (Phase 3) in a way that's hard to catch downstream.
 
-complexity == "simple" or no entities short-circuits to an empty task list —
-this is the concrete implementation of "avoid unnecessary tool execution".
+complexity == "simple" short-circuits to an empty task list — this is the
+concrete implementation of "avoid unnecessary tool execution".
+
+Phase 7.3: entities=[] no longer short-circuits on its own. Whole-market/
+user-scoped domains (screener's filter-based screens, alert-list, mf category/
+news lookups) legitimately have no ticker to extract, but still need to run
+a tool — `_build_tasks` falls back to a single synthetic "market" entity so
+these tools still get exactly one Task each, instead of Planner never being
+consulted at all. Ticker-shaped tools (fetch_info, compute_fundamentals, ...)
+are unaffected in the normal case since real queries about a stock always
+have a real entity from utils.helpers.extract_all_entities; the LLM tool
+selection step is what keeps ticker-only tools from being wrongly selected
+for a "market"-entity task in the first place (Planner's own instruction:
+"pick only tools whose data the objective actually needs").
 """
 from __future__ import annotations
 
@@ -19,7 +31,7 @@ from agents.llm_client import LLMClient
 from config import GROQ_MODEL_FAST, TOKENS_AGENT
 from graph.journal import log_decision
 from graph.state import GraphState, ResearchPlan, Task
-from graph.tool_catalogue import catalogue_summary, get_tool, list_tools
+from graph.tool_catalogue import NO_ENTITY_SENTINEL, catalogue_summary, get_tool, list_tools
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +91,7 @@ def _with_transitive_deps(selected: list[str]) -> list[str]:
 
 def _build_tasks(tool_names: list[str], entities: list[str]) -> list[Task]:
     tasks: list[Task] = []
-    for entity in entities:
+    for entity in (entities or [NO_ENTITY_SENTINEL]):
         for tool_name in tool_names:
             spec = get_tool(tool_name)
             task: Task = {
@@ -103,7 +115,7 @@ def build_planner_node(client: LLMClient | None = None) -> Callable[[GraphState]
         entities = state.get("entities", [])
         complexity = state.get("complexity", "simple")
 
-        if complexity == "simple" or not entities:
+        if complexity == "simple":
             plan: ResearchPlan = {"objective": objective, "tasks": [], "complexity": complexity}
             return {
                 "plan": plan,

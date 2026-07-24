@@ -4,6 +4,16 @@ call — entity extraction is fully deterministic (reused from utils.helpers,
 which already does alias resolution like SBI -> SBIN); only intent/objective/
 complexity go through the LLM, routed via GROQ_MODEL_FAST since this runs on
 every turn and doesn't need the primary model's reasoning depth.
+
+Phase 7.4 (multi-intent-in-one-turn): `secondary_intents` lets one message
+name more than one domain (e.g. "generate a report on TCS and alert me if it
+drops 5%" -> intent="report", secondary_intents=["alert"]). Planner itself
+needed NO change to support this — it already free-selects tools from the
+WHOLE catalogue based on `objective` text, never gated by `intent` at all
+(intent is only consumed downstream, by CommunicationLayer's domain-specific
+branches and by GraphOrchestrator's tab_used label). This field only exists
+so those two consumers know a second domain was named, not to change what
+tools Planner considers.
 """
 from __future__ import annotations
 
@@ -19,10 +29,15 @@ from utils.helpers import extract_all_entities
 
 log = logging.getLogger(__name__)
 
+_VALID_INTENTS = ["equity", "report", "mf", "screener", "alert", "planning", "chat"]
+
 _SYSTEM = (
     "You classify a user's financial-research question for ARIA, an autonomous "
     "research engine. Respond with ONLY a JSON object, no prose, no markdown fences:\n"
     '{"intent": one of ["equity","report","mf","screener","alert","planning","chat"], '
+    '"secondary_intents": a list of any OTHER domains (same allowed values) this message '
+    "ALSO names — e.g. \"generate a report on TCS and alert me if it drops 5%\" is "
+    'intent="report", secondary_intents=["alert"]; empty list if only one domain applies, '
     '"objective": a one-sentence statement of what the user actually wants answered, '
     '"complexity": one of ["simple","moderate","complex"]}\n'
     '"simple" = no data lookup needed (definitions, greetings, generic advice). '
@@ -31,7 +46,7 @@ _SYSTEM = (
     "analysis (e.g. compare two stocks and set an alert)."
 )
 
-_FALLBACK = {"intent": "chat", "objective": "", "complexity": "simple"}
+_FALLBACK = {"intent": "chat", "secondary_intents": [], "objective": "", "complexity": "simple"}
 
 
 def _build_prompt(query: str, entities: list[str]) -> str:
@@ -52,8 +67,21 @@ def _strip_code_fence(raw: str) -> str:
 def _parse(raw: str) -> dict:
     try:
         parsed = json.loads(_strip_code_fence(raw))
+        intent = parsed.get("intent", _FALLBACK["intent"])
+        secondary = parsed.get("secondary_intents") or []
+        if not isinstance(secondary, list):
+            secondary = []
+        # Never duplicate the primary intent, never include an invalid label,
+        # dedupe while preserving order.
+        seen = {intent}
+        clean_secondary = []
+        for s in secondary:
+            if s in _VALID_INTENTS and s not in seen:
+                seen.add(s)
+                clean_secondary.append(s)
         return {
-            "intent": parsed.get("intent", _FALLBACK["intent"]),
+            "intent": intent,
+            "secondary_intents": clean_secondary,
             "objective": parsed.get("objective", _FALLBACK["objective"]),
             "complexity": parsed.get("complexity", _FALLBACK["complexity"]),
         }
@@ -81,12 +109,14 @@ def build_query_analyzer_node(client: LLMClient | None = None) -> Callable[[Grap
         return {
             "entities": entities,
             "intent": classification["intent"],
+            "secondary_intents": classification["secondary_intents"],
             "objective": classification["objective"],
             "complexity": classification["complexity"],
             **log_decision(
                 "QueryAnalyzer",
                 f"intent={classification['intent']}, complexity={classification['complexity']}",
-                f"entities={entities or 'none'}",
+                f"entities={entities or 'none'}"
+                + (f", secondary_intents={classification['secondary_intents']}" if classification["secondary_intents"] else ""),
             ),
         }
 

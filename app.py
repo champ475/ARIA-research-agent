@@ -8,7 +8,6 @@ import gradio as gr
 from utils.db    import init_db
 from utils.helpers import now_ist
 from utils.auth import signup, login, AuthError
-from agents.orchestrator import route as orch_route
 
 # ── Init DB on startup ────────────────────────────────────────────────────────
 init_db()
@@ -61,6 +60,16 @@ _TAB_LABELS = {
     "planning": "🧭 Financial Planner",
 }
 
+
+def _tab_label(tab_used: str) -> str:
+    """Renders a routing badge label for `tab_used`, including a joined
+    multi-domain label (e.g. "report+alert" -> "📋 Report Generator + 🔔
+    Alerts") when the graph orchestrator names more than one domain for this
+    turn (Phase 7.4 multi-intent support) — falls back to the raw segment
+    for any domain name not in _TAB_LABELS."""
+    parts = tab_used.split("+")
+    return " + ".join(_TAB_LABELS.get(p, p) for p in parts)
+
 CHAT_DEFAULTS = [
     "Analyse TCS", "IC report for TCS", "Best ELSS for tax saving", "Top gainers today",
 ]
@@ -99,10 +108,20 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
 
     # Timeframe keyword only makes sense when equity handles the message —
     # decide the route up front so it isn't injected into an unrelated agent.
-    if orch_route(clean) == "equity":
-        kw = _TF_KEYWORDS.get(tf, "")
-        if kw and kw not in clean.lower():
-            clean = clean + " " + kw
+    # Sourced from the SAME orchestrator instance that will actually process
+    # this message (Orchestrator.classify()/GraphOrchestrator.classify(), both
+    # single-purpose cheap pre-checks) so this decision and the real routing
+    # decision can never disagree about which orchestrator is active. Any
+    # failure here (e.g. missing API key) is swallowed — the actual
+    # process_stream() call below re-attempts orchestrator construction and
+    # surfaces the same failure as a proper "API Key Required" message.
+    try:
+        if get_orchestrator(user_id).classify(clean) == "equity":
+            kw = _TF_KEYWORDS.get(tf, "")
+            if kw and kw not in clean.lower():
+                clean = clean + " " + kw
+    except Exception:
+        pass
 
     # Immediately show loading indicator while the orchestrator processes
     loading_hist = history + [
@@ -129,7 +148,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
                 chart_fig = chart
             streaming_hist = history + [
                 {"role": "user",      "content": message},
-                {"role": "assistant", "content": f"*🔀 Routed to: {_TAB_LABELS.get(tab_used, tab_used)}*\n\n" + text},
+                {"role": "assistant", "content": f"*🔀 Routed to: {_tab_label(tab_used)}*\n\n" + text},
             ]
             yield (
                 "", streaming_hist, gr.update(value=chart_fig, visible=chart_fig is not None),
@@ -137,7 +156,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
             ) + _make_btn_updates(suggestions)
 
         new_sugg = orch.generate_suggestions(text, clean)
-        text = f"*🔀 Routed to: {_TAB_LABELS.get(tab_used, tab_used)}*\n\n" + text
+        text = f"*🔀 Routed to: {_tab_label(tab_used)}*\n\n" + text
         if pdf_path:
             pdf_update = gr.update(value=pdf_path, label=f"⬇ {os.path.basename(pdf_path)}", visible=True)
         if md_path:

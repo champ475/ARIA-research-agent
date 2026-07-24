@@ -18,14 +18,43 @@ of their own field name — a Conclusion, just without a footnote lookup.
 """
 from __future__ import annotations
 
+import pandas as pd
+
 from graph.journal import log_decision
 from graph.state import Conclusion, Evidence, GraphState
+from utils.helpers import trim_text
 
 # Matches tools/analysis/fundamental.py's _CITATION_FIELDS keys exactly.
 _CANONICAL_RATIO_KEYS = {"pe", "pb", "roce", "de", "cr"}
 
 # Evidence types whose numeric payload fields are worth a Conclusion each.
 _NUMERIC_EVIDENCE_TYPES = {"fundamental_ratio", "quote_info", "technical_indicator"}
+
+# Report/mf/screener-domain free-text payloads (quarterly/annual filings,
+# fund comparisons, a rendered screener results table) — not numeric, but
+# still worth a Conclusion so CommunicationLayer (which only ever reads
+# conclusions, never raw evidence) can reference them. screener_table in
+# particular is the RFC §18 cross-entity comparison need's actual fix: since
+# screener_run/screener_to_markdown treat the whole matching stock set as
+# ONE evidence item (not one Evidence per stock), the full comparison table
+# reaches CommunicationLayer as a single coherent Conclusion — no per-entity
+# tagging/grouping machinery needed, because the fragmentation problem the
+# RFC worried about (Planner cross-producting tool x entity, one Evidence
+# per entity) doesn't apply here: screener's entity is the synthetic
+# NO_ENTITY_SENTINEL, and the tool itself returns every matching row at once.
+_TEXT_EVIDENCE_TYPES = {"pdf_extract", "mf_comparison", "screener_table"}
+_NOT_AVAILABLE_MARKERS = ("no ",)  # tools/data/pdf_scraper.py's "not found" convention
+
+# DataFrame payloads worth a match-count Conclusion, same idea as
+# news_headline's count-based Conclusion — covers mf (NAV search/category
+# listing) and screener/market-data domains (movers, bulk/block deals).
+_DATAFRAME_EVIDENCE_TYPES = {
+    "mf_nav": "matching mutual fund(s) found",
+    "mf_category_funds": "matching mutual fund(s) found",
+    "top_movers": "top mover(s) on record",
+    "bulk_deals": "bulk deal(s) on record",
+    "block_deals": "block deal(s) on record",
+}
 
 
 def _numeric_fields(payload) -> dict[str, float]:
@@ -65,6 +94,57 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
             "confidence": ev["confidence"],
             "evidence_ids": [ev["id"]],
             "citation_key": f"{ev['entity']}.news_count",
+        })
+
+    elif ev["evidence_type"] in _TEXT_EVIDENCE_TYPES and isinstance(ev["payload"], str):
+        text = ev["payload"]
+        if text and not text.lower().startswith(_NOT_AVAILABLE_MARKERS):
+            conclusions.append({
+                "claim": f"{ev['entity']} {ev['tool']}: {trim_text(text, 150)}",
+                "value": text,
+                "confidence": ev["confidence"],
+                "evidence_ids": [ev["id"]],
+                "citation_key": f"{ev['entity']}.{ev['tool']}",
+            })
+
+    elif ev["evidence_type"] in _DATAFRAME_EVIDENCE_TYPES and isinstance(ev["payload"], pd.DataFrame):
+        n = len(ev["payload"])
+        label = _DATAFRAME_EVIDENCE_TYPES[ev["evidence_type"]]
+        conclusions.append({
+            "claim": f"{ev['entity']}: {n} {label}",
+            "value": n,
+            "confidence": ev["confidence"],
+            "evidence_ids": [ev["id"]],
+            "citation_key": f"{ev['entity']}.{ev['evidence_type']}",
+        })
+
+    elif ev["evidence_type"] == "screener_saved" and isinstance(ev["payload"], dict):
+        p = ev["payload"]
+        conclusions.append({
+            "claim": f"Screener saved as '{p.get('name')}' with filters: {p.get('filters')}",
+            "value": p,
+            "confidence": ev["confidence"],
+            "evidence_ids": [ev["id"]],
+            "citation_key": f"{ev['entity']}.screener_saved",
+        })
+
+    elif ev["evidence_type"] == "alert_list" and isinstance(ev["payload"], list):
+        conclusions.append({
+            "claim": f"You have {len(ev['payload'])} alert(s) on record",
+            "value": len(ev["payload"]),
+            "confidence": ev["confidence"],
+            "evidence_ids": [ev["id"]],
+            "citation_key": "alerts.count",
+        })
+
+    elif ev["evidence_type"] == "alert_action" and isinstance(ev["payload"], dict):
+        p = ev["payload"]
+        conclusions.append({
+            "claim": f"Alert {p.get('action')} on {p.get('symbol')}: {p.get('result')}",
+            "value": p,
+            "confidence": ev["confidence"],
+            "evidence_ids": [ev["id"]],
+            "citation_key": f"{ev['entity']}.alert_{p.get('action')}",
         })
 
     return conclusions

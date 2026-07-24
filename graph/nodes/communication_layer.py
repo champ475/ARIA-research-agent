@@ -11,6 +11,35 @@ when OHLCV evidence for the primary entity is present.
 candlestick() — gr.Plot (app.py) consumes Figure objects directly, not an
 HTML string. The field name follows the RFC's schema (Sec5); the actual
 UI-facing serialization is a Phase 6 integration decision, not this node's.
+
+Report-domain file output (Phase 7.1): PDF/MD generation is deliberately done
+HERE, not in ConclusionBuilder, even though the graph-expansion plan's first
+draft assumed ConclusionBuilder — `final_report` (the actual markdown text
+that gets written to disk) doesn't exist until this node's LLM call
+completes, so ConclusionBuilder never has a report body to save. Writing the
+files immediately after the LLM call keeps the "only CommunicationLayer
+calls the model" contract intact — save_report_files() itself is a pure,
+deterministic I/O side effect, not a second model call.
+
+Screener-domain CSV export (Phase 7.3) follows the same pattern: `csv_path`
+is populated from the raw `screener_run` evidence (not a Conclusion — the
+full row-level CSV is genuinely raw tool output, not a decided fact), which
+is fine because it's a side-effect file write, not something CommunicationLayer
+reasons about or cites in the LLM prompt.
+
+Planning domain (Phase 7.3) bypasses the Evidence/Conclusion pipeline
+entirely — it's handled here, at the top of communication_layer, before the
+"simple"/"no conclusions" branches even run. This isn't a workaround; it's
+the same reasoning as the report/screener branches taken one step further:
+planning_agent's intake+strategy flow (utils/planning_logic.py) is two
+sequential LLM calls with Python-only branching in between (is the minimum
+profile complete? did the user ask to build?), reading/writing
+`financial_profiles` directly — there's no tool-selection/evidence-gathering
+step for Planner or ResearchExecutor to usefully do here, since nothing in
+graph/tool_catalogue.py models "extract structured profile fields from free
+text." See ARCHITECTURE.md's 2026-07-24 "Planning domain on the graph" entry
+for why the 3rd HITL gate (capital-allocation confirmation) is deliberately
+NOT implemented yet — it needs more than this node can safely provide.
 """
 from __future__ import annotations
 
@@ -24,6 +53,19 @@ from graph.journal import log_decision
 from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
+from utils.db import report_save, profile_get, profile_upsert, profile_clear
+from utils.helpers import detect_report_type
+from utils.report_files import save_report_files
+from utils.screener_files import save_screener_csv
+from utils.planning_logic import (
+    REQUIRED_FIELDS as _PLANNING_REQUIRED,
+    BUILD_TRIGGER_KW as _PLANNING_BUILD_TRIGGER_KW,
+    intake_turn as _planning_intake_turn,
+    build_strategy as _planning_build_strategy,
+)
+
+_PLANNING_SHOW_KW = ["show my profile", "my financial profile", "what do you know about me"]
+_PLANNING_RESET_KW = ["start over", "reset my plan", "reset my profile", "forget my profile", "clear my profile"]
 
 _CANONICAL_RATIO_KEYS = {"pe", "pb", "roce", "de", "cr"}
 
@@ -66,10 +108,92 @@ def _find_fundamental_payload(evidence: list[dict], entity: str) -> dict:
     return {}
 
 
+def _find_screener_results(evidence: list[dict]) -> list[dict] | None:
+    for ev in evidence:
+        if ev["tool"] == "screener_run":
+            return ev["payload"]
+    return None
+
+
+def _intents(state: GraphState) -> set[str]:
+    """All domains this turn named (Phase 7.4 multi-intent support) — the
+    primary `intent` plus any `secondary_intents` QueryAnalyzer detected.
+    Report/screener's file-output branches check membership in this set
+    rather than equality against `intent` alone, so e.g. "generate a report
+    on TCS and alert me if it drops 5%" (intent="report",
+    secondary_intents=["alert"]) still writes the report file. Planning is
+    intentionally excluded from this: it's checked separately, first, and
+    unconditionally short-circuits (see _handle_planning) — combining
+    planning with another domain in one turn is not supported, since
+    planning's whole flow bypasses Planner/evidence/conclusions entirely."""
+    return {state.get("intent")} | set(state.get("secondary_intents") or [])
+
+
+def _empty_result(final_report: str, decision: str, reason: str) -> dict:
+    return {
+        "final_report": final_report,
+        "chart_html": None,
+        "pdf_path": None,
+        "md_path": None,
+        "csv_path": None,
+        "confidence_summary": {},
+        **log_decision("CommunicationLayer", decision, reason),
+    }
+
+
+def _handle_planning(client: LLMClient, state: GraphState) -> dict:
+    user_id = state.get("user_id")
+    query = (state.get("query") or "").strip()
+    lower = query.lower()
+
+    if user_id is None:
+        return _empty_result(
+            "I need to know who you are to track a financial profile — please sign in again.",
+            "planning: missing user_id", "cannot read/write financial_profiles without a user_id",
+        )
+
+    if any(k in lower for k in _PLANNING_SHOW_KW):
+        profile = profile_get(user_id)
+        if not profile:
+            text = "I don't have a profile for you yet. Tell me your age, investable capital, time horizon, and goal to get started."
+        else:
+            lines = ["## Your Financial Profile\n", "| Field | Value |", "|---|---|"]
+            for k, v in profile.items():
+                lines.append(f"| {k.replace('_',' ').title()} | {v} |")
+            text = "\n".join(lines)
+        return _empty_result(text, "planning: showed profile", f"user_id={user_id}")
+
+    if any(k in lower for k in _PLANNING_RESET_KW):
+        profile_clear(user_id)
+        return _empty_result(
+            "🗑️ Profile cleared. Tell me about yourself again whenever you're ready — age, capital, time horizon, and goal are the essentials.",
+            "planning: cleared profile", f"user_id={user_id}",
+        )
+
+    profile = profile_get(user_id)
+    updates, minimum_complete, reply = _planning_intake_turn(client, query, profile)
+    if updates:
+        profile = profile_upsert(user_id, updates)
+
+    was_already_complete = all(profile.get(f) not in (None, "") for f in _PLANNING_REQUIRED) and not updates
+    wants_build = any(k in lower for k in _PLANNING_BUILD_TRIGGER_KW)
+
+    if not minimum_complete:
+        return _empty_result(reply, "planning: intake incomplete", f"user_id={user_id}, updates={list(updates)}")
+
+    if updates or wants_build or not was_already_complete:
+        strategy = _planning_build_strategy(client, profile)
+        return _empty_result(strategy, "planning: built strategy", f"user_id={user_id}")
+    return _empty_result(reply, "planning: intake reply, no build triggered", f"user_id={user_id}")
+
+
 def build_communication_layer_node(client: LLMClient | None = None) -> Callable[[GraphState], dict]:
     client = client or LLMClient(_SYSTEM)
 
     def communication_layer(state: GraphState) -> dict:
+        if state.get("intent") == "planning":
+            return _handle_planning(client, state)
+
         objective = state.get("objective", "")
         conclusions = state.get("conclusions", [])
         entities = state.get("entities", [])
@@ -116,14 +240,38 @@ def build_communication_layer_node(client: LLMClient | None = None) -> Callable[
             if isinstance(ohlcv, pd.DataFrame) and not ohlcv.empty:
                 chart = candlestick(ohlcv, primary_entity)
 
+        intents = _intents(state)
+
+        pdf_path = md_path = None
+        if "report" in intents and primary_entity:
+            rtype = detect_report_type((query or objective).lower())
+            md_path, pdf_path = save_report_files(primary_entity, rtype, report)
+            user_id = state.get("user_id")
+            if user_id is not None:
+                try:
+                    report_save(user_id, primary_entity, rtype, f"{rtype} — {primary_entity}", report)
+                except Exception:
+                    pass  # persistence failure shouldn't block returning the report itself
+
+        csv_path = None
+        if "screener" in intents:
+            screener_results = _find_screener_results(evidence)
+            if screener_results:
+                csv_path = save_screener_csv(screener_results)
+
         return {
             "final_report": report,
             "chart_html": chart,
+            "pdf_path": pdf_path,
+            "md_path": md_path,
+            "csv_path": csv_path,
             "confidence_summary": _confidence_summary(conclusions),
             **log_decision(
                 "CommunicationLayer",
                 f"synthesized report from {len(conclusions)} conclusion(s)",
-                f"chart={'rendered' if chart is not None else 'none'}",
+                f"chart={'rendered' if chart is not None else 'none'}"
+                + (f", files=({md_path},{pdf_path})" if "report" in intents else "")
+                + (f", csv={csv_path}" if "screener" in intents else ""),
             ),
         }
 

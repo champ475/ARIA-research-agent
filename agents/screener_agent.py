@@ -4,10 +4,6 @@ Tab 4: Screener & Discovery Agent
 Natural language + filter-based stock screening with top movers.
 """
 
-import os
-import csv
-import re
-import tempfile
 from agents.llm_client import LLMClient
 from config import TOKENS_AGENT
 
@@ -15,8 +11,9 @@ from tools.screener          import parse_query, run as screener_run, to_markdow
 from tools.data.nse_scraper  import get_top_movers, get_bulk_deals, get_block_deals
 from tools.data.fetcher      import get_macro
 from tools.data.news_fetcher import market_news
-from utils.helpers           import now_ist
+from utils.helpers           import now_ist, parse_screener_name
 from utils.db                import screener_save, screener_list
+from utils.screener_files    import save_screener_csv
 
 SYSTEM = """
 You are ARIA Screener — an expert at discovering investment opportunities in Indian equity markets
@@ -260,9 +257,7 @@ Write:
         return self._client.chat(prompt, temperature=0.3, max_tokens=TOKENS_AGENT)
 
     def _save_screener(self, msg: str) -> str:
-        # Try to parse name from message
-        m    = re.search(r'save\s+(?:as\s+)?["\']?([a-zA-Z0-9\s]+)["\']?', msg, re.I)
-        name = m.group(1).strip() if m else "My Screener"
+        name = parse_screener_name(msg)
         filters = parse_query(msg)
         screener_save(self._user_id, name, filters)
         return f"✅ Screener saved as **{name}** with filters: {filters}"
@@ -291,15 +286,7 @@ Write:
 
     def export_csv(self) -> str | None:
         """Write last screener results to a temp CSV and return the file path."""
-        if not self._last_results:
-            return None
-        path = os.path.join(tempfile.gettempdir(), "aria_screener_results.csv")
-        fieldnames = list(self._last_results[0].keys())
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(self._last_results)
-        return path
+        return save_screener_csv(self._last_results)
 
     def generate_suggestions(self, last_response: str, last_query: str) -> list[str]:
         return [

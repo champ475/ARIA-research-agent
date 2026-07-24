@@ -115,6 +115,15 @@ class Orchestrator:
         }
         self._last_tab = "equity"
 
+    def classify(self, message: str) -> str:
+        """Cheap pre-check used by app.py:102 to decide whether to append a
+        timeframe keyword, WITHOUT running the full process_stream() pipeline.
+        Shares route()'s exact decision (including last_tab continuity) so
+        this pre-check can never disagree with what process_stream() itself
+        is about to do — see agents/graph_orchestrator.py::classify() for the
+        other orchestrator's implementation of the same method name."""
+        return route(message, last_tab=self._last_tab)
+
     def process(self, message: str) -> tuple[str, object, str | None, str | None, str | None, str]:
         """Returns (text, chart, pdf_path, md_path, csv_path, tab_used) — the final result of process_stream()."""
         result = None

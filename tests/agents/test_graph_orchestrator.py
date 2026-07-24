@@ -37,12 +37,11 @@ class TestGraphOrchestratorNormalFlow:
         fake_graph.invoke.return_value = {"final_report": "x", "chart_html": None}
         orch = _build_orchestrator(fake_graph)
 
-        orch.process_stream("analyse RELIANCE")
         list(orch.process_stream("analyse RELIANCE"))  # generator, must iterate
 
         args, kwargs = fake_graph.invoke.call_args
         assert args[0]["query"] == "analyse RELIANCE"
-        assert kwargs["config"]["configurable"]["thread_id"] == "user-1"
+        assert kwargs["config"]["configurable"]["thread_id"] == "user-1-turn-1"
 
 
 class TestGraphOrchestratorHumanInTheLoop:
@@ -119,6 +118,112 @@ class TestGraphOrchestratorHumanInTheLoop:
         list(orch.process_stream("yes"))
 
         assert orch._awaiting_confirmation is False
+
+
+class TestGraphOrchestratorThreadIdScoping:
+    """Phase 7.4: every fresh (non-resume) turn gets a new thread_id, so
+    reducer-backed GraphState fields (tasks/evidence/research_journal) from
+    a prior turn can never leak into the next one's Task list."""
+
+    def test_each_fresh_turn_gets_a_different_thread_id(self):
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {"final_report": "x", "chart_html": None}
+        orch = _build_orchestrator(fake_graph)
+
+        list(orch.process_stream("first message"))
+        first_thread = fake_graph.invoke.call_args.kwargs["config"]["configurable"]["thread_id"]
+        list(orch.process_stream("second message"))
+        second_thread = fake_graph.invoke.call_args.kwargs["config"]["configurable"]["thread_id"]
+
+        assert first_thread != second_thread
+
+    def test_resume_reuses_the_same_thread_id_as_the_interrupted_turn(self):
+        fake_graph = MagicMock()
+        fake_interrupt = MagicMock()
+        fake_interrupt.value = {"type": "research_confirmation", "message": "Proceed?"}
+        fake_graph.invoke.side_effect = [
+            {"__interrupt__": [fake_interrupt]},
+            {"final_report": "Done.", "chart_html": None},
+        ]
+        orch = _build_orchestrator(fake_graph)
+
+        list(orch.process_stream("compare six stocks"))
+        interrupted_thread = fake_graph.invoke.call_args.kwargs["config"]["configurable"]["thread_id"]
+        list(orch.process_stream("yes"))
+        resume_thread = fake_graph.invoke.call_args.kwargs["config"]["configurable"]["thread_id"]
+
+        assert interrupted_thread == resume_thread
+
+    def test_reset_starts_a_fresh_thread_id(self):
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {"final_report": "x", "chart_html": None}
+        orch = _build_orchestrator(fake_graph)
+        list(orch.process_stream("first message"))
+        before = orch._thread_id
+
+        orch.reset()
+
+        assert orch._thread_id != before
+
+    def test_load_history_does_not_raise_and_resets_thread(self):
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {"final_report": "x", "chart_html": None}
+        orch = _build_orchestrator(fake_graph)
+        list(orch.process_stream("advance the turn counter first"))
+        before = orch._thread_id
+
+        orch.load_history([{"role": "user", "content": "hi"}])  # must not raise AttributeError
+
+        assert orch._thread_id != before
+        assert orch._awaiting_confirmation is False
+
+
+class TestGraphOrchestratorTabUsed:
+    """Phase 7.4: tab_used derives from intent + secondary_intents rather
+    than being hardcoded "equity", so the routing badge reflects multi-domain
+    turns without changing the 6-tuple yield contract."""
+
+    def test_single_intent_yields_bare_domain(self):
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {"final_report": "x", "chart_html": None, "intent": "mf"}
+        orch = _build_orchestrator(fake_graph)
+        _, _, _, _, _, tab = list(orch.process_stream("compare funds"))[0]
+        assert tab == "mf"
+
+    def test_secondary_intents_joined_with_plus(self):
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {
+            "final_report": "x", "chart_html": None, "intent": "report", "secondary_intents": ["alert"],
+        }
+        orch = _build_orchestrator(fake_graph)
+        _, _, _, _, _, tab = list(orch.process_stream("report + alert"))[0]
+        assert tab == "report+alert"
+
+    def test_missing_intent_defaults_to_equity(self):
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {"final_report": "x", "chart_html": None}
+        orch = _build_orchestrator(fake_graph)
+        _, _, _, _, _, tab = list(orch.process_stream("hi"))[0]
+        assert tab == "equity"
+
+
+class TestGraphOrchestratorClassify:
+    """Phase 7.4: app.py:102's timeframe-keyword pre-check calls
+    classify() on whichever orchestrator is active, so its decision can
+    never disagree with the active orchestrator's own routing."""
+
+    def test_classify_delegates_to_keyword_route(self):
+        orch = _build_orchestrator(MagicMock())
+        with patch("agents.graph_orchestrator._keyword_route", return_value="mf") as mock_route:
+            result = orch.classify("what's the NAV of this fund")
+        mock_route.assert_called_once_with("what's the NAV of this fund")
+        assert result == "mf"
+
+    def test_classify_does_not_invoke_the_graph(self):
+        fake_graph = MagicMock()
+        orch = _build_orchestrator(fake_graph)
+        orch.classify("analyse RELIANCE")
+        fake_graph.invoke.assert_not_called()
 
 
 class TestGraphOrchestratorMisc:

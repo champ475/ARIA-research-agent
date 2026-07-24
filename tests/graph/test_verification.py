@@ -79,6 +79,18 @@ class TestDeterministicStage:
         assert result["verification_issues"]
         assert stub.call_count == 0
 
+    def test_dataframe_payload_does_not_crash_missing_field_check(self):
+        # Regression: DataFrame.__eq__ returns an elementwise frame, not a
+        # bool — `payload in (None, "")` used to raise ValueError the moment
+        # any DataFrame-payload evidence (fetch_ohlcv, fetch_nav,
+        # fetch_category_funds) reached Verification. See _is_missing().
+        import pandas as pd
+        stub = _StubClient(json.dumps({"issues": []}))
+        ev = _evidence(evidence_type="price_ohlcv", payload=pd.DataFrame({"Close": [1, 2, 3]}))
+        node = build_verification_node(stub)
+        result = node({"evidence": [ev], "tasks": []})
+        assert result["verification_issues"] == []
+
 
 class TestSemanticStage:
     def test_low_confidence_caught_without_calling_llm(self):

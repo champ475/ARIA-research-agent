@@ -15,10 +15,9 @@ from tools.analysis.technical   import compute_all, snapshot, support_resistance
 from tools.analysis.fundamental import compute, to_text
 from tools.analysis.sentiment   import analyse
 from tools.analysis.risk        import assess
-from utils.helpers              import now_ist, trim_text, resolve_ticker
+from utils.helpers              import now_ist, trim_text, resolve_ticker, detect_report_type
 from utils.db                   import report_save, report_list
-import os
-from config import REPORTS_DIR
+from utils.report_files         import save_report_files
 
 SYSTEM = """
 You are ARIA Report Engine — you produce institutional equity research reports in the style of
@@ -143,13 +142,7 @@ class ReportAgent:
     # ── Report type detection ──────────────────────────────────────────────────
 
     def _detect_report_type(self, lower: str) -> str:
-        if any(k in lower for k in ["earnings","results","quarterly","q1","q2","q3","q4","guidance"]):
-            return "RU"
-        if any(k in lower for k in ["quick","flash","brief","short","1 page"]):
-            return "QN"
-        if any(k in lower for k in ["sector","theme","thematic","industry"]):
-            return "ST"
-        return "IC"
+        return detect_report_type(lower)
 
     def _ticker(self, msg: str) -> str | None:
         """
@@ -460,38 +453,7 @@ Recent news: {'; '.join(n['title'] for n in news[:3])}
 
     def _save_files(self, sym: str, rtype: str, content: str) -> tuple:
         """Save report as Markdown and (optionally) PDF. Returns (md_path, pdf_path)."""
-        os.makedirs(REPORTS_DIR, exist_ok=True)
-        ts   = now_ist().replace(" ", "_").replace(",", "").replace(":", "")
-        base = os.path.join(REPORTS_DIR, f"{sym}_{rtype}_{ts[:15]}")
-        md_path = pdf_path = None
-
-        try:
-            md_path = base + ".md"
-            with open(md_path, "w", encoding="utf-8") as f:
-                f.write(content)
-        except Exception:
-            md_path = None
-
-        try:
-            import markdown as _md
-            from weasyprint import HTML as _HTML
-            html_body = _md.markdown(content, extensions=["tables", "fenced_code"])
-            html_full = (
-                "<!DOCTYPE html><html><head><meta charset='utf-8'><style>"
-                "body{font-family:Arial,sans-serif;font-size:12px;margin:40px;color:#222}"
-                "h1,h2,h3{color:#1a1a2e}"
-                "table{border-collapse:collapse;width:100%;margin:12px 0}"
-                "th,td{border:1px solid #ccc;padding:6px 10px;text-align:left}"
-                "th{background:#f0f4f8;font-weight:bold}"
-                "code{background:#f5f5f5;padding:2px 4px;border-radius:3px;font-size:11px}"
-                f"</style></head><body>{html_body}</body></html>"
-            )
-            pdf_path = base + ".pdf"
-            _HTML(string=html_full).write_pdf(pdf_path)
-        except Exception:
-            pdf_path = None
-
-        return md_path, pdf_path
+        return save_report_files(sym, rtype, content)
 
     def _help(self) -> str:
         return (

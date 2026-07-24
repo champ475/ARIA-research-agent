@@ -62,11 +62,23 @@ def _numeric_fields(payload) -> dict[str, float]:
     }
 
 
+def _is_missing(value) -> bool:
+    """True if a required Evidence field is absent. Deliberately avoids `value
+    in (None, "")` — some payloads (fetch_ohlcv, fetch_nav, fetch_category_funds)
+    are pandas DataFrames, and DataFrame.__eq__ returns an elementwise frame
+    rather than a bool, which raises ValueError the moment Python's `in`
+    operator tries to short-circuit on it. `is None` is identity-safe for any
+    type; the empty-string check only applies to actual strings."""
+    if value is None:
+        return True
+    return isinstance(value, str) and value == ""
+
+
 def _stage1_deterministic(evidence: list[Evidence], tasks: list[dict]) -> list[VerificationIssue]:
     issues: list[VerificationIssue] = []
 
     for ev in evidence:
-        missing = [f for f in _REQUIRED_EVIDENCE_FIELDS if ev.get(f) in (None, "")]
+        missing = [f for f in _REQUIRED_EVIDENCE_FIELDS if _is_missing(ev.get(f))]
         if missing:
             issues.append({
                 "claim": f"evidence {ev.get('id', '?')} missing fields: {missing}",

@@ -123,6 +123,91 @@ class TestCommunicationLayerFootnotes:
         assert result["final_report"] == "Report text with no ratios"
 
 
+class TestCommunicationLayerPlanning:
+    """Phase 7.3: planning intent bypasses the Evidence/Conclusion pipeline
+    entirely — see module docstring for why. All assertions patch
+    utils.planning_logic's intake_turn/build_strategy and utils.db's
+    profile_get/upsert/clear at their communication_layer import site."""
+
+    def test_missing_user_id_returns_early_without_touching_db(self):
+        stub = _StubClient("unused")
+        with patch("graph.nodes.communication_layer.profile_get") as mock_get:
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "planning", "query": "I'm 30 with 10 lakhs", "conclusions": []})
+        mock_get.assert_not_called()
+        assert "sign in" in result["final_report"]
+
+    def test_show_profile_keyword_renders_existing_profile(self):
+        stub = _StubClient("unused")
+        with patch("graph.nodes.communication_layer.profile_get", return_value={"age": 30, "capital": 1000000}):
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "planning", "query": "show my profile", "user_id": 1, "conclusions": []})
+        assert "Age" in result["final_report"]
+        assert "30" in result["final_report"]
+
+    def test_reset_keyword_clears_profile(self):
+        stub = _StubClient("unused")
+        with patch("graph.nodes.communication_layer.profile_clear") as mock_clear:
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "planning", "query": "reset my profile", "user_id": 1, "conclusions": []})
+        mock_clear.assert_called_once_with(1)
+        assert "cleared" in result["final_report"]
+
+    def test_incomplete_intake_returns_reply_without_building_strategy(self):
+        stub = _StubClient("unused")
+        with patch("graph.nodes.communication_layer.profile_get", return_value={}), \
+             patch("graph.nodes.communication_layer._planning_intake_turn", return_value=({"age": 30}, False, "Tell me more")), \
+             patch("graph.nodes.communication_layer.profile_upsert", return_value={"age": 30}) as mock_upsert, \
+             patch("graph.nodes.communication_layer._planning_build_strategy") as mock_build:
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "planning", "query": "I'm 30", "user_id": 1, "conclusions": []})
+        mock_upsert.assert_called_once_with(1, {"age": 30})
+        mock_build.assert_not_called()
+        assert result["final_report"] == "Tell me more"
+
+    def test_complete_intake_triggers_strategy_build(self):
+        stub = _StubClient("unused")
+        complete_profile = {"age": 30, "capital": 1000000, "horizon_years": 20, "goal": "retirement", "risk_tolerance": "moderate"}
+        with patch("graph.nodes.communication_layer.profile_get", return_value={}), \
+             patch("graph.nodes.communication_layer._planning_intake_turn", return_value=(complete_profile, True, "Great, building now")), \
+             patch("graph.nodes.communication_layer.profile_upsert", return_value=complete_profile), \
+             patch("graph.nodes.communication_layer._planning_build_strategy", return_value="Full strategy text") as mock_build:
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "planning", "query": "here's everything", "user_id": 1, "conclusions": []})
+        mock_build.assert_called_once_with(stub, complete_profile)
+        assert result["final_report"] == "Full strategy text"
+
+    def test_already_complete_profile_without_build_trigger_just_replies(self):
+        stub = _StubClient("unused")
+        complete_profile = {"age": 30, "capital": 1000000, "horizon_years": 20, "goal": "retirement", "risk_tolerance": "moderate"}
+        with patch("graph.nodes.communication_layer.profile_get", return_value=complete_profile), \
+             patch("graph.nodes.communication_layer._planning_intake_turn", return_value=({}, True, "Anything else?")), \
+             patch("graph.nodes.communication_layer._planning_build_strategy") as mock_build:
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "planning", "query": "ok", "user_id": 1, "conclusions": []})
+        mock_build.assert_not_called()
+        assert result["final_report"] == "Anything else?"
+
+    def test_already_complete_profile_with_explicit_build_request_builds(self):
+        stub = _StubClient("unused")
+        complete_profile = {"age": 30, "capital": 1000000, "horizon_years": 20, "goal": "retirement", "risk_tolerance": "moderate"}
+        with patch("graph.nodes.communication_layer.profile_get", return_value=complete_profile), \
+             patch("graph.nodes.communication_layer._planning_intake_turn", return_value=({}, True, "reply")), \
+             patch("graph.nodes.communication_layer._planning_build_strategy", return_value="strategy") as mock_build:
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "planning", "query": "go ahead and build it", "user_id": 1, "conclusions": []})
+        mock_build.assert_called_once()
+        assert result["final_report"] == "strategy"
+
+    def test_planning_never_calls_the_generic_conclusion_prompt(self):
+        stub = _StubClient("should not be used")
+        with patch("graph.nodes.communication_layer.profile_get", return_value={}), \
+             patch("graph.nodes.communication_layer._planning_intake_turn", return_value=({}, False, "reply")):
+            node = build_communication_layer_node(stub)
+            node({"intent": "planning", "query": "hi", "user_id": 1, "conclusions": [_conclusion()]})
+        assert stub.last_prompt is None
+
+
 class TestCommunicationLayerChart:
     def test_renders_chart_when_ohlcv_evidence_present(self):
         stub = _StubClient("Report text")
@@ -146,3 +231,123 @@ class TestCommunicationLayerChart:
         node = build_communication_layer_node(stub)
         result = node({"conclusions": [_conclusion()], "objective": "x", "entities": ["RELIANCE"], "evidence": []})
         assert result["chart_html"] is None
+
+
+class TestCommunicationLayerReportFiles:
+    """Phase 7.1: report-domain queries write PDF/MD files and persist to the
+    `reports` table from CommunicationLayer (final_report only exists here —
+    see module docstring for why this isn't in ConclusionBuilder)."""
+
+    def test_report_intent_writes_files_and_persists(self):
+        stub = _StubClient("Full IC report body")
+        with patch("graph.nodes.communication_layer.save_report_files", return_value=("/tmp/x.md", "/tmp/x.pdf")) as mock_save, \
+             patch("graph.nodes.communication_layer.report_save") as mock_persist:
+            node = build_communication_layer_node(stub)
+            result = node({
+                "conclusions": [_conclusion()], "objective": "IC report on RELIANCE",
+                "query": "generate an IC report on RELIANCE", "entities": ["RELIANCE"], "evidence": [],
+                "intent": "report", "user_id": 42,
+            })
+        mock_save.assert_called_once_with("RELIANCE", "IC", "Full IC report body")
+        mock_persist.assert_called_once_with(42, "RELIANCE", "IC", "IC — RELIANCE", "Full IC report body")
+        assert result["md_path"] == "/tmp/x.md"
+        assert result["pdf_path"] == "/tmp/x.pdf"
+
+    def test_report_intent_detects_result_update_type(self):
+        stub = _StubClient("RU report body")
+        with patch("graph.nodes.communication_layer.save_report_files", return_value=(None, None)) as mock_save, \
+             patch("graph.nodes.communication_layer.report_save"):
+            node = build_communication_layer_node(stub)
+            node({
+                "conclusions": [_conclusion()], "objective": "x",
+                "query": "quarterly results update for TCS", "entities": ["TCS"], "evidence": [],
+                "intent": "report", "user_id": 1,
+            })
+        assert mock_save.call_args[0][1] == "RU"
+
+    def test_non_report_intent_never_writes_files(self):
+        stub = _StubClient("Equity answer")
+        with patch("graph.nodes.communication_layer.save_report_files") as mock_save, \
+             patch("graph.nodes.communication_layer.report_save") as mock_persist:
+            node = build_communication_layer_node(stub)
+            result = node({
+                "conclusions": [_conclusion()], "objective": "x", "query": "what's TCS's PE",
+                "entities": ["TCS"], "evidence": [], "intent": "equity", "user_id": 1,
+            })
+        mock_save.assert_not_called()
+        mock_persist.assert_not_called()
+        assert result["pdf_path"] is None
+        assert result["md_path"] is None
+
+    def test_screener_intent_writes_csv_from_raw_evidence(self):
+        stub = _StubClient("Here are the matching stocks.")
+        screener_ev = {
+            "id": "ev-run", "tool": "screener_run", "entity": "market",
+            "evidence_type": "screener_results", "payload": [{"symbol": "TCS", "pe": 24.3}],
+            "source": "screener_run", "timestamp": None, "confidence": 1.0, "citation_key": "screener_results",
+        }
+        with patch("graph.nodes.communication_layer.save_screener_csv", return_value="/tmp/s.csv") as mock_csv:
+            node = build_communication_layer_node(stub)
+            result = node({
+                "conclusions": [_conclusion()], "objective": "x", "query": "IT stocks PE below 25",
+                "entities": [], "evidence": [screener_ev], "intent": "screener",
+            })
+        mock_csv.assert_called_once_with([{"symbol": "TCS", "pe": 24.3}])
+        assert result["csv_path"] == "/tmp/s.csv"
+
+    def test_non_screener_intent_never_writes_csv(self):
+        stub = _StubClient("Equity answer")
+        with patch("graph.nodes.communication_layer.save_screener_csv") as mock_csv:
+            node = build_communication_layer_node(stub)
+            result = node({
+                "conclusions": [_conclusion()], "objective": "x", "query": "what's TCS's PE",
+                "entities": ["TCS"], "evidence": [], "intent": "equity",
+            })
+        mock_csv.assert_not_called()
+        assert result["csv_path"] is None
+
+    def test_screener_intent_with_no_screener_run_evidence_writes_no_csv(self):
+        stub = _StubClient("No results.")
+        with patch("graph.nodes.communication_layer.save_screener_csv") as mock_csv:
+            node = build_communication_layer_node(stub)
+            result = node({
+                "conclusions": [_conclusion()], "objective": "x", "query": "screen for value stocks",
+                "entities": [], "evidence": [], "intent": "screener",
+            })
+        mock_csv.assert_not_called()
+        assert result["csv_path"] is None
+
+    def test_secondary_intent_report_still_writes_files(self):
+        # Phase 7.4: primary intent is "alert" but "report" is a secondary
+        # intent — the report branch must still fire.
+        stub = _StubClient("Full report body")
+        with patch("graph.nodes.communication_layer.save_report_files", return_value=("/tmp/x.md", "/tmp/x.pdf")) as mock_save, \
+             patch("graph.nodes.communication_layer.report_save"):
+            node = build_communication_layer_node(stub)
+            result = node({
+                "conclusions": [_conclusion()], "objective": "x", "query": "report on RELIANCE and alert me",
+                "entities": ["RELIANCE"], "evidence": [], "intent": "alert", "secondary_intents": ["report"], "user_id": 1,
+            })
+        mock_save.assert_called_once()
+        assert result["md_path"] == "/tmp/x.md"
+
+    def test_no_secondary_intents_key_does_not_crash(self):
+        stub = _StubClient("Equity answer")
+        node = build_communication_layer_node(stub)
+        result = node({
+            "conclusions": [_conclusion()], "objective": "x", "query": "what's TCS's PE",
+            "entities": ["TCS"], "evidence": [], "intent": "equity",
+        })
+        assert result["pdf_path"] is None
+
+    def test_persistence_failure_does_not_block_report_return(self):
+        stub = _StubClient("Report body")
+        with patch("graph.nodes.communication_layer.save_report_files", return_value=("/tmp/x.md", "/tmp/x.pdf")), \
+             patch("graph.nodes.communication_layer.report_save", side_effect=RuntimeError("db down")):
+            node = build_communication_layer_node(stub)
+            result = node({
+                "conclusions": [_conclusion()], "objective": "x", "query": "IC report on RELIANCE",
+                "entities": ["RELIANCE"], "evidence": [], "intent": "report", "user_id": 1,
+            })
+        assert result["final_report"] == "Report body"
+        assert result["md_path"] == "/tmp/x.md"

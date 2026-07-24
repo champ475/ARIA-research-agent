@@ -50,14 +50,23 @@ def _stuck_tasks(tasks: list[Task]) -> list[Task]:
     ]
 
 
-def _build_context(task: Task, tasks_by_id: dict[str, Task], evidence: list[dict]) -> dict[str, Any]:
+def _build_context(
+    task: Task, tasks_by_id: dict[str, Task], evidence: list[dict],
+    user_id: int | None = None, query: str | None = None,
+) -> dict[str, Any]:
     """Maps each dependency tool's name -> its evidence payload, so
-    execute_task's tool fn can read an already-fetched dependency result."""
+    execute_task's tool fn can read an already-fetched dependency result.
+    Also injects `_user_id` and `_query` unconditionally (not tied to
+    depends_on) since some tools need GraphState-level data no dependency's
+    raw result carries: `_user_id` for the alert CRUD tools (Phase 7.2) and
+    `_query` for screener's filter-parsing tools (Phase 7.3 — parse_query()
+    needs the user's raw message text, which a per-entity Task has no other
+    way to see)."""
     latest_by_tool_entity: dict[tuple[str, str], Any] = {}
     for ev in evidence:
         latest_by_tool_entity[(ev["tool"], ev["entity"])] = ev["payload"]
 
-    context: dict[str, Any] = {}
+    context: dict[str, Any] = {"_user_id": user_id, "_query": query}
     for dep_id in task["depends_on"]:
         dep_task = tasks_by_id.get(dep_id)
         if dep_task is None:
@@ -100,7 +109,11 @@ def route_after_research_executor(state: GraphState):
         return "EvidenceSummarizer"
 
     tasks_by_id = {t["id"]: t for t in tasks}
+    user_id = state.get("user_id")
+    query = state.get("query")
     return [
-        Send("execute_task_node", {"task": task, "context": _build_context(task, tasks_by_id, evidence)})
+        Send("execute_task_node", {
+            "task": task, "context": _build_context(task, tasks_by_id, evidence, user_id, query),
+        })
         for task in ready
     ]

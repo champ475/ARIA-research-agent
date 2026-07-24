@@ -69,13 +69,23 @@ class TestBuildContext:
                       depends_on=["fetch_info:RELIANCE"])
         evidence = [{"tool": "fetch_info", "entity": "RELIANCE", "payload": {"pe": 24.3}}]
         context = _build_context(task, tasks_by_id, evidence)
-        assert context == {"fetch_info": {"pe": 24.3}}
+        assert context["fetch_info"] == {"pe": 24.3}
 
     def test_missing_dependency_evidence_is_silently_skipped(self):
         tasks_by_id = {"fetch_info:RELIANCE": _task(id="fetch_info:RELIANCE", tool="fetch_info")}
         task = _task(id="compute_fundamentals:RELIANCE", depends_on=["fetch_info:RELIANCE"])
         context = _build_context(task, tasks_by_id, evidence=[])
-        assert context == {}
+        assert context == {"_user_id": None, "_query": None}
+
+    def test_query_injected_regardless_of_dependencies(self):
+        task = _task(id="screener_parse_query:market", tool="screener_parse_query", depends_on=[])
+        context = _build_context(task, {}, evidence=[], query="top gainers today")
+        assert context["_query"] == "top gainers today"
+
+    def test_user_id_injected_regardless_of_dependencies(self):
+        task = _task(id="alert_list:TCS", tool="alert_list", depends_on=[])
+        context = _build_context(task, {}, evidence=[], user_id=42)
+        assert context["_user_id"] == 42
 
 
 class TestResearchExecutorNode:
@@ -119,4 +129,4 @@ class TestRouteAfterResearchExecutor:
         evidence = [{"tool": "fetch_info", "entity": "RELIANCE", "payload": {"pe": 24.3}}]
         route = route_after_research_executor({"tasks": tasks, "evidence": evidence})
         assert len(route) == 1
-        assert route[0].arg["context"] == {"fetch_info": {"pe": 24.3}}
+        assert route[0].arg["context"]["fetch_info"] == {"pe": 24.3}

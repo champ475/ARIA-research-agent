@@ -20,7 +20,10 @@ class TestPlannerTrivialPath:
         assert result["tasks"] == []
         assert result["plan"]["tasks"] == []
 
-    def test_no_entities_short_circuits_even_if_moderate(self):
+    def test_no_entities_but_no_tools_selected_produces_no_tasks(self):
+        # Phase 7.3: entities=[] no longer short-circuits by itself (see
+        # planner.py's module docstring) — this now reaches the LLM, which
+        # in this stub selects zero tools, so there's still nothing to plan.
         node = build_planner_node(_StubClient("{}"))
         result = node({"objective": "explain RSI", "entities": [], "complexity": "moderate"})
         assert result["tasks"] == []
@@ -30,6 +33,17 @@ class TestPlannerTrivialPath:
         node = build_planner_node(stub)
         node({"objective": "hi", "entities": [], "complexity": "simple"})
         assert stub.last_call_kwargs is None
+
+    def test_no_entities_with_selected_tools_uses_market_sentinel_entity(self):
+        # Phase 7.3: whole-market/user-scoped domains (screener filter-based
+        # screens, alert-list, mf category/news) have no ticker to extract but
+        # still need to run a tool — Planner falls back to a synthetic
+        # "market" entity so these tools still get exactly one Task.
+        stub = _StubClient(json.dumps({"tools": ["fetch_news"]}))
+        node = build_planner_node(stub)
+        result = node({"objective": "top gainers today", "entities": [], "complexity": "moderate"})
+        assert len(result["tasks"]) == 1
+        assert result["tasks"][0]["entity"] == "market"
 
 
 class TestPlannerTaskGeneration:

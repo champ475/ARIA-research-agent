@@ -16,6 +16,278 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-07-24 — Thread-id scoped per turn (not per user); multi-intent via secondary_intents; staged retirement deferred
+
+**Problem (thread-id).** `agents/graph_orchestrator.py` used one Postgres-checkpointed
+LangGraph thread per user (`f"user-{user_id}"`), persisted across every turn. Every
+reducer-backed `GraphState` field (`tasks`, `evidence`, `research_journal`, `loop_count`) is
+append-only/merge-only by design (so Reflection can add tasks mid-run without wiping
+already-`done` ones) — which means a fresh `graph.invoke()` call under the same thread_id
+does NOT start from a clean slate; it merges the new call's initial dict against whatever
+was last checkpointed for that thread. A prior turn's leftover `Task`/`Evidence` entries (or
+a paused HITL gate) could bleed into the next, differently-intentioned turn.
+
+**Alternatives considered.** (1) The plan's original framing — "explicitly clear the
+in-flight fields at the start of every new turn" — turned out not to be implementable as
+described: passing `"tasks": []` on invoke doesn't clear anything, because `upsert_by_id`'s
+reducer only ever adds entries from the new value, never removes existing ones from the old.
+There is no LangGraph-native way to make a reducer-backed channel "shrink." (2) A
+conversation-scoped thread_id (`user-{id}-conv-{conversation_id}`) — floated in the original
+plan as the alternative to per-turn reset, with a minted conversation id — this still has the
+exact same leakage problem WITHIN a conversation (turn 2 of the same conversation still
+inherits turn 1's checkpointed Tasks), so it doesn't actually solve the problem, just narrows
+its window.
+
+**Final decision.** Mint a brand-new thread_id per top-level (non-resume) turn:
+`user-{id}-turn-{n}`, incrementing `n` on every fresh call to `process_stream()`. A resume
+call (`_awaiting_confirmation` True, following a HITL interrupt) reuses the SAME thread_id,
+since LangGraph's interrupt/resume mechanism requires it. This sidesteps the reducer problem
+entirely — there's no prior checkpoint to merge against when the thread_id itself is new, so
+there's nothing to leak. `reset()` and the newly-added `load_history()` (see below) both start
+a fresh thread too.
+
+**Bug fixed in passing**: `GraphOrchestrator` had no `load_history()` method at all —
+`app.py`'s sidebar session-resume flow calls `get_orchestrator(user_id).load_history(hist)`
+unconditionally on whatever orchestrator is active, so resuming a past chat session with
+`USE_LANGGRAPH_ORCHESTRATOR=true` would have raised `AttributeError`. Added as a no-op (plus a
+thread reset) — the graph's per-node LLMClients don't hold persistent multi-turn memory the
+way `EquityAgent`'s does, so there's nothing to seed yet.
+
+**Multi-intent-in-one-turn.** Implemented via `QueryAnalyzer`'s new `secondary_intents` field
+rather than extending `Planner`, because `Planner` never needed a change: it already
+free-selects tools from the *whole* catalogue based on `objective` text, never gated by
+`intent` — `intent` is only consumed by `CommunicationLayer`'s domain-specific file-output
+branches and by `GraphOrchestrator`'s `tab_used` label. `CommunicationLayer` now checks
+membership in `{intent} | secondary_intents` instead of equality against `intent` alone, so a
+message like "generate a report on TCS and alert me if it drops 5%" still writes the report
+file even though `alert` might be classified as the (arbitrary) primary intent.
+`tab_used` becomes a `"+"`-joined string (e.g. `"report+alert"`) — no change to the
+`(text, chart, pdf_path, md_path, csv_path, tab_used)` 6-tuple contract, `app.py`'s new
+`_tab_label()` helper renders the joined badge. Planning is excluded from this scheme on
+purpose — it's checked first and unconditionally short-circuits (see the "Planning domain on
+the graph" entry below), so combining planning with another domain in one turn is not
+supported.
+
+**Staged retirement — deferred, not attempted.** The plan called for a `LANGGRAPH_DOMAINS`
+per-domain rollout flag and incrementally deleting each legacy specialist agent behind it.
+Neither was built. The plan itself specifies each retirement step needs a real production
+burn-in period before the next domain is retired — that can't happen inside a single
+development session, and building the flag now, with no actual retirement to gate, would be
+exactly the kind of speculative-future-requirement plumbing this codebase's own conventions
+warn against. `USE_LANGGRAPH_ORCHESTRATOR` remains the only rollout flag; all 5 non-equity
+legacy agents and `agents/orchestrator.py::route()` are untouched and still the default path.
+
+**Trade-offs.** Per-turn thread_id means Postgres accumulates one checkpoint row per turn
+per user indefinitely (no expiry/cleanup implemented) — acceptable for now since checkpoint
+rows are small and never queried outside their own turn, but worth a retention policy before
+this runs at scale. Multi-intent support doesn't extend to planning combined with another
+domain — a real, documented gap, not a silent omission.
+
+**Future improvements.** A Postgres checkpoint-row retention/cleanup job (e.g. delete
+checkpoints older than N days) before this ships to real production traffic at scale. Staged
+retirement (with or without a per-domain flag) once there's an actual production deployment
+to observe burn-in against.
+
+---
+
+## 2026-07-24 — Planning domain on the graph: bypasses Evidence/Conclusion pipeline; 3rd HITL gate deferred
+
+**Problem.** Phase 7.3 needed to bring `planning_agent.py`'s multi-turn financial-planning
+intake onto the graph. Unlike report/mf/screener/alert, planning's actual logic is two
+sequential LLM calls with Python-only branching between them (does the minimum profile
+have all 5 required fields? did the user explicitly ask to build?), reading/writing
+`financial_profiles` directly — there is no tool-selection/evidence-gathering step for
+Planner or ResearchExecutor to usefully do: nothing in `graph/tool_catalogue.py` models
+"extract structured profile fields from free text," and forcing one into existence would
+mean a ToolSpec whose `fn` calls the LLM — which breaks CommunicationLayer's "only node
+allowed to call the primary model" invariant (RFC Sec6), since `execute_task_node` runs
+tool functions outside CommunicationLayer entirely.
+
+**Alternatives considered.** (1) Model intake as ToolSpecs anyway (e.g. `planning_intake`,
+`planning_build_strategy`, mirroring `RFC`'s original `Task.args` idea floated in Phase 7.2's
+alert_create writeup) — rejected once the LLM-call-inside-a-tool problem above was clear:
+it would either violate the CommunicationLayer-only-LLM-caller invariant, or need a second,
+parallel "tools that are allowed to call an LLM" concept just for this one domain. (2) A
+brand-new pre-CommunicationLayer node pair (`planning_intake_node`, `planning_strategy_node`)
+with real conditional graph edges, positioned where a proper HITL gate could sit between them
+— the architecturally cleanest option, and the one a future phase should actually build, but
+a materially bigger change (new graph.py wiring, new conditional-edge functions, checkpointer
+implications for a domain that pauses mid-flow) than this phase's other domains needed.
+
+**Final decision.** For Phase 7.3, planning intent is handled inside
+`graph/nodes/communication_layer.py` (`_handle_planning`), checked first, before the
+"simple"/"no conclusions" branches — it never touches Planner, ResearchExecutor, evidence,
+or Conclusions at all. The actual intake/strategy logic was extracted from
+`agents/planning_agent.py` into `utils/planning_logic.py` (mirroring the
+`utils/report_files.py`/`utils/screener_files.py` precedent from 7.1/7.2) so the legacy
+agent and the graph path run identical logic against the same `financial_profiles` row.
+`agents/planning_agent.py` is now a thin wrapper delegating to the shared module.
+
+**The 3rd HITL gate (capital-allocation confirmation, stubbed at `graph/nodes/human_review.py:12-14`)
+is explicitly NOT implemented in this phase.** A gate needs a real pause point the
+checkpointer can resume from — LangGraph's `interrupt()` is designed to be called from a node
+positioned mid-pipeline with a conditional edge on either side of it (exactly how the existing
+2 gates work), not from inside a terminal node that also handles 5 other unrelated
+responsibilities (report files, screener CSV, chart rendering, the generic conclusion-based
+synthesis path). Bolting `interrupt()` into `_handle_planning` today would technically run, but
+would conflate "pause for user confirmation on this specific decision" with "this node's whole
+execution restarts from the top on resume," which is exactly the trap alert_create and
+screener's cross-entity fix each specifically avoided by deferring rather than force-fitting.
+
+**Trade-offs.** No confirmation gate exists yet before a proposed strategy/allocation is shown
+to the user on the graph path — same behavior as the legacy `PlanningAgent` today (which also
+has no confirmation gate), so this is not a regression, just a gap Phase 7 hasn't closed yet.
+Planning's graph-side code path is structurally different from every other domain (a
+node-internal branch rather than Task/Evidence/Conclusion), which is a real inconsistency a
+future reader needs to know about — hence this entry.
+
+**Future improvements.** Build the dedicated `planning_intake_node`/`planning_strategy_node`
+pair described in alternative (2) above, with the 3rd HITL gate (`capital_confirmation`, mirroring
+`research_confirmation`/`verification_gate`'s existing pattern in `graph/nodes/human_review.py`)
+positioned between them — this is real, scoped work for a follow-up phase, not a quick addition
+to the current `_handle_planning` function.
+
+---
+
+## 2026-07-24 — Planner's entity-required short-circuit removed; "market" sentinel entity added
+
+**Problem.** Phase 7.3 (screener_agent's tools) exposed that Planner's short-circuit —
+originally `if complexity == "simple" or not entities: skip` — assumed every domain needs a
+real ticker to research. Screener's filter-based screens (`tools/screener.py::run`), alert
+listing, and mf category/news lookups are whole-market or user-scoped, not per-ticker: they
+legitimately have zero entities, but under the old gate they'd never generate a Task at all,
+so their ToolSpecs would be unreachable regardless of what Planner's LLM selected.
+
+**Alternatives considered.** (1) Leave the gate as-is and special-case each entity-less
+domain in Planner itself (`if intent in {"screener","alert","mf"}: ...`) — rejected: couples
+Planner to a hardcoded domain list that has to be kept in sync with the tool catalogue by
+hand. (2) Give every entity-less tool its own bespoke "run once, no entity" execution path
+outside the normal Task/Send machinery — rejected: reintroduces a second execution
+mechanism the RFC deliberately avoided by unifying everything through Task/ToolSpec.
+
+**Final decision.** Removed the `or not entities` clause from Planner's short-circuit
+(`graph/nodes/planner.py`) — only `complexity == "simple"` skips now. `_build_tasks` falls
+back to a single synthetic entity, `NO_ENTITY_SENTINEL = "market"` (defined in
+`graph/tool_catalogue.py`, not `planner.py`, since it's the tools that need to know how to
+interpret "no specific entity"), when `entities` is empty — so an entity-less but
+non-simple query still produces exactly one Task per tool the LLM selects. Tools that
+generally expect a real ticker are unaffected: Planner's own instruction ("pick only tools
+whose data the objective actually needs") is what keeps ticker-only tools from being
+selected for a "market"-entity task in the first place — the sentinel is opt-in by tool
+choice, not forced onto every task.
+
+**Trade-offs.** A previously-free optimization (skip the Planner LLM call entirely for
+entity-less non-simple queries) is gone — Planner is now consulted even when there's no
+entity, at one extra fast-model call's cost, in exchange for entity-less domains actually
+working at all. Separately, and NOT fixed by this change: `graph/nodes/query_analyzer.py`'s
+`entities` come from `utils.helpers.extract_all_entities()` unvalidated — generic capitalized
+words in a query (e.g. "STOCKS", "PE", "ROE" in "screen stocks with PE below 25 and ROE
+above 15") get treated as candidate entities by that function's token-extraction step, same
+as it would for `equity_agent.py`, which explicitly re-validates with `validate_ticker()`
+before trusting them (`equity_agent.py: valid = [t for t in entities if validate_ticker(t)]`).
+QueryAnalyzer does not do this validation, so Planner can occasionally build a wasted Task
+against a garbage "entity" for equity-shaped tools too — not new in this phase, just newly
+visible while testing screener's entity-less path. execute_task_node already tolerates a
+failing/empty tool call by marking the Task `failed` rather than crashing, so this degrades
+to "a tool a call that returns nothing useful," not a correctness bug — but it's real,
+avoidable API-call waste.
+
+**Future improvements.** Consider having QueryAnalyzer validate `entities` with
+`validate_ticker()` (mirroring equity_agent.py's existing precedent) before writing them to
+`GraphState`, for any domain, not just screener's entity-less case.
+
+---
+
+## 2026-07-24 — Alert domain on the graph: CRUD-only, `alert_create` deferred
+
+**Problem.** Phase 7.2 of the graph-expansion plan wired `alert_agent.py`'s tools into
+`graph/tool_catalogue.py`. Unlike every tool registered so far, alert creation needs
+structured parameters (`alert_type`, `threshold`, `condition`) that must be extracted from
+free text — `agents/alert_agent.py::_regex_extract`/`_llm_extract` do exactly this slot-filling
+today. The graph's `Task`/`ToolSpec` design has no field for this: Planner only ever selects
+tool *names* (`graph/nodes/planner.py::_parse_tool_selection` returns `{"tools": [...]}`,
+nothing else), and a `Task` carries only `entity` as its one per-task parameter.
+
+**Alternatives considered.** (1) Encode alert parameters into the `entity` string itself
+(e.g. `"TCS|price_below|3000"`, mirroring the pragmatic pipe-separated approach used for
+`fetch_mf_comparison`'s multi-fund-name entity string) — rejected: alert parameters are
+richer (a numeric threshold, an enum type, a free-text condition, a recurring flag) than a
+simple list-of-names split, and cramming them into `entity` would make Planner's LLM
+responsible for formatting a fragile string it has no schema for. (2) Extend `Task` with a
+generic `args: dict` field now, just for alert_create — rejected as solving it twice:
+`planning_agent`'s multi-turn intake (Phase 7.3) has the exact same "extract structured
+fields from free text" need, so the `args` field design should happen once, informed by both
+use cases, not designed narrowly around alerts first.
+
+**Final decision.** Register `alert_list`/`alert_cancel`/`alert_pause`/`alert_resume` now —
+none of these need extra structured parameters beyond `entity` (a ticker to match against).
+`alert_create` is explicitly NOT registered; `graph/tool_catalogue.py`'s module docstring
+documents the gap and points at Phase 7.3 for the real fix (a `Task.args` schema extension
+designed alongside planning's intake). `_user_id` (needed by all 4 CRUD tools, since alerts
+are scoped to the calling user, not derivable from any tool's own output) is injected into
+every task's `context` dict unconditionally by `graph/nodes/research_executor.py::_build_context`,
+rather than added as a special-cased dependency — it's state-level data, not a dependency's
+computed result.
+
+**Trade-offs.** Alert creation via the graph doesn't work at all yet — a user on the graph
+path asking "alert me if TCS drops below 3000" gets no working tool today. This is a real gap
+in Phase 7.2's coverage, accepted because forcing a fragile string-encoding workaround would
+be worse than an honest gap with a named follow-up. Also: entity-less alert queries (e.g.
+"show my alerts", no ticker mentioned) generate zero Tasks under Planner's current
+`complexity=="simple" or not entities` short-circuit (`graph/nodes/planner.py`) — that gate
+assumes every domain needs an entity, which isn't true for alert-list/mf-news/planning-intake
+style queries. Also not fixed here; same Phase 7.3/7.4 follow-up.
+
+**Future improvements.** Phase 7.3: design a `Task.args: dict` extension serving both
+`alert_create` and `planning_agent`'s intake, populated by a new extraction step (LLM-driven,
+following `utils/helpers.py::llm_resolve_query`'s existing deterministic-first/LLM-fallback
+pattern) that Planner or a new dedicated node runs before Task construction. Also revisit
+Planner's entity-required short-circuit so alert-list/mf-category/news-only queries actually
+generate a Task.
+
+---
+
+## 2026-07-24 — Report file-output lives in CommunicationLayer, not ConclusionBuilder
+
+**Problem.** Phase 7.1 of the graph-expansion plan (extending `graph/tool_catalogue.py`
+to cover report_agent's tools) needed to decide where PDF/MD file generation for
+report-domain queries happens inside the LangGraph pipeline. The initial plan draft
+assumed `ConclusionBuilder` (deterministic, pre-LLM node), on the reasoning that file
+generation is a side effect and belongs where Conclusions — not raw evidence — are
+finalized.
+
+**Alternatives considered.** (1) `ConclusionBuilder`, per the original plan — rejected
+once implementation started: `ConclusionBuilder` runs *before* `CommunicationLayer`'s
+LLM call, so `final_report` (the actual markdown text a PDF/MD file needs to contain)
+doesn't exist yet at that point — there is nothing to write. (2) A new dedicated
+`ReportWriter` node after `CommunicationLayer` — adds a graph node, another edge, and
+another place state can get out of sync, for a step that's a few lines of
+already-deterministic I/O.
+
+**Final decision.** File output happens inside `CommunicationLayer`
+(`graph/nodes/communication_layer.py`), immediately after the LLM call that produces
+`final_report`, gated on `state["intent"] == "report"`. `save_report_files()` (extracted
+from `agents/report_agent.py::_save_files` into `utils/report_files.py` so the legacy
+agent and the graph path share one renderer during the coexistence window) and
+`utils/db.py::report_save()` are both plain deterministic I/O, not model calls — calling
+them from `CommunicationLayer` doesn't violate its "only node allowed to call the primary
+LLM" contract, since the LLM call itself is unchanged; this is ordinary Python running
+after that call returns.
+
+**Trade-offs.** `CommunicationLayer` now has a bit more responsibility (LLM synthesis +
+chart rendering + conditional file I/O + DB persistence) than the RFC's original
+"one clean job" framing implied. Persistence failures are swallowed (logged as a no-op)
+so a `reports` table outage never blocks returning the generated report text to the user
+— acceptable since the file/DB write is a side effect of an already-successful answer,
+not the answer itself.
+
+**Future improvements.** If more domains need post-LLM side effects (screener's CSV
+export in Phase 7.3 will), consider factoring a small "post-synthesis side-effects"
+helper `CommunicationLayer` calls into, rather than growing per-domain `if` branches
+directly in the node body.
+
+---
+
 ## 2026-07-23 — Recurring alerts with cooldown, instead of fire-once-only
 
 **Problem.** `alerts` fired once then permanently deactivated

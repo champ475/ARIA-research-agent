@@ -428,7 +428,16 @@ value against the persisted `thread_id`.
   one needing the most tuning against false-positive rate.
 - **Phase 4**: extend the Planner's tool catalogue to cover report/mf/screener/alert/planning
   intents; retire each specialist agent one at a time behind the flag as its intent is covered.
+  (a.k.a. "Phase 7" in code comments — `graph/graph.py`, `graph/tool_catalogue.py`,
+  `agents/graph_orchestrator.py`, `graph/nodes/human_review.py`, `app.py` all refer to this same
+  work as Phase 7, a repo-wide numbering that folds in the checkpointer/HITL/adapter work done
+  after this RFC was written as phases 5-6 before circling back to this RFC's Phase 4. Code
+  comments are canonical going forward; this document's own Phase 4/5 labels are kept as-is here
+  for historical continuity rather than renumbered.)
 - **Phase 5**: remove `Orchestrator` keyword routing, dead agent files, and the feature flag.
+
+See `C:\Users\arnav\.claude\plans\for-the-above-identified-lazy-river.md` for the detailed
+phase-by-phase (7.0-7.5) breakdown of this Phase 4/5 work.
 
 ## 17. Open risks
 
@@ -461,3 +470,33 @@ Not scoped into Phase 0-5: it's a new persistence and query layer, not a state-s
 exposes real cross-entity query patterns (comparison intents, screener intents) that a flat
 evidence list handles clumsily — at that point the shape of the actual pain will tell us what the
 graph schema needs to be, rather than guessing now.
+
+Update (Phase 7.3): rather than wait for the full knowledge-graph rework, screener's cross-entity
+comparison need is being solved narrowly first — tagging `Evidence` with a `comparison_group_id`
+so `communication_layer` can render one coherent multi-entity table. The full graph-structured
+evidence upgrade described above remains explicitly deferred; this is a local fix, not a
+supersession of this section.
+
+## 19. Phase 7.0 measurement results
+
+Baseline measurement of LLM-calls/turn and latency for the current single-domain
+(equity-only) graph, taken before Phase 7.1-7.3 add any new tool catalogue entries — see
+§17's "Latency/cost" open risk, which this section exists to close out with real numbers
+instead of estimates.
+
+Methodology: `scripts/measure_graph_latency.py` runs a fixed set of representative equity
+queries (mix of `complexity="simple"` and `complexity="complex"`, per `QueryAnalyzer`'s own
+classification) through `build_graph()` end to end, counting LLM calls per node (via a
+counting wrapper around each per-node `LLMClient`) and wall-clock per turn.
+
+Fill in after running the script against a real (or recorded) Groq-backed graph:
+
+| Query complexity | LLM calls/turn (avg) | Wall-clock/turn (avg) | Notes |
+|---|---|---|---|
+| simple | _TBD_ | _TBD_ | Planner short-circuits to no tasks (§ Planner, `complexity=="simple"`) |
+| complex | _TBD_ | _TBD_ | Full plan → execute → reflect/verify loop |
+
+Go/no-go for Phase 7.1+ domain expansion: _TBD — fill in once the table above is measured._
+Re-measure after Phase 7.3 (all 6 domains + multi-intent fan-out wired) per the phased plan's
+cross-cutting notes, since multi-domain Planner cross-products plausibly increase call count
+beyond this single-domain baseline.

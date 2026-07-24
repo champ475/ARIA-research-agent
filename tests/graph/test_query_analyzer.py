@@ -54,3 +54,49 @@ class TestQueryAnalyzer:
         result = node({"query": "RELIANCE outlook"})
         assert len(result["research_journal"]) == 1
         assert result["research_journal"][0]["node"] == "QueryAnalyzer"
+
+
+class TestQueryAnalyzerMultiIntent:
+    """Phase 7.4: secondary_intents lets one message name more than one domain."""
+
+    def test_defaults_to_empty_secondary_intents(self):
+        stub = _StubClient(json.dumps({"intent": "equity", "objective": "x", "complexity": "moderate"}))
+        node = build_query_analyzer_node(stub)
+        result = node({"query": "analyse TCS"})
+        assert result["secondary_intents"] == []
+
+    def test_parses_secondary_intents_list(self):
+        stub = _StubClient(json.dumps({
+            "intent": "report", "secondary_intents": ["alert"],
+            "objective": "report + alert", "complexity": "complex",
+        }))
+        node = build_query_analyzer_node(stub)
+        result = node({"query": "generate a report on TCS and alert me if it drops 5%"})
+        assert result["intent"] == "report"
+        assert result["secondary_intents"] == ["alert"]
+
+    def test_secondary_intents_never_duplicates_primary(self):
+        stub = _StubClient(json.dumps({
+            "intent": "report", "secondary_intents": ["report", "alert"],
+            "objective": "x", "complexity": "complex",
+        }))
+        node = build_query_analyzer_node(stub)
+        result = node({"query": "x"})
+        assert result["secondary_intents"] == ["alert"]
+
+    def test_invalid_secondary_intent_labels_are_dropped(self):
+        stub = _StubClient(json.dumps({
+            "intent": "report", "secondary_intents": ["alert", "not-a-real-domain"],
+            "objective": "x", "complexity": "complex",
+        }))
+        node = build_query_analyzer_node(stub)
+        result = node({"query": "x"})
+        assert result["secondary_intents"] == ["alert"]
+
+    def test_non_list_secondary_intents_falls_back_to_empty(self):
+        stub = _StubClient(json.dumps({
+            "intent": "equity", "secondary_intents": "alert", "objective": "x", "complexity": "moderate",
+        }))
+        node = build_query_analyzer_node(stub)
+        result = node({"query": "x"})
+        assert result["secondary_intents"] == []

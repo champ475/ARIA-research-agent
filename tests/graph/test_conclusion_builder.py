@@ -81,3 +81,97 @@ class TestConclusionBuilder:
     def test_empty_evidence_produces_empty_conclusions(self):
         result = conclusion_builder({"evidence": [], "verification_issues": []})
         assert result["conclusions"] == []
+
+    def test_pdf_extract_text_produces_conclusion(self):
+        evidence = [_evidence(
+            id="ev-qr", tool="fetch_quarterly_results", evidence_type="pdf_extract",
+            payload="Revenue grew 12% YoY, net profit up 8%.",
+        )]
+        result = conclusion_builder({"evidence": evidence, "verification_issues": []})
+        assert len(result["conclusions"]) == 1
+        assert result["conclusions"][0]["citation_key"] == "RELIANCE.fetch_quarterly_results"
+        assert result["conclusions"][0]["value"] == "Revenue grew 12% YoY, net profit up 8%."
+
+    def test_pdf_extract_not_available_text_produces_no_conclusion(self):
+        evidence = [_evidence(
+            id="ev-ar", tool="fetch_annual_report_text", evidence_type="pdf_extract",
+            payload="No annual report found for this ticker.",
+        )]
+        result = conclusion_builder({"evidence": evidence, "verification_issues": []})
+        assert result["conclusions"] == []
+
+    def test_mf_comparison_text_produces_conclusion(self):
+        evidence = [_evidence(
+            id="ev-cmp", tool="fetch_mf_comparison", evidence_type="mf_comparison",
+            payload="Fund A has lower expense ratio than Fund B.",
+        )]
+        result = conclusion_builder({"evidence": evidence, "verification_issues": []})
+        assert len(result["conclusions"]) == 1
+        assert result["conclusions"][0]["citation_key"] == "RELIANCE.fetch_mf_comparison"
+
+    def test_mf_dataframe_evidence_produces_match_count_conclusion(self):
+        import pandas as pd
+        evidence = [_evidence(
+            id="ev-nav", tool="fetch_nav", evidence_type="mf_nav",
+            entity="HDFC Flexicap", payload=pd.DataFrame({"scheme_name": ["A", "B", "C"]}),
+        )]
+        result = conclusion_builder({"evidence": evidence, "verification_issues": []})
+        assert result["conclusions"][0]["value"] == 3
+        assert result["conclusions"][0]["citation_key"] == "HDFC Flexicap.mf_nav"
+
+    def test_alert_list_evidence_produces_count_conclusion(self):
+        evidence = [_evidence(
+            id="ev-al", tool="alert_list", evidence_type="alert_list",
+            payload=[{"id": 1}, {"id": 2}],
+        )]
+        result = conclusion_builder({"evidence": evidence, "verification_issues": []})
+        assert result["conclusions"][0]["value"] == 2
+        assert result["conclusions"][0]["citation_key"] == "alerts.count"
+
+    def test_screener_table_text_produces_conclusion(self):
+        evidence = [_evidence(
+            id="ev-tbl", tool="screener_to_markdown", evidence_type="screener_table",
+            entity="market", payload="| symbol | pe |\n| TCS | 24.3 |",
+        )]
+        result = conclusion_builder({"evidence": evidence, "verification_issues": []})
+        assert len(result["conclusions"]) == 1
+        assert result["conclusions"][0]["citation_key"] == "market.screener_to_markdown"
+        assert "| TCS | 24.3 |" in result["conclusions"][0]["value"]
+
+    def test_top_movers_dataframe_produces_count_conclusion(self):
+        import pandas as pd
+        evidence = [_evidence(
+            id="ev-mov", tool="fetch_top_movers", evidence_type="top_movers",
+            entity="market", payload=pd.DataFrame({"symbol": ["TCS", "INFY"]}),
+        )]
+        result = conclusion_builder({"evidence": evidence, "verification_issues": []})
+        assert result["conclusions"][0]["value"] == 2
+        assert "top mover(s)" in result["conclusions"][0]["claim"]
+
+    def test_bulk_deals_dataframe_produces_count_conclusion(self):
+        import pandas as pd
+        evidence = [_evidence(
+            id="ev-bulk", tool="fetch_bulk_deals", evidence_type="bulk_deals",
+            entity="TCS", payload=pd.DataFrame({"symbol": ["TCS"]}),
+        )]
+        result = conclusion_builder({"evidence": evidence, "verification_issues": []})
+        assert result["conclusions"][0]["value"] == 1
+        assert "bulk deal(s)" in result["conclusions"][0]["claim"]
+
+    def test_screener_saved_evidence_produces_conclusion(self):
+        evidence = [_evidence(
+            id="ev-save", tool="screener_save", evidence_type="screener_saved",
+            entity="market", payload={"name": "My Screen", "filters": {"max_pe": 20}},
+        )]
+        result = conclusion_builder({"evidence": evidence, "verification_issues": []})
+        assert "My Screen" in result["conclusions"][0]["claim"]
+        assert result["conclusions"][0]["citation_key"] == "market.screener_saved"
+
+    def test_alert_action_evidence_produces_conclusion(self):
+        evidence = [_evidence(
+            id="ev-aa", tool="alert_cancel", evidence_type="alert_action",
+            payload={"action": "cancel", "symbol": "TCS", "result": "removed", "alert_id": 5},
+        )]
+        result = conclusion_builder({"evidence": evidence, "verification_issues": []})
+        assert "cancel on TCS: removed" in result["conclusions"][0]["claim"]
+        assert result["conclusions"][0]["citation_key"] == "RELIANCE.alert_cancel"
