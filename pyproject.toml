@@ -1,0 +1,24 @@
+[project]
+name = "aria-investment-agent"
+version = "2.0.0"
+description = "Autonomous Research & Investment Analyst — multi-agent investment research platform for Indian equity markets (NSE/BSE)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+# This is a Gradio app run via `python app.py`, not a library — skip
+# package auto-discovery so `pip install .` doesn't try to scan
+# tests/docs/scripts as installable packages.
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

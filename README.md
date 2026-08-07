@@ -19,7 +19,7 @@ cp .env.example .env
 |---|---|---|
 | `GROQ_API_KEY_1` | [console.groq.com](https://console.groq.com) | Yes |
 | `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Yes |
-| `DATABASE_URL` | [neon.tech](https://neon.tech) — create a free project, copy the connection string | Yes |
+| `DATABASE_URL` | [neon.tech](https://neon.tech) — create a free project, copy the connection string | Yes (skip if using Docker Compose — see below) |
 | `GROQ_API_KEY_2`, `_3` | Same as above, extra keys | Optional — lets you chat more before hitting free-tier limits |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | See **Setting up Alerts** below | Only if you want alert notifications |
 
@@ -30,6 +30,17 @@ python app.py
 ```
 
 Open **http://localhost:7860**, sign up with an email and password, and start chatting.
+
+### Or run it with Docker
+
+No local Python, Postgres, or Neon account needed — Compose bundles a Postgres container for you. Still need `GROQ_API_KEY_1` and `GEMINI_API_KEY` in `.env` (LLM calls go to Groq/Gemini regardless of how you run the app).
+
+```bash
+cp .env.example .env   # fill in GROQ_API_KEY_1 and GEMINI_API_KEY
+docker compose up --build
+```
+
+Open **http://localhost:7860**. Data persists in a named Docker volume (`aria_pg_data`) across restarts.
 
 ## Setting up Alerts (optional, one-time)
 

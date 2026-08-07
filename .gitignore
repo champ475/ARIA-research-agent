@@ -15,6 +15,7 @@ venv/
 # Data & generated artifacts
 data/parquet/
 data/aria.db
+data/bhavcopy_history/
 reports/*.md
 
 # Claude Code local settings

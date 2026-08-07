@@ -12,6 +12,9 @@ import hashlib
 import os
 import re
 import secrets
+import threading
+import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from utils.db import get_conn, release_conn
@@ -20,6 +23,31 @@ SESSION_TTL_HOURS = 24 * 14  # 14 days
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 _PBKDF2_ITERATIONS = 260_000
+
+# In-memory sliding-window throttle, keyed by email — resets on process
+# restart. Good enough for a single-instance Gradio deployment; a
+# multi-instance deployment would need this moved to Postgres/Redis.
+_RATE_LIMIT_WINDOW_S = 5 * 60
+_RATE_LIMIT_MAX_ATTEMPTS = 5
+_attempt_log: dict[str, list[float]] = defaultdict(list)
+_attempt_lock = threading.Lock()
+
+
+def _check_rate_limit(email: str):
+    """Raises AuthError if `email` has hit the attempt cap within the window.
+    Call BEFORE the DB round-trip so a flood doesn't also hammer Postgres."""
+    now = time.monotonic()
+    with _attempt_lock:
+        attempts = [t for t in _attempt_log[email] if now - t < _RATE_LIMIT_WINDOW_S]
+        if len(attempts) >= _RATE_LIMIT_MAX_ATTEMPTS:
+            raise AuthError("Too many attempts. Please wait a few minutes and try again.")
+        attempts.append(now)
+        _attempt_log[email] = attempts
+
+
+def _clear_rate_limit(email: str):
+    with _attempt_lock:
+        _attempt_log.pop(email, None)
 
 
 class AuthError(Exception):
@@ -48,6 +76,7 @@ def signup(email: str, password: str) -> int:
         raise AuthError("Enter a valid email address.")
     if len(password) < 8:
         raise AuthError("Password must be at least 8 characters.")
+    _check_rate_limit(f"signup:{email}")
 
     conn = get_conn()
     try:
@@ -71,6 +100,7 @@ def signup(email: str, password: str) -> int:
 def login(email: str, password: str) -> str:
     """Verify credentials and return a new session token. Raises AuthError on failure."""
     email = email.strip().lower()
+    _check_rate_limit(f"login:{email}")
     conn = get_conn()
     try:
         cur = conn.cursor()
@@ -86,6 +116,7 @@ def login(email: str, password: str) -> str:
             (row["id"], token, expires_at),
         )
         conn.commit()
+        _clear_rate_limit(f"login:{email}")
         return token
     finally:
         release_conn(conn)

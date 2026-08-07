@@ -16,6 +16,59 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-07-29 — Rolling bhavcopy history as a second-tier OHLCV fallback
+
+**Problem.** A Playwright-driven end-to-end audit caught yfinance rate-limited
+for an entire session (`Too Many Requests` on every NSE and BSE call). The
+existing degraded path (`tools/data/fetcher.py::get_ohlcv()`) already fell
+back to NSE bhavcopy for a last-known price, but only as a single EOD row —
+enough for a CMP, not enough for RSI/MACD/SMA/pivots/Fibonacci, which all
+need a multi-day window and every one of them rendered `None` across every
+equity query in that session (single-ticker and 2-ticker compare alike).
+`fetcher.py`'s own docstring already names yfinance as a single point of
+failure for the whole app; this was that risk materializing concretely, not
+a hypothetical.
+
+**Alternatives considered.** (1) A second live data provider (e.g. an
+alternate free NSE/BSE OHLCV API) as a true parallel source — rejected for
+now: another provider is another rate limit, another schema to normalize,
+and another thing that can silently drift from yfinance's numbers; out of
+scope for a same-day fix. (2) Widen the existing single bhavcopy row into a
+synthetic multi-day series (e.g. repeat the one known close) purely so
+indicator math doesn't crash — rejected: fabricated repeated candles would
+make RSI/MACD compute *something*, but that something is meaningless and
+actively misleading, worse than the current honest "None." (3) Accumulate
+real bhavcopy rows over time — the option taken.
+
+**Final decision.** New `tools/data/bhavcopy_history.py`: every time
+`get_ohlcv()`'s existing bhavcopy fallback fires for a symbol, that day's row
+is appended to a per-symbol rolling Parquet file (`data/bhavcopy_history/
+{symbol}.parquet`), deduped by calendar day, capped at 300 rows. `get_ohlcv()`
+now prefers that accumulated window over the old single-row fallback once
+it has 2+ real rows on file. This reuses the bhavcopy fetch that was already
+happening — no new network calls, no new provider dependency, and it composes
+with the existing single-row fallback (which still fires on day one before
+any history has accumulated) rather than replacing it.
+
+**Trade-offs.** This cannot backfill history from before it started running —
+a fresh deployment still shows blank technicals for roughly the first 14
+trading days of a sustained outage (RSI-14's minimum window), only degrading
+gracefully after that point. It's also bhavcopy-only data (EOD close, no
+intraday), so even once populated it can't support intraday-interval charts,
+and every row is dated to session close, not to when the request happened.
+`_bhavcopy_row()`'s own once-per-day cache means this only advances the
+window at most once per calendar day per symbol, by design.
+
+**Future improvements.** A startup or scheduled backfill job that seeds
+recent bhavcopy history for the curated `SECTOR_UNIVERSE` symbols ahead of
+time would close the "first 14 days" gap without waiting for organic traffic
+to trigger it. Longer term, this rolling store is also the natural place to
+add a genuinely separate secondary OHLCV provider (alternative considered
+above) behind the same `read_history()` interface, without another change to
+`get_ohlcv()`'s call sites.
+
+---
+
 ## 2026-07-24 — Thread-id scoped per turn (not per user); multi-intent via secondary_intents; staged retirement deferred
 
 **Problem (thread-id).** `agents/graph_orchestrator.py` used one Postgres-checkpointed
