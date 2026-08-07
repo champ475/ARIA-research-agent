@@ -16,6 +16,70 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-08-08 — In-memory sliding-window throttle on signup/login
+
+**Problem.** Going open-source puts `utils/auth.py`'s signup/login directly
+on the public internet with no throttle — unlimited password guesses per
+account and unlimited account creation for the cost of an email string.
+
+**Alternatives considered.** (1) A dedicated rate-limit service (Redis,
+Cloudflare) — correct for a multi-instance deployment but a hard dependency
+this project doesn't otherwise have, and a self-hoster running one Gradio
+process gets no benefit from it. (2) A Postgres-backed attempt log — keeps
+state across restarts but adds a DB round-trip to every auth attempt before
+we even know if it's legitimate, working against the point of a throttle.
+(3) In-memory sliding window, keyed by `signup:<email>` / `login:<email>`,
+checked before the DB call — chosen: zero new dependencies, cheap, and
+correct for the single-instance deployment this app actually ships as.
+
+**Final decision.** `_check_rate_limit()` caps each key at 5 attempts per
+5-minute window; a successful login clears its own key so normal typo
+recovery isn't penalized. Signup has no equivalent clear (an account either
+gets created or the email is invalid/taken, so there's nothing to reset).
+
+**Trade-offs.** Resets on process restart, and doesn't share state across
+multiple app instances or protect against distributed attempts from many
+IPs/emails at once — this is anti-abuse for a self-hosted single instance,
+not a substitute for a real WAF/rate-limit layer in front of a
+multi-instance or paid deployment.
+
+**Future improvements.** Move to Postgres or Redis if the app ever runs as
+more than one instance; add an IP-based key alongside the email-based one.
+
+## 2026-08-08 — Docker Compose bundles Postgres for open-source onboarding
+
+**Problem.** `utils/db.py` is Postgres-only (`SERIAL`, `JSONB`,
+`TIMESTAMPTZ`, `ON CONFLICT`) and the documented setup path required a Neon
+account before a first-time user could run the app at all — too much
+friction for an open-source project anyone should be able to try in
+minutes.
+
+**Alternatives considered.** (1) Add a SQLite fallback so `DATABASE_URL`
+unset just works locally — rejected: `utils/db.py`'s schema and every query
+in it lean on Postgres-specific syntax throughout; making both dialects
+work correctly is a real rewrite, not a quick add, and risks subtly
+diverging behavior between the SQLite and Postgres code paths for a
+project that has never run on SQLite in production. (2) Ship a hosted demo
+instance — rejected: recurring cost and an operational surface this project
+doesn't need. (3) `docker-compose.yml` bundling a `postgres:16-alpine`
+service alongside the app container — chosen: `docker compose up --build`
+gets a first-time user a running app with zero Neon signup, using the exact
+same Postgres the app already targets, no schema fork.
+
+**Final decision.** `docker-compose.yml` runs `app` + `db`, with `app`'s
+`DATABASE_URL` pinned to the compose-internal `db` service regardless of
+what's in `.env` (so a stale Neon URL left over from non-Docker use can't
+silently get used instead). Manual `pip install` + Neon setup remains the
+documented non-Docker path in the README.
+
+**Trade-offs.** Two supported run paths (manual + Docker) to keep in sync
+in docs; Docker users still need `GROQ_API_KEY_1`/`GEMINI_API_KEY` from
+outside providers — LLM calls aren't self-hostable the way the DB now is.
+
+**Future improvements.** A SQLite fallback remains the real fix for
+zero-external-dependency local dev, if `utils/db.py` is ever worth
+rewriting dialect-agnostic (e.g. via SQLAlchemy).
+
 ## 2026-07-29 — Rolling bhavcopy history as a second-tier OHLCV fallback
 
 **Problem.** A Playwright-driven end-to-end audit caught yfinance rate-limited

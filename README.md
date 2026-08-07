@@ -1,8 +1,10 @@
 # ARIA — Autonomous Research & Investment Analyst
 
-An autonomous financial research engine for Indian stocks and mutual funds (NSE/BSE). ARIA decomposes complex investment questions into executable research plans, orchestrates parallel evidence collection through a LangGraph workflow, verifies claims before synthesis, and generates analyst-grade reports with traceable evidence and confidence scoring — covering stock research, IC-style reports, mutual fund advice, stock screening, and price/technical alerts sent straight to your phone.
+An autonomous financial research engine for Indian stocks and mutual funds (NSE/BSE). ARIA covers stock research, IC-style reports, mutual fund advice, stock screening, goal-based financial planning, and price/technical alerts sent straight to your phone.
 
-You ask a question in plain language; ARIA plans the research, gathers and checks the evidence, and answers with citations you can trace back to the underlying data.
+You ask a question in plain language; a deterministic router sends it to the right specialist agent (equity, reports, mutual funds, screener, alerts, planning), which gathers and checks the evidence and answers with citations you can trace back to the underlying data.
+
+An experimental LangGraph research engine — decomposing a query into a full plan, running parallel evidence collection, and verifying claims before synthesis — exists behind the `USE_LANGGRAPH_ORCHESTRATOR` flag (default off; see [docs/RFC_AGENTIC_RESEARCH_GRAPH.md](docs/RFC_AGENTIC_RESEARCH_GRAPH.md)) and isn't yet the default path.
 
 ## Setup
 
@@ -93,7 +95,7 @@ Responses stream in live, flag a **DATA CONFIDENCE** level (High/Medium/Low) whe
 > "Cancel my TCS alert"
 > "Pause my RELIANCE alert"
 
-Every alert fires **once** — you get a Telegram message, and the alert switches itself off so you don't get spammed. Set a new one anytime.
+By default an alert fires **once** — you get a Telegram message, and it switches itself off so you don't get spammed. Ask for a **recurring** alert instead (with a cooldown, default 24h) if you want it to keep firing each time the condition re-triggers.
 
 **Conditions you can set alerts on:** price above/below a level, % price move, RSI crossing a level, MACD bullish/bearish crossover, moving-average golden/death cross, Bollinger Band breakout, volume spike, new 52-week high/low, bulk deal activity, and portfolio P&L threshold.
 
@@ -107,6 +109,10 @@ ARIA asks a few questions to fill in your profile (age, capital, horizon, goal, 
 ### 📌 Watchlist
 Use the Watchlist tab to add/remove stocks you're tracking — separate from alerts, just a quick-glance list.
 
+## Contributing
+
+Bug reports, feature requests, and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, test running, and how to add a new agent or tool.
+
 ## License
 
-Private project — no license specified.
+[MIT](LICENSE)
