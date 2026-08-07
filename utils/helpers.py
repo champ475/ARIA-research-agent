@@ -42,6 +42,34 @@ TICKER_ALIASES = {
     "NYKAA": "NYKAA", "PAYTM": "PAYTM",
     "POLICYBAZAAR": "POLICYBZR", "DELHIVERY": "DELHIVERY",
     "IRCTC": "IRCTC", "HAL": "HAL", "BEL": "BEL",
+    # Full/plain-language company names for the curated universe — without
+    # these, a natural mention like "what about Infosys stock" doesn't match
+    # any alias or the bare ticker, so it fails validate_ticker() and (in the
+    # Planning agent) can't trip the "a named ticker breaks sticky routing"
+    # escape hatch documented in agents/orchestrator.py::route().
+    "INFOSYS": "INFY", "WIPRO LIMITED": "WIPRO",
+    "TATA CONSULTANCY": "TCS", "TATA CONSULTANCY SERVICES": "TCS",
+    "RELIANCE INDUSTRIES": "RELIANCE",
+    "MARUTI SUZUKI": "MARUTI",
+    "SUN PHARMA": "SUNPHARMA", "SUN PHARMACEUTICAL": "SUNPHARMA",
+    "DR REDDY": "DRREDDY", "DR REDDYS": "DRREDDY", "DR. REDDY": "DRREDDY",
+    "APOLLO HOSPITALS": "APOLLOHOSP",
+    "DIVIS LAB": "DIVISLAB", "DIVI'S LAB": "DIVISLAB", "DIVIS LABORATORIES": "DIVISLAB",
+    "TORRENT PHARMA": "TORNTPHARM", "TORRENT PHARMACEUTICALS": "TORNTPHARM",
+    "JSW STEEL": "JSWSTEEL",
+    "VEDANTA": "VEDL",
+    "GODREJ PROPERTIES": "GODREJPROP",
+    "GODREJ CONSUMER": "GODREJCP",
+    "ICICI LOMBARD": "ICICIGI",
+    "HDFC LIFE INSURANCE": "HDFCLIFE",
+    "SBI LIFE INSURANCE": "SBILIFE",
+    "TATA ELXSI": "TATAELXSI",
+    "KPIT TECHNOLOGIES": "KPIT",
+    "AVENUE SUPERMARTS": "DMART",
+    "ADANI GREEN": "ADANIGREEN", "ADANI GREEN ENERGY": "ADANIGREEN",
+    "ADANI POWER": "ADANIPOWER",
+    "BHARAT ELECTRONICS": "BEL",
+    "HINDUSTAN AERONAUTICS": "HAL",
 }
 
 # Words that are NEVER tickers — stop-list for regex extraction

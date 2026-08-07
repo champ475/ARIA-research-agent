@@ -51,6 +51,12 @@ class MFAgent:
         self._client = LLMClient(system_prompt=SYSTEM)
         self._nav_df = None
         self._user_id = user_id
+        # Markdown fund table from the most recent _category()/_search()
+        # call — EquityAgent anchors follow-ups on self._last_symbol; MF had
+        # no equivalent, so a pronoun follow-up ("what's the expense ratio
+        # on that one?") fell through to a bare, context-free .chat(msg)
+        # call and asked the user which fund they meant.
+        self._last_context = None
 
     @property
     def provider(self): return self._client.provider
@@ -120,7 +126,19 @@ class MFAgent:
         if any(k in lower for k in ["nav","net asset value","price"]):
             return self._nav_query(msg), None
 
-        # General MF question
+        # General MF question — a follow-up like "what's the expense ratio
+        # on that one?" matches none of the keyword branches above, so it
+        # lands here. Ground it in the last fund/category data shown, if
+        # any, instead of asking the user to repeat themselves.
+        if self._last_context:
+            prompt = (
+                f'User follow-up: "{msg}"\n\n'
+                f"Fund data most recently shown to this user:\n{self._last_context}\n\n"
+                "If the follow-up refers to one of the funds/categories above (e.g. \"that one\", "
+                "\"it\", \"this fund\"), answer directly using this data — only ask which fund they "
+                "mean if it's genuinely ambiguous between multiple funds shown above."
+            )
+            return self._client.chat(prompt, max_tokens=TOKENS_AGENT), None
         return self._client.chat(msg, max_tokens=TOKENS_AGENT), None
 
     def _complex_advice(self, msg: str, lower: str) -> str:
@@ -167,6 +185,7 @@ Write a direct, complete answer covering:
         nav_df   = self._get_nav()
         results  = search_fund(keywords, nav_df)
         table    = format_fund_search_results(results)
+        self._last_context = f"Search results for \"{keywords}\":\n{table}"
 
         prompt = f"""User searched for mutual funds matching: "{keywords}"
 
@@ -190,6 +209,7 @@ Write a helpful response:
     def _category(self, category: str, msg: str) -> str:
         funds  = get_category_funds(category, top_n=12)
         table  = format_fund_search_results(funds)
+        self._last_context = f"{category.title()} category funds:\n{table}"
         news   = google_news(f"India {category} mutual fund 2025", n=5)
         news_txt = "\n".join(f"- {n['title']}" for n in news[:4])
 
@@ -307,6 +327,8 @@ Write a brief market intelligence note:
             "Flexi cap fund options",
         ]
 
-    def reset(self): self._client.reset()
+    def reset(self):
+        self._client.reset()
+        self._last_context = None
 
     def load_history(self, messages: list[dict]): self._client.load_history(messages)

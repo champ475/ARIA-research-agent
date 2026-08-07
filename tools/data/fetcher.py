@@ -224,12 +224,29 @@ def get_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
 
     degraded = False
     if df.empty:
-        # Single EOD candle from bhavcopy — not real history, but keeps a
-        # price/candle available instead of a hard failure. Callers already
-        # guard "len(df) < N" before running multi-day indicators (see
-        # EquityAgent._fetch_bundle), so a 1-row df degrades gracefully.
+        # yfinance has nothing — fall back to NSE bhavcopy. Every row we ever
+        # see here also gets recorded into a per-symbol rolling history
+        # (tools/data/bhavcopy_history.py), so a sustained outage builds up
+        # real multi-day OHLC over time instead of being stuck at one row
+        # forever. Prefer that accumulated window when it's long enough for
+        # indicators to compute on; otherwise fall back to today's single
+        # row, which still keeps a last-known price/candle available instead
+        # of a hard failure (callers already guard "len(df) < N" before
+        # running multi-day indicators — see EquityAgent._fetch_bundle).
+        from tools.data.bhavcopy_history import record_row, read_history
+
         row = _bhavcopy_row(symbol)
         if row:
+            record_row(symbol, row)
+
+        history = read_history(symbol)
+        if len(history) >= 2:
+            df = history
+            df.attrs["_degraded_source"] = (
+                f"NSE bhavcopy rolling history ({len(history)} sessions) — yfinance unavailable"
+            )
+            degraded = True
+        elif row:
             parsed = pd.to_datetime(row["date"], format="%d-%b-%Y", errors="coerce")
             idx = parsed if pd.notna(parsed) else pd.Timestamp.now()
             df = pd.DataFrame(

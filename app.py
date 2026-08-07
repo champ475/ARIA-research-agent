@@ -4,10 +4,13 @@ Gradio 6 compatible. show_api=False fixes the proxy/launch error.
 """
 
 import os
+import logging
 import gradio as gr
 from utils.db    import init_db
 from utils.helpers import now_ist
 from utils.auth import signup, login, AuthError
+
+log = logging.getLogger(__name__)
 
 # ── Init DB on startup ────────────────────────────────────────────────────────
 init_db()
@@ -91,17 +94,32 @@ def _session_title(msg: str) -> str:
 
 # ── Core respond function (orchestrator-routed) ───────────────────────────────
 
+_INPUT_BUSY  = gr.update(value="", interactive=False)   # locked while a turn is in flight
+_INPUT_READY = gr.update(value="", interactive=True)     # unlocked once the turn is done
+_SEND_BUSY   = gr.update(interactive=False)
+_SEND_READY  = gr.update(interactive=True)
+
+
 def respond(user_id: int, message: str, history: list, suggestions: list, session_id: int, tf: str):
     """
     Generator: first yield shows loading dots, second yield delivers the real
     response. The orchestrator decides which specialist agent handles the
     message; the reply is prefixed with a small badge naming that agent so
     routing stays visible instead of being a hidden implementation detail.
-    Yields: (cleared_input, updated_history, chart, suggestions, pdf, md, csv, *btn_updates)
+
+    The input box and Send button are locked (interactive=False) for every
+    yield except the terminal one — a rapid Enter/click issued while a turn
+    is still in flight used to be silently swallowed by Gradio's client
+    (confirmed via a Playwright audit: the resubmitted message never even
+    reached the server), with nothing telling the user their message went
+    nowhere. Locking the input for the round-trip closes that window instead
+    of just detecting it after the fact.
+
+    Yields: (cleared_input, send_btn, updated_history, chart, suggestions, pdf, md, csv, *btn_updates)
     """
     no_file = gr.update(value=None, visible=False)
     if not message.strip():
-        yield ("", history, gr.update(), suggestions, no_file, no_file, no_file) + tuple(gr.update() for _ in range(4))
+        yield (_INPUT_READY, _SEND_READY, history, gr.update(), suggestions, no_file, no_file, no_file) + tuple(gr.update() for _ in range(4))
         return
 
     clean = message.lstrip("📊📋📈📰🔀🌍❓✅🔍 ").strip()
@@ -128,7 +146,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         {"role": "user",      "content": message},
         {"role": "assistant", "content": LOADING_HTML},
     ]
-    yield ("", loading_hist, gr.update(value=None, visible=False), suggestions, no_file, no_file, no_file) + _make_btn_updates(suggestions)
+    yield (_INPUT_BUSY, _SEND_BUSY, loading_hist, gr.update(value=None, visible=False), suggestions, no_file, no_file, no_file) + _make_btn_updates(suggestions)
 
     chart_fig  = None
     new_sugg   = suggestions
@@ -151,7 +169,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
                 {"role": "assistant", "content": f"*🔀 Routed to: {_tab_label(tab_used)}*\n\n" + text},
             ]
             yield (
-                "", streaming_hist, gr.update(value=chart_fig, visible=chart_fig is not None),
+                _INPUT_BUSY, _SEND_BUSY, streaming_hist, gr.update(value=chart_fig, visible=chart_fig is not None),
                 suggestions, no_file, no_file, no_file,
             ) + _make_btn_updates(suggestions)
 
@@ -174,7 +192,16 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     except Exception as e:
         text = f"⚠️ Error: `{str(e)}`\n\nPlease try again."
 
-    _persist_turn(user_id, session_id, message, text, is_first=not history)
+    # A save failure here (e.g. a Neon connection dropped for being idle —
+    # utils/db.py now retries once, but a second failure is still possible)
+    # must never stop the terminal yield below from firing: that yield is
+    # what re-enables the input box (_INPUT_READY/_SEND_READY, the
+    # Finding-1 fix). Losing one turn's chat-history row is a much smaller
+    # problem than leaving the whole input permanently locked.
+    try:
+        _persist_turn(user_id, session_id, message, text, is_first=not history)
+    except Exception as e:
+        log.warning(f"[respond] failed to persist turn for session {session_id}: {e}")
 
     updated_history = history + [
         {"role": "user",      "content": message},
@@ -182,7 +209,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     ]
     chart_update = gr.update(value=chart_fig, visible=chart_fig is not None)
     btn_updates  = _make_btn_updates(new_sugg)
-    yield ("", updated_history, chart_update, new_sugg, pdf_update, md_update, csv_update) + btn_updates
+    yield (_INPUT_READY, _SEND_READY, updated_history, chart_update, new_sugg, pdf_update, md_update, csv_update) + btn_updates
 
 
 def _persist_turn(user_id: int, session_id: int, user_msg: str, assistant_msg: str, is_first: bool):
@@ -626,19 +653,25 @@ def _build_chat_tab(user_state: gr.State):
                     elem_id=f"msg-{tab_id}", scale=10,
                 )
                 send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
-                clear_btn = gr.Button("Clear",   scale=1, min_width=60, elem_classes=["clear-btn"])
+                clear_btn = gr.Button("Clear chat", scale=1, min_width=60, elem_classes=["clear-btn"])
 
         _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
                              chatbot, chart_panel, suggestions_state, sug_btns,
                              extra_reset=[pdf_btn, md_btn, csv_btn])
 
-    outputs = ([msg_box, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn]
+    outputs = ([msg_box, send_btn, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn]
                + sug_btns + [session_state, refresh_state])
 
     def _respond(user_id, session_id, refresh, msg, hist, sugg, tf):
         if session_id is None and msg.strip():
             from utils.db import session_create
             session_id = session_create(user_id, tab_id, title=_session_title(msg))
+            # A freshly created session must show up in the sidebar the moment
+            # this turn starts, not on some later yield — bump refresh_state
+            # right away instead of leaving it to the loop below (see
+            # ARCHITECTURE.md: the sidebar's @gr.render previously missed a
+            # brand-new session for the rest of that browser session).
+            refresh += 1
         for i, out in enumerate(respond(user_id, msg, hist, sugg, session_id, tf)):
             yield out + (session_id, refresh if i == 0 else refresh + 1)
 
@@ -647,8 +680,15 @@ def _build_chat_tab(user_state: gr.State):
         no_dl = gr.update(value=None, visible=False)
         return [hist, chart, sugg, no_dl, no_dl, no_dl] + list(btns) + [None]
 
-    msg_box.submit(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio], outputs)
-    send_btn.click(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio], outputs)
+    # show_progress="hidden" on both: Gradio's own generic ETA overlay
+    # ("processing | Xs/Ys" text + a stray link icon) otherwise renders on
+    # top of the chat area and even inside the input box once a turn runs
+    # long — most visibly under LLM-provider rate-limiting, exactly when the
+    # app most needs to look composed. respond()'s own LOADING_HTML
+    # (bouncing dots, prefixed to the assistant bubble) is the one loading
+    # indicator meant to be visible; this stops Gradio's from fighting it.
+    msg_box.submit(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio], outputs, show_progress="hidden")
+    send_btn.click(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio], outputs, show_progress="hidden")
     clear_btn.click(
         _clear, [user_state],
         [chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn] + sug_btns + [session_state],
@@ -687,13 +727,18 @@ def _fetch_watchlist_table(user_id: int) -> list[list]:
             high52 = info.get("fiftyTwoWeekHigh", "N/A")
             low52  = info.get("fiftyTwoWeekLow",  "N/A")
 
-            # RSI from cached OHLCV (fast — usually already in Parquet cache)
+            # RSI from cached OHLCV (fast — usually already in Parquet cache).
+            # snapshot() always has the "RSI" key but its value is None when
+            # the underlying OHLCV history is too short/unavailable — a bare
+            # .get("RSI", "—") only covers a missing key, not a None value,
+            # so the table used to render the literal string "None".
             rsi = "—"
             try:
                 df = get_ohlcv(sym, "3mo", "1d")
                 if not df.empty:
                     ta = snapshot(compute_all(df.copy()))
-                    rsi = ta.get("RSI", "—")
+                    rsi = ta.get("RSI")
+                    rsi = "N/A" if rsi is None else rsi
             except Exception:
                 pass
 

@@ -6,9 +6,13 @@ Creates the DB and all tables on first run.
 """
 
 import json
+import logging
+import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 from config import DATABASE_URL
+
+log = logging.getLogger(__name__)
 
 _pool: "pool.ThreadedConnectionPool | None" = None
 
@@ -29,35 +33,66 @@ def get_conn():
     return _get_pool().getconn()
 
 
-def release_conn(conn):
+def release_conn(conn, discard: bool = False):
     """Rolls back any uncommitted/aborted transaction before returning the
     connection to the pool — without this, a failed statement (e.g. a CHECK
     violation) leaves the connection stuck in an aborted-transaction state
-    for whoever borrows it next."""
+    for whoever borrows it next.
+
+    `discard=True` closes the connection and drops it from the pool instead
+    of returning it — for a connection Neon has already killed server-side
+    (`OperationalError: server closed the connection unexpectedly`, common
+    on a serverless/autosuspend Postgres tier after a period of inactivity).
+    Putting a dead connection back would just hand the same failure to the
+    next caller."""
     try:
+        if discard:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _get_pool().putconn(conn, close=True)
+            return
         if not conn.closed:
             conn.rollback()
     finally:
-        _get_pool().putconn(conn)
+        if not discard:
+            _get_pool().putconn(conn)
 
 
 def _query(sql: str, params: tuple = (), fetch: str | None = "all", commit: bool = False):
-    """fetch: 'all' | 'one' | None. Returns list[dict] | dict|None | None."""
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        result = None
-        if fetch == "all":
-            result = [dict(r) for r in cur.fetchall()]
-        elif fetch == "one":
-            row = cur.fetchone()
-            result = dict(row) if row else None
-        if commit:
-            conn.commit()
-        return result
-    finally:
-        release_conn(conn)
+    """fetch: 'all' | 'one' | None. Returns list[dict] | dict|None | None.
+
+    A pooled connection Neon has already dropped server-side (idle timeout on
+    the free/autosuspend tier) raises OperationalError/InterfaceError on
+    first use, not at checkout — the pool has no way to know it's dead until
+    something tries to use it. One retry on a fresh connection self-heals
+    that common case instead of surfacing it as a hard failure for whatever
+    the user happened to be doing (this is exactly what crashed a chat
+    turn's post-processing DB save mid-audit, leaving the input locked)."""
+    for attempt in range(2):
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            result = None
+            if fetch == "all":
+                result = [dict(r) for r in cur.fetchall()]
+            elif fetch == "one":
+                row = cur.fetchone()
+                result = dict(row) if row else None
+            if commit:
+                conn.commit()
+            release_conn(conn)
+            return result
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            release_conn(conn, discard=True)
+            if attempt == 1:
+                raise
+            log.warning(f"[db] stale pooled connection ({e}); retrying once with a fresh one")
+        except Exception:
+            release_conn(conn)
+            raise
 
 
 def init_db():
