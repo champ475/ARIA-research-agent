@@ -122,6 +122,11 @@ def upsert_by_id(existing: list[Task], new: list[Task]) -> list[Task]:
 
 class GraphState(TypedDict):
     messages: Annotated[list, add_messages]
+    history: list[dict]       # prior turns as [{"role": "user"|"assistant", "content": str}, ...] —
+                               # owned by GraphOrchestrator (agents/graph_orchestrator.py), not the
+                               # checkpointer, since each turn mints a fresh thread_id (see that
+                               # module's "Thread-id scoping" note) and so can't rely on `messages`'
+                               # add_messages reducer persisting across turns on its own.
     query: str
     user_id: int              # needed by any domain that persists (reports, screeners, alerts, profiles)
     entities: list[str]
@@ -141,6 +146,11 @@ class GraphState(TypedDict):
     confidence_summary: dict
     research_journal: Annotated[list[JournalEntry], operator.add]
     final_report: str
+    pending_synthesis_prompt: str | None  # set instead of final_report when CommunicationLayer defers
+                                           # the LLM call to GraphOrchestrator for token streaming
+                                           # (equity/chat intents with no file output to write synchronously)
+    pending_fundamental_payload: dict | None  # footnote source for the deferred call above, applied
+                                               # by GraphOrchestrator once the full text is streamed
     chart_html: str
     pdf_path: str | None       # report-domain file output (Phase 7.1), None for other intents
     md_path: str | None        # report-domain file output (Phase 7.1), None for other intents

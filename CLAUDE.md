@@ -26,14 +26,10 @@ No build step required. `pytest` test suite exists under `tests/` (unit tests fo
 ## Architecture
 
 ### Entry Point & UI
-`app.py` builds a 2-tab Gradio interface (Chat, Watchlist) with an auth gate (`utils/auth.py`). All specialist domains (equity, reports, mutual funds, screener, alerts, planning) are routed through the single Chat tab via `agents/orchestrator.py::route()` — a deterministic keyword-set scorer, not per-domain tabs. Agents are lazily initialized per user session (`get_orchestrator(user_id)`), each with its own LLM conversation history.
+`app.py` builds a 2-tab Gradio interface (Chat, Watchlist) with an auth gate (`utils/auth.py`). All specialist domains (equity, reports, mutual funds, screener, alerts, planning) are routed through the single Chat tab via the LangGraph research engine (`graph/`), not per-domain tabs. One `GraphOrchestrator` (`agents/graph_orchestrator.py`) is lazily initialized per user session (`get_orchestrator(user_id)`), each with its own conversation memory.
 
-### Agent Layer (`agents/`)
-6 specialist agents — `equity_agent.py`, `report_agent.py`, `mf_agent.py`, `screener_agent.py`, `alert_agent.py`, `planning_agent.py` — plus `orchestrator.py` (routing) and `graph_orchestrator.py` (LangGraph adapter, behind `USE_LANGGRAPH_ORCHESTRATOR`). Each agent constructs its own `LLMClient`; `BaseAgent` is a lightweight shared base (`ask()`/`chat()`). The agent flow is:
-1. Parse user intent from message (keyword/pattern matching)
-2. Call tools to fetch and analyze data
-3. Synthesize results via LLM
-4. Return `(markdown_text, chart_html)` tuple — only `EquityAgent` streams token-by-token
+### Orchestration (`agents/graph_orchestrator.py`, `graph/`)
+A LangGraph `StateGraph` (see `docs/RFC_AGENTIC_RESEARCH_GRAPH.md`) is the sole orchestration path: QueryAnalyzer (intent/entity/complexity) → Planner (LLM-driven tool selection over `graph/tool_catalogue.py`) → parallel ResearchExecutor/execute_task fan-out → EvidenceSummarizer → Reflection/Verification self-correction loop (with human-in-the-loop gates) → ConclusionBuilder → CommunicationLayer (the only node allowed to call the primary LLM). Equity/chat turns stream token-by-token (`GraphOrchestrator` makes the deferred LLM call itself, see `communication_layer.py::_is_streamable`); report/mf/screener/alert/planning intents return their finished text in one yield.
 
 ### LLM Provider (`agents/llm_client.py`)
 `LLMClient` wraps Groq and Gemini providers with:

@@ -23,31 +23,33 @@ and `RUN_DB_TESTS=1` — CI runs without either, so those are opt-in locally.
 
 ## Project layout
 
-- `agents/` — one file per specialist (equity, report, mf, screener, alert,
-  planning) plus `orchestrator.py` (keyword routing) and
-  `graph_orchestrator.py` (LangGraph adapter, behind
-  `USE_LANGGRAPH_ORCHESTRATOR`). Each agent returns `(markdown_text,
-  chart_html)`.
+- `agents/graph_orchestrator.py` — the orchestration entry point (`GraphOrchestrator`),
+  a drop-in `process_stream()`/`classify()`/`generate_suggestions()`/`load_history()`
+  adapter over the LangGraph engine in `graph/`.
 - `tools/data/` — external data fetchers (yfinance, NSE bhavcopy, news,
   AMFI NAV) and the Parquet cache.
 - `tools/analysis/` — pure computation: technicals, fundamentals, risk,
   backtesting, sentiment.
-- `graph/` — the experimental LangGraph research engine (see
-  `docs/RFC_AGENTIC_RESEARCH_GRAPH.md`).
+- `graph/` — the LangGraph research engine (see
+  `docs/RFC_AGENTIC_RESEARCH_GRAPH.md`): `graph/tool_catalogue.py` wraps
+  `tools/` for Planner's tool selection, `graph/nodes/` holds each pipeline
+  stage (QueryAnalyzer, Planner, ResearchExecutor, EvidenceSummarizer,
+  Reflection, Verification, ConclusionBuilder, CommunicationLayer).
 - `utils/` — DB access, auth, ticker-alias resolution, IST time helpers.
 - `config.py` — single source of truth for token budgets, sector universe,
-  and technical-analysis defaults. Change limits here, not inline in agents.
+  and technical-analysis defaults. Change limits here, not inline in nodes.
 
-## Adding a new agent or tool
+## Adding a new domain or tool
 
 1. New data fetcher → `tools/data/`; new computation → `tools/analysis/`.
    Keep tools pure (input → output), no LLM calls inside them.
-2. New specialist agent → subclass the pattern in an existing agent
-   (`agents/screener_agent.py` is a good small example): parse intent →
-   call tools → synthesize via `LLMClient` → return `(text, chart_html)`.
-3. Wire routing keywords into `agents/orchestrator.py::route()`. If the
-   LangGraph path is enabled, also register the tool in
-   `graph/tool_catalogue.py`.
+2. New tool → register a `ToolSpec` in `graph/tool_catalogue.py` (name,
+   evidence_type, depends_on, cost, fn, description) — Planner selects
+   tools by reading each `description` against the objective, so no
+   separate routing step is needed.
+3. If the new capability needs its own response-formatting logic (like
+   report/screener's file-output branches), add it to
+   `graph/nodes/communication_layer.py`.
 4. Respect the token budgets in `config.py` (`TOKENS_FAST` /
    `TOKENS_AGENT` / `TOKENS_SYNTHESIS`) — don't hardcode a `max_tokens`.
 5. All timestamps use `pytz` Asia/Kolkata (`utils/helpers.py` has the

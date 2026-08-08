@@ -10,6 +10,18 @@ turned out not to be literally possible (incompatible client libraries), so
 this opens its own small connection pool against the same DATABASE_URL
 instead. Same database, same credentials, separate client library — the
 closest achievable match to the RFC's intent.
+
+Serializer: PostgresSaver's default JsonPlusSerializer msgpack-encodes
+GraphState after every superstep and raises TypeError on anything it
+doesn't natively know how to represent — confirmed to break on a raw
+pandas DataFrame (application data; graph/nodes/execute_task.py works
+around this at the source by keeping Evidence.payload in a JSON-safe form)
+AND on LangGraph's own internal `Send` object (framework-internal pending-
+write state during a multi-task fan-out — not something application code
+can pre-convert, since it's never exposed to a node function). Constructing
+the serde with `pickle_fallback=True` covers both today and any future type
+neither side anticipated, instead of hand-listing every non-native type as
+it's discovered.
 """
 from __future__ import annotations
 
@@ -36,9 +48,10 @@ def get_postgres_checkpointer():
 
         from psycopg_pool import ConnectionPool
         from langgraph.checkpoint.postgres import PostgresSaver
+        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
         _pool = ConnectionPool(conninfo=DATABASE_URL, max_size=5, kwargs={"autocommit": True})
-        checkpointer = PostgresSaver(_pool)
+        checkpointer = PostgresSaver(_pool, serde=JsonPlusSerializer(pickle_fallback=True))
         checkpointer.setup()
         _checkpointer = checkpointer
         return _checkpointer

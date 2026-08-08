@@ -18,7 +18,7 @@ A clear description of the bug.
 **Environment**
 - Run method: `python app.py` / Docker Compose
 - OS:
-- Relevant `.env` flags (e.g. `USE_LANGGRAPH_ORCHESTRATOR`):
+- Relevant `.env` values (redact any keys):
 
 **Logs / traceback**
 ```

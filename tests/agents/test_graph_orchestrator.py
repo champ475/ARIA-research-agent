@@ -41,7 +41,11 @@ class TestGraphOrchestratorNormalFlow:
 
         args, kwargs = fake_graph.invoke.call_args
         assert args[0]["query"] == "analyse RELIANCE"
-        assert kwargs["config"]["configurable"]["thread_id"] == "user-1-turn-1"
+        # Random UUID component, not a deterministic user+turn counter — see
+        # agents/graph_orchestrator.py's "Thread-id scoping" docstring for
+        # why the counter-based scheme was unsafe across process restarts.
+        assert kwargs["config"]["configurable"]["thread_id"].startswith("user-1-")
+        assert kwargs["config"]["configurable"]["thread_id"] != "user-1-"
 
 
 class TestGraphOrchestratorHumanInTheLoop:
@@ -227,9 +231,21 @@ class TestGraphOrchestratorClassify:
 
 
 class TestGraphOrchestratorMisc:
-    def test_generate_suggestions_returns_empty_list(self):
+    def test_generate_suggestions_parses_llm_json_array(self):
         orch = _build_orchestrator(MagicMock())
-        assert orch.generate_suggestions("resp", "query") == []
+        fake_client = MagicMock()
+        fake_client.ask.return_value = '["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]'
+        with patch("agents.graph_orchestrator._get_suggestion_client", return_value=fake_client):
+            result = orch.generate_suggestions("resp", "query")
+        assert result == ["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]
+
+    def test_generate_suggestions_falls_back_on_llm_failure(self):
+        orch = _build_orchestrator(MagicMock())
+        fake_client = MagicMock()
+        fake_client.ask.side_effect = RuntimeError("rate limited")
+        with patch("agents.graph_orchestrator._get_suggestion_client", return_value=fake_client):
+            result = orch.generate_suggestions("resp", "query")
+        assert result == ["Analyse a stock", "Compare mutual funds", "Top gainers today", "Set a price alert"]
 
     def test_reset_clears_awaiting_confirmation(self):
         orch = _build_orchestrator(MagicMock())

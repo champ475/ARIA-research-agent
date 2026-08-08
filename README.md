@@ -2,9 +2,19 @@
 
 An autonomous financial research engine for Indian stocks and mutual funds (NSE/BSE). ARIA covers stock research, IC-style reports, mutual fund advice, stock screening, goal-based financial planning, and price/technical alerts sent straight to your phone.
 
-You ask a question in plain language; a deterministic router sends it to the right specialist agent (equity, reports, mutual funds, screener, alerts, planning), which gathers and checks the evidence and answers with citations you can trace back to the underlying data.
+You ask a question in plain language; a LangGraph research engine (see [docs/RFC_AGENTIC_RESEARCH_GRAPH.md](docs/RFC_AGENTIC_RESEARCH_GRAPH.md)) decomposes it into a plan, runs parallel evidence collection across equity/reports/mutual funds/screener/alerts/planning, verifies claims before synthesis, and answers with citations you can trace back to the underlying data.
 
-An experimental LangGraph research engine — decomposing a query into a full plan, running parallel evidence collection, and verifying claims before synthesis — exists behind the `USE_LANGGRAPH_ORCHESTRATOR` flag (default off; see [docs/RFC_AGENTIC_RESEARCH_GRAPH.md](docs/RFC_AGENTIC_RESEARCH_GRAPH.md)) and isn't yet the default path.
+## Features
+
+- **📈 Equity research** — fundamentals, technicals (RSI/MACD/Bollinger/moving averages), news, charts, peer comparison, backtesting, streamed live token-by-token.
+- **📄 IC-style reports** — initiating coverage, result updates, sector thematics, quick notes — downloadable as PDF/Markdown.
+- **💰 Mutual funds** — NAV lookup, category comparison (large/mid/small cap, ELSS, debt, hybrid, index), SIP-vs-lumpsum guidance.
+- **🔍 Screener** — filter the market by PE/ROE/ROCE/D-E/sector, top gainers/losers, bulk/block deals, save screens for reuse.
+- **🔔 Price & technical alerts** — 14 condition types, delivered to your own Telegram chat the moment they fire (checked every 5 min, even while your machine is off).
+- **🎯 Goal-based planning** — multi-turn intake (age, capital, horizon, goal, risk tolerance), remembered across sessions, then a real allocation grounded in actual fund/stock data.
+- **📌 Watchlist** — a quick-glance tracked-symbol list, separate from alerts.
+- **Follows the conversation** — like ChatGPT, a follow-up ("what about its RSI?") resolves against what you were just discussing, no need to repeat the ticker.
+- **Cites its numbers** — every ratio/claim links back to the exact evidence it came from, with an explicit confidence level when the underlying data was thin.
 
 ## Setup
 
@@ -54,6 +64,25 @@ Alerts need a Telegram bot to notify you and a GitHub Actions cron job to check 
 4. **Add three repo secrets** — on GitHub, go to *Settings → Secrets and variables → Actions*, add `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` using the same values from your `.env`.
 
 That's it — the checker runs automatically every 5 minutes during NSE market hours (9:15 AM–3:30 PM IST, weekdays) and pings your Telegram the moment an alert fires.
+
+## What to expect
+
+Type in plain English, no command syntax. Example:
+
+> **You:** what is the PE ratio of TCS
+>
+> **ARIA:** The P/E ratio of TCS is 24.3 [^pe].
+>
+> ---
+> ### 🧮 Cited calculations
+> **[^pe] P/E Ratio**
+> 24.3 = current price (₹4,127.50) / trailing EPS (₹169.85)
+
+> **You:** what about its RSI
+>
+> **ARIA:** *(follow-up resolves "its" back to TCS automatically)* TCS's 14-day RSI is 58.2 — neither overbought nor oversold.
+
+Ask for a chart, a comparison, a report, an alert, or a fund lookup and ARIA routes it to the right specialist itself — you never pick a mode or tab.
 
 ## How to use each feature
 

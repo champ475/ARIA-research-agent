@@ -21,6 +21,7 @@ from __future__ import annotations
 import pandas as pd
 
 from graph.journal import log_decision
+from graph.nodes.execute_task import from_cacheable
 from graph.state import Conclusion, Evidence, GraphState
 from utils.helpers import trim_text
 
@@ -151,7 +152,12 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
 
 
 def conclusion_builder(state: GraphState) -> dict:
-    evidence = state.get("evidence", [])
+    # Evidence.payload is kept in checkpoint-safe form in GraphState (see
+    # graph/nodes/execute_task.py's module docstring) — this node's own
+    # isinstance(payload, pd.DataFrame) checks below need the real object back.
+    evidence = [
+        {**ev, "payload": from_cacheable(ev["payload"])} for ev in state.get("evidence", [])
+    ]
     flagged = _flagged_evidence_ids(state.get("verification_issues", []))
 
     conclusions: list[Conclusion] = []

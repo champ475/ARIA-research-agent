@@ -47,35 +47,54 @@ class TestCommunicationLayerNoConclusions:
         assert result["confidence_summary"] == {}
 
     def test_trivial_query_answered_directly_not_reported_as_a_gap(self):
+        # intent defaults to "equity" (missing "intent" key), a streamable
+        # domain — the LLM call is deferred to GraphOrchestrator instead of
+        # made synchronously here, see _is_streamable.
         stub = _StubClient("PE stands for price-to-earnings ratio.")
         node = build_communication_layer_node(stub)
         result = node({
             "conclusions": [], "objective": "explain PE ratio", "entities": [], "evidence": [],
             "complexity": "simple", "query": "what does PE mean",
         })
+        assert result["final_report"] == ""
+        assert result["pending_synthesis_prompt"] == "what does PE mean"
+        assert stub.last_prompt is None
+
+    def test_non_streamable_trivial_query_answered_directly(self):
+        stub = _StubClient("PE stands for price-to-earnings ratio.")
+        node = build_communication_layer_node(stub)
+        result = node({
+            "conclusions": [], "objective": "explain PE ratio", "entities": [], "evidence": [],
+            "complexity": "simple", "query": "what does PE mean", "intent": "mf",
+        })
         assert result["final_report"] == "PE stands for price-to-earnings ratio."
         assert stub.last_prompt is not None
 
 
 class TestCommunicationLayerReport:
+    """intent="mf" throughout — any non-streamable domain (see
+    graph/nodes/communication_layer.py::_is_streamable) forces the
+    synchronous .ask() path these tests are actually exercising; without an
+    explicit intent it defaults to "equity", which now defers the call."""
+
     def test_prompt_includes_every_conclusion_claim(self):
         stub = _StubClient("Report text")
         node = build_communication_layer_node(stub)
         conclusions = [_conclusion(claim="RELIANCE pe = 24.3"), _conclusion(claim="RELIANCE roce = 15.2", citation_key="roce")]
-        node({"conclusions": conclusions, "objective": "x", "entities": ["RELIANCE"], "evidence": []})
+        node({"conclusions": conclusions, "objective": "x", "entities": ["RELIANCE"], "evidence": [], "intent": "mf"})
         assert "RELIANCE pe = 24.3" in stub.last_prompt
         assert "RELIANCE roce = 15.2" in stub.last_prompt
 
     def test_canonical_citation_key_gets_footnote_marker_in_prompt(self):
         stub = _StubClient("Report text")
         node = build_communication_layer_node(stub)
-        node({"conclusions": [_conclusion(citation_key="pe")], "objective": "x", "entities": [], "evidence": []})
+        node({"conclusions": [_conclusion(citation_key="pe")], "objective": "x", "entities": [], "evidence": [], "intent": "mf"})
         assert "[^pe]" in stub.last_prompt
 
     def test_non_canonical_citation_key_gets_no_marker(self):
         stub = _StubClient("Report text")
         node = build_communication_layer_node(stub)
-        node({"conclusions": [_conclusion(citation_key="RELIANCE.weird_metric")], "objective": "x", "entities": [], "evidence": []})
+        node({"conclusions": [_conclusion(citation_key="RELIANCE.weird_metric")], "objective": "x", "entities": [], "evidence": [], "intent": "mf"})
         assert "[^" not in stub.last_prompt
 
     def test_confidence_summary_maps_citation_key_to_confidence(self):
@@ -83,20 +102,20 @@ class TestCommunicationLayerReport:
         node = build_communication_layer_node(stub)
         result = node({
             "conclusions": [_conclusion(citation_key="pe", confidence=0.9), _conclusion(citation_key="roce", confidence=0.6)],
-            "objective": "x", "entities": [], "evidence": [],
+            "objective": "x", "entities": [], "evidence": [], "intent": "mf",
         })
         assert result["confidence_summary"] == {"pe": 0.9, "roce": 0.6}
 
     def test_uses_primary_model_no_override(self):
         stub = _StubClient("Report text")
         node = build_communication_layer_node(stub)
-        node({"conclusions": [_conclusion()], "objective": "x", "entities": [], "evidence": []})
+        node({"conclusions": [_conclusion()], "objective": "x", "entities": [], "evidence": [], "intent": "mf"})
         assert "model" not in stub.last_call_kwargs
 
     def test_writes_journal_entry(self):
         stub = _StubClient("Report text")
         node = build_communication_layer_node(stub)
-        result = node({"conclusions": [_conclusion()], "objective": "x", "entities": [], "evidence": []})
+        result = node({"conclusions": [_conclusion()], "objective": "x", "entities": [], "evidence": [], "intent": "mf"})
         assert result["research_journal"][0]["node"] == "CommunicationLayer"
 
 
@@ -111,7 +130,7 @@ class TestCommunicationLayerFootnotes:
         node = build_communication_layer_node(stub)
         result = node({
             "conclusions": [_conclusion()], "objective": "x", "entities": ["RELIANCE"],
-            "evidence": [fundamental_ev],
+            "evidence": [fundamental_ev], "intent": "mf",
         })
         assert "Cited calculations" in result["final_report"]
         assert "24.3 = price/eps" in result["final_report"]
@@ -119,7 +138,7 @@ class TestCommunicationLayerFootnotes:
     def test_no_footnotes_appended_without_fundamental_evidence(self):
         stub = _StubClient("Report text with no ratios")
         node = build_communication_layer_node(stub)
-        result = node({"conclusions": [_conclusion()], "objective": "x", "entities": ["RELIANCE"], "evidence": []})
+        result = node({"conclusions": [_conclusion()], "objective": "x", "entities": ["RELIANCE"], "evidence": [], "intent": "mf"})
         assert result["final_report"] == "Report text with no ratios"
 
 

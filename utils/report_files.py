@@ -1,11 +1,7 @@
 """
 utils/report_files.py
-Shared Markdown/PDF file-writer for generated equity research reports.
-Extracted from agents/report_agent.py::_save_files() (Phase 7.1 of the
-graph-expansion plan) so both the legacy ReportAgent and the LangGraph
-CommunicationLayer node produce byte-identical output from the same code
-path during the coexistence window (both orchestrators run in parallel
-behind USE_LANGGRAPH_ORCHESTRATOR) — avoids maintaining two renderers.
+Markdown/PDF file-writer for generated equity research reports, called from
+graph/nodes/communication_layer.py's report-domain branch.
 """
 from __future__ import annotations
 

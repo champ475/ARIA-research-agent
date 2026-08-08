@@ -26,6 +26,7 @@ from typing import Any
 from langgraph.types import Send
 
 from graph.journal import log_decision
+from graph.nodes.execute_task import from_cacheable
 from graph.state import GraphState, Task
 
 
@@ -73,7 +74,10 @@ def _build_context(
             continue
         payload = latest_by_tool_entity.get((dep_task["tool"], dep_task["entity"]))
         if payload is not None:
-            context[dep_task["tool"]] = payload
+            # Evidence.payload is kept in checkpoint-safe form in GraphState
+            # (see graph/nodes/execute_task.py's module docstring) — tool
+            # fns like compute_technicals expect the real DataFrame back.
+            context[dep_task["tool"]] = from_cacheable(payload)
     return context
 
 

@@ -13,17 +13,16 @@ mf and alert follow in 7.2 (this module); screener/planning follow in 7.3.
 
 Phase 7.2 known gaps (documented rather than papered over — see
 ARCHITECTURE.md's 2026-07-24 "alert domain" entry for the full writeup):
-- `alert_create` is NOT registered here. Unlike every other tool in this
-  catalogue, creating an alert needs structured parameters an LLM must
-  extract from free text (alert_type/threshold/condition — see
-  agents/alert_agent.py's `_regex_extract`/`_llm_extract`), and Task/ToolSpec
-  has no slot for per-task arguments beyond `entity` — Planner only ever
-  selects tool NAMES, never fills in structured fields. Wiring alert
-  creation onto the graph needs a Task schema extension (an `args: dict`
-  field, populated by a QueryAnalyzer/Planner-adjacent extraction step) that
-  planning_agent's DB-backed intake will need too — worth solving once, in
-  Phase 7.3, not twice.
-- `alert_list`/`alert_cancel`/`alert_pause`/`alert_resume` need the calling
+- `alert_create` IS registered here (added when the legacy keyword-routed
+  orchestrator/agents were retired — see ARCHITECTURE.md's LangGraph-as-only-
+  path entry). It does NOT need a Task-schema `args` field: like
+  `screener_parse_query` reading `context["_query"]` for free text, it
+  extracts `alert_type`/`threshold`/`condition` straight out of the same
+  raw-message context every task already receives — a regex pre-filter for
+  the two unambiguous plain-price cases, falling back to a cheap LLM
+  extraction call otherwise (ported from the deleted
+  `agents/alert_agent.py::_regex_extract`/`_llm_extract`).
+- `alert_list`/`alert_cancel`/`alert_pause`/`alert_resume`/`alert_create` need the calling
   user's `user_id`, which lives on GraphState, not in a dependency's raw
   result — `graph/nodes/research_executor.py::_build_context` injects it as
   `context["_user_id"]` for every task (not just alert ones) so these tools
@@ -37,6 +36,8 @@ ARCHITECTURE.md's 2026-07-24 "alert domain" entry for the full writeup):
 """
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
@@ -50,6 +51,7 @@ from tools.analysis.fundamental import compute as compute_fundamental_ratios
 from tools.analysis.technical import compute_all as compute_technical_indicators
 from tools.analysis.technical import snapshot as technical_snapshot
 from utils.db import (
+    alert_add as db_alert_add,
     alert_list as db_alert_list,
     alert_remove as db_alert_remove,
     alert_pause as db_alert_pause,
@@ -135,6 +137,125 @@ def _fetch_mf_comparison(entity: str, context: dict[str, Any]) -> str:
 
 def _fetch_mf_news(entity: str, context: dict[str, Any]) -> list[dict]:
     return google_news(f"India {entity} mutual fund", n=5)
+
+
+# ── alert_create extraction (ported from the deleted agents/alert_agent.py) ──
+# Structured params (alert_type/threshold/condition) come out of the same
+# raw-message context every task already receives (context["_query"]) rather
+# than a Task-schema `args` field — see this module's docstring.
+
+_ALERT_TYPES = [
+    "price_above", "price_below", "pct_change",
+    "rsi_cross_above", "rsi_cross_below",
+    "macd_bullish_cross", "macd_bearish_cross",
+    "ma_cross", "bb_breakout", "volume_spike",
+    "week52_high", "week52_low", "bulk_deal", "portfolio_pnl",
+]
+
+_RECURRING_KW = [
+    "recurring", "every time", "each time", "repeatedly", "keep alerting",
+    "keep notifying", "every day", "daily alert", "don't deactivate", "dont deactivate",
+]
+
+_PRICE_ABOVE_RE = re.compile(r"\b(above|over|exceeds?|crosses?\s+above|goes?\s+above)\b", re.I)
+_PRICE_BELOW_RE = re.compile(r"\b(below|under|drops?\s+below|falls?\s+below)\b", re.I)
+_NUM_RE = re.compile(r"[\d,]+\.?\d*")
+_INDICATOR_HINT_KW = [
+    "rsi", "macd", "bollinger", "bb ", "moving average", "sma", "ema",
+    "volume", "52 week", "52-week", "bulk deal", "block deal",
+    "portfolio", "p&l", "pnl", "% change", "percent change", "golden cross",
+    "death cross",
+]
+
+_EXTRACT_PROMPT = """Extract the alert condition from this user message as JSON only, no prose, no markdown fences.
+Message: "{message}"
+Symbol already identified: {symbol}
+
+Return exactly this JSON shape:
+{{"alert_type": one of {types}, "threshold": number or null, "condition": "short human-readable summary"}}
+
+Rules:
+- price_above/price_below/pct_change/rsi_cross_above/rsi_cross_below/volume_spike need a numeric threshold.
+- macd_bullish_cross/macd_bearish_cross/ma_cross/bb_breakout/week52_high/week52_low/bulk_deal/portfolio_pnl usually don't need one — use null.
+- If you truly cannot determine a valid alert_type from the list, use null for alert_type.
+"""
+
+_ALERT_CREATE_SYSTEM = (
+    "You extract structured alert conditions from a user's free-text request "
+    "for ARIA's alerting system. Respond with ONLY the requested JSON."
+)
+
+_extract_client = None
+
+
+def _get_extract_client():
+    """Lazy singleton — avoids constructing an LLMClient at import time for
+    every graph build when this tool is never actually invoked."""
+    global _extract_client
+    if _extract_client is None:
+        from agents.llm_client import LLMClient
+        _extract_client = LLMClient(system_prompt=_ALERT_CREATE_SYSTEM)
+    return _extract_client
+
+
+def _regex_extract_alert(msg: str):
+    """Cheap deterministic pre-filter for the two unambiguous plain-price
+    cases — avoids an LLM call for the most common alert type. Bails out
+    (forces the LLM path) if the message mentions any indicator/pattern
+    vocabulary, since "RSI crosses below 30" contains "below" but is NOT
+    a plain price_below alert."""
+    lower = msg.lower()
+    if any(kw in lower for kw in _INDICATOR_HINT_KW):
+        return None, None, None
+    nums = _NUM_RE.findall(msg.replace(",", ""))
+    if not nums:
+        return None, None, None
+    threshold = float(nums[-1])
+    if _PRICE_ABOVE_RE.search(msg):
+        return "price_above", threshold, f"Price crosses above ₹{threshold:,.2f}"
+    if _PRICE_BELOW_RE.search(msg):
+        return "price_below", threshold, f"Price drops below ₹{threshold:,.2f}"
+    return None, None, None
+
+
+def _llm_extract_alert(msg: str, symbol: str):
+    from config import TOKENS_FAST
+    prompt = _EXTRACT_PROMPT.format(message=msg, symbol=symbol, types=_ALERT_TYPES)
+    try:
+        raw = _get_extract_client().ask(prompt, temperature=0.0, max_tokens=TOKENS_FAST)
+        raw = raw.strip().strip("```json").strip("```").strip()
+        data = json.loads(raw)
+        alert_type = data.get("alert_type")
+        threshold = data.get("threshold")
+        condition = data.get("condition") or (alert_type or "condition met")
+        if alert_type not in _ALERT_TYPES:
+            return None, None, None
+        return alert_type, (float(threshold) if threshold is not None else None), condition
+    except Exception:
+        return None, None, None
+
+
+def _alert_create(entity: str, context: dict[str, Any]) -> dict:
+    """`entity` is the ticker Planner already resolved (query_analyzer's
+    entity extraction runs before this task is ever built) — this tool only
+    extracts the CONDITION (alert_type/threshold), not the symbol."""
+    msg = context.get("_query") or ""
+    user_id = context.get("_user_id")
+    symbol = entity
+
+    alert_type, threshold, condition = _regex_extract_alert(msg)
+    if alert_type is None:
+        alert_type, threshold, condition = _llm_extract_alert(msg, symbol)
+
+    if alert_type is None or alert_type not in _ALERT_TYPES:
+        return {"action": "create", "symbol": symbol, "result": "unrecognized_condition"}
+
+    recurring = any(kw in msg.lower() for kw in _RECURRING_KW)
+    alert_id = db_alert_add(user_id, symbol, alert_type, condition, threshold, recurring=recurring)
+    return {
+        "action": "create", "symbol": symbol, "result": "created",
+        "alert_id": alert_id, "condition": condition, "recurring": recurring,
+    }
 
 
 def _alert_list(entity: str, context: dict[str, Any]) -> list[dict]:
@@ -318,6 +439,14 @@ _register(ToolSpec(
     cost="low",
     fn=_fetch_mf_news,
     description="Fetch recent mutual fund industry news for a category or topic.",
+))
+_register(ToolSpec(
+    name="alert_create",
+    evidence_type="alert_action",
+    depends_on=(),
+    cost="low",
+    fn=_alert_create,
+    description="Create a new price/technical-indicator alert on a ticker from the user's natural-language request (e.g. 'alert me if TCS drops below 3500').",
 ))
 _register(ToolSpec(
     name="alert_list",

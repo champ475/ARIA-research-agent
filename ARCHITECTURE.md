@@ -16,6 +16,99 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-08-08 — LangGraph orchestrator becomes the only path; legacy Orchestrator + 6 specialist agents retired
+
+**Problem.** Two orchestration paths (`agents/orchestrator.py`'s keyword-routed
+specialist agents, and the LangGraph engine behind `USE_LANGGRAPH_ORCHESTRATOR`,
+default off) meant every behavior change had to be made twice or risked
+drifting apart. Cutting over wasn't a one-line flag flip: `GraphOrchestrator`
+still hard-imported the legacy `route()` for `classify()`, `generate_suggestions()`
+was a stub returning `[]`, `load_history()` was a no-op, equity queries lost
+token-by-token streaming, and — the actual blocker — `graph/tool_catalogue.py`
+never registered an `alert_create` tool, so no user could create a new alert
+through the graph path at all.
+
+**Alternatives considered.** (1) Keep both paths indefinitely, flag-gated —
+rejected, doubles maintenance forever for a graph that was always meant to
+replace the legacy router once it reached parity. (2) Cut over accepting the
+listed regressions as known follow-ups — rejected: losing alert creation
+outright is a core feature loss, not an acceptable interim state.
+
+**Final decision.** Closed every gap first — `alert_create` registered
+(extracts `alert_type`/`threshold`/`condition` from `context["_query"]` the
+same way `screener_parse_query` already reads free text, no Task-schema
+change needed), `classify()` reimplemented as a self-contained keyword
+scorer, `generate_suggestions()` and `load_history()` implemented for real,
+equity/chat turns now stream (CommunicationLayer defers its LLM call via
+`pending_synthesis_prompt` when `_is_streamable()`, `GraphOrchestrator`
+makes the actual `.stream()` call and yields growing text) — then deleted
+`agents/orchestrator.py` and the 6 specialist agent classes
+(`equity_agent.py`, `report_agent.py`, `mf_agent.py`, `screener_agent.py`,
+`alert_agent.py`, `planning_agent.py`, plus the already-vestigial
+`base_agent.py`) along with the `USE_LANGGRAPH_ORCHESTRATOR` flag.
+
+Live verification against the real Neon DB and real Groq/Gemini keys (not
+just the stub-based test suite) surfaced three severe, pre-existing bugs in
+the Postgres checkpointer path that would have made the graph unsafe as the
+sole path — none introduced by this cutover, all now fixed:
+- A raw `pandas.DataFrame` in `Evidence.payload` (fetch_ohlcv, fetch_nav)
+  crashed every checkpoint write (`ormsgpack` can't serialize a DataFrame).
+  Fixed at the source (`graph/nodes/execute_task.py`): Evidence.payload is
+  now kept in the same checkpoint-safe form already used for the evidence
+  cache (dict of records, index name/dtype preserved for exact
+  reconstruction), with `from_cacheable()` called at each of the 4
+  consumption sites that need the real DataFrame back (`research_executor.py`,
+  `communication_layer.py`, `conclusion_builder.py`, `evidence_summarizer.py`).
+  Nested `pandas.Timestamp`/`datetime` values inside those records needed
+  the same treatment — the checkpointer's deserializer refuses to
+  reconstruct them (a security guard against arbitrary method-call
+  deserialization), so they're flattened to ISO strings going in.
+- `GraphOrchestrator`'s thread IDs were `user-{id}-turn-{n}`, deterministic
+  from an **in-memory** turn counter. Any fresh instance for a user who'd
+  talked before (app restart, redeploy, new session object) restarted `n`
+  at 0 and collided with that user's old, durably-checkpointed thread —
+  LangGraph's reducers then merged stale tasks/conclusions into the new
+  turn. Confirmed live: a fresh orchestrator asking about RELIANCE got
+  contaminated with a prior process's TCS conclusions. Fixed by making
+  thread IDs `user-{id}-{uuid4}` — no cross-process coordination needed,
+  no collision possible.
+- LangGraph's own `Send` object (its internal fan-out primitive) isn't
+  msgpack-serializable either, breaking any real multi-task parallel
+  dispatch — untested by the existing suite since its multi-task tests all
+  use `InMemorySaver` (no serialization at all). Fixed by constructing the
+  checkpointer's `JsonPlusSerializer` with `pickle_fallback=True`
+  (`graph/checkpointer.py`), so anything neither side anticipated falls
+  back to pickle instead of raising.
+
+Separately, the graph had **no cross-turn conversation memory of any kind**
+— `query_analyzer.py` only ever read the current message, and minting a
+fresh `thread_id` every turn (deliberately, to dodge the reducer-merge
+problem above) meant nothing carried over even within one session. Since
+this needed to work "like ChatGPT" per product requirement, `GraphOrchestrator`
+now owns a `ConversationMemory` instance (same class every deleted
+specialist agent's `LLMClient` used), rendered into a new `history` field on
+`GraphState` every invoke; `query_analyzer.py` falls back to the last
+mentioned entity from history when the current message names none, and
+`communication_layer.py` threads history into both synthesis prompts.
+
+**Trade-offs.** `GraphOrchestrator`'s per-instance `ConversationMemory` is
+process-local like the deleted agents' was — restarting the app mid-session
+still loses live memory until the next `load_history()` call (session
+resume from Postgres `chat_history` already handles that path). A known,
+logged-but-not-fixed gap remains: `query_analyzer.py`'s `extract_all_entities()`
+runs unconditionally with no `validate_ticker()` filter, so free-text
+domains (planning intake) can dispatch real yfinance lookups for ordinary
+capitalized English words — wasteful, not corrupting (planning bypasses
+evidence/conclusions entirely), pre-existing, not introduced here.
+
+**Future improvements.** Filter `query_analyzer.py`'s extracted entities
+through `validate_ticker()` before they reach Planner. Consider whether
+`pickle_fallback=True`'s broader acceptance of arbitrary types is worth
+tightening once the specific types LangGraph needs (`Send` and whatever
+else surfaces) are known, rather than left permissive indefinitely.
+
+---
+
 ## 2026-08-08 — In-memory sliding-window throttle on signup/login
 
 **Problem.** Going open-source puts `utils/auth.py`'s signup/login directly

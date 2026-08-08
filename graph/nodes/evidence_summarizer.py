@@ -15,10 +15,17 @@ from __future__ import annotations
 import pandas as pd
 
 from graph.journal import log_decision
+from graph.nodes.execute_task import from_cacheable
 from graph.state import Evidence, GraphState
 
 
 def _summarize_payload(payload) -> dict:
+    # Evidence.payload is kept in checkpoint-safe form in GraphState (see
+    # graph/nodes/execute_task.py's module docstring) — reconstruct here so
+    # a DataFrame still gets shape-summarized instead of leaking its full
+    # {"__dataframe__": True, "records": [...]} form into the summary
+    # (exactly the payload bloat this module exists to prevent).
+    payload = from_cacheable(payload)
     if isinstance(payload, pd.DataFrame):
         return {"rows": len(payload), "columns": list(payload.columns)}
     if isinstance(payload, dict):

@@ -11,7 +11,7 @@ class TestCatalogueRegistry:
             "compute_fundamentals", "compute_technicals",
             "fetch_quarterly_results", "fetch_annual_report_text",
             "fetch_nav", "fetch_category_funds", "fetch_mf_comparison", "fetch_mf_news",
-            "alert_list", "alert_cancel", "alert_pause", "alert_resume",
+            "alert_create", "alert_list", "alert_cancel", "alert_pause", "alert_resume",
             "screener_parse_query", "screener_run", "screener_to_markdown", "screener_save",
             "fetch_top_movers", "fetch_bulk_deals", "fetch_block_deals",
         }

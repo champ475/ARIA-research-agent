@@ -30,21 +30,34 @@ def _build(qa_response: dict, planner_response: dict = None, reflection_response
 
 class TestMinimalGraphAssembly:
     def test_trivial_query_flows_through_with_no_tasks(self):
+        # intent="chat" is a streamable domain (graph/nodes/communication_layer.py
+        # ::_is_streamable) — CommunicationLayer defers its LLM call to
+        # GraphOrchestrator instead of populating final_report itself, so a
+        # bare graph.invoke() (no GraphOrchestrator wrapping it) sees the
+        # deferred prompt, not the finished text.
         graph = _build({"intent": "chat", "objective": "", "complexity": "simple"})
         result = graph.invoke({"query": "hello"})
         assert result["tasks"] == []
-        assert "final_report" in result
-        assert result["final_report"]
+        assert result["pending_synthesis_prompt"]
+        assert result["final_report"] == ""
 
     def test_equity_query_generates_tasks_and_reaches_report(self):
+        # Mocked (previously hit real yfinance and could rate-limit into an
+        # unrelated verification-gate HITL pause instead of ever reaching
+        # CommunicationLayer — a pre-existing flake, not something this
+        # test intends to exercise).
         graph = _build(
             {"intent": "equity", "objective": "analyse RELIANCE fundamentals", "complexity": "moderate"},
             {"tools": ["compute_fundamentals"]},
         )
-        result = graph.invoke({"query": "how are RELIANCE fundamentals looking"})
+        with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}), \
+             patch("graph.tool_catalogue.get_financials", return_value={"totalRevenue": 900000}), \
+             patch("tools.data.evidence_cache.evidence_cache_get", return_value=None), \
+             patch("tools.data.evidence_cache.evidence_cache_put", return_value=None):
+            result = graph.invoke({"query": "how are RELIANCE fundamentals looking"})
         assert len(result["tasks"]) > 0
         assert result["intent"] == "equity"
-        assert "final_report" in result
+        assert "pending_synthesis_prompt" in result
 
     def test_journal_accumulates_in_node_execution_order(self):
         graph = _build({"intent": "chat", "objective": "", "complexity": "simple"})
@@ -117,10 +130,15 @@ class TestResearchExecutorEndToEnd:
         assert "fundamental_ratio" in result["evidence_summary"]["RELIANCE"]
 
     def test_full_pipeline_produces_conclusions_and_real_report(self):
+        # intent="equity" defers the LLM call (see test_trivial_query_flows_
+        # through_with_no_tasks's comment) — the stub communication_client's
+        # canned text is never called for a streamable domain, so this checks
+        # the deferred prompt was built from the real conclusions instead.
         result = self._run_with_mocked_tools()
         assert result["conclusions"]
         assert any(c["citation_key"] == "pe" for c in result["conclusions"])
-        assert result["final_report"] == "Stub final report text."
+        assert result["final_report"] == ""
+        assert "pe" in result["pending_synthesis_prompt"]
         assert result["confidence_summary"]
 
 
@@ -160,11 +178,15 @@ class TestReflectionVerificationLoop:
         assert node_order.count("Reflection") >= 2  # looped at least once
 
     def test_infinite_gap_reporting_terminates_within_max_loops(self):
+        # intent="equity" (see this class's _run helper) defers the LLM call —
+        # CommunicationLayer was still reached (that's what this test checks),
+        # it just hands the prompt to GraphOrchestrator instead of resolving
+        # final_report itself.
         result = self._run({
             "missing": [{"missing": "financials", "reason": "x", "priority": "high", "action": "fetch_financials"}],
         })
         assert result["loop_count"] <= result["max_loops"]
-        assert "final_report" in result and result["final_report"]
+        assert result["pending_synthesis_prompt"]
 
     def test_reaches_communication_layer_despite_unresolved_gaps(self):
         result = self._run({
@@ -208,7 +230,9 @@ class TestReflectionVerificationLoop:
         assert node_order.count("Verification") >= 2
         assert resumed["loop_count"] <= resumed["max_loops"]
         assert node_order[-1] == "CommunicationLayer"
-        assert resumed["final_report"] == "Stub final report text."
+        # intent="equity" defers the LLM call (see module's other tests) —
+        # CommunicationLayer was reached, it just handed off the prompt.
+        assert resumed["pending_synthesis_prompt"]
 
 
 class TestHumanInTheLoopGates:
@@ -250,7 +274,9 @@ class TestHumanInTheLoopGates:
              patch("tools.data.evidence_cache.evidence_cache_put", return_value=None):
             graph.invoke({"query": "RELIANCE TCS INFY HDFC WIPRO ITC compare", "max_loops": 2}, config=config)
             resumed = graph.invoke(Command(resume=True), config=config)
-        assert resumed["final_report"] == "Comparison report text."
+        # intent="equity" defers the LLM call to GraphOrchestrator (see other
+        # tests in this module) — the stub's canned text is never called.
+        assert resumed["pending_synthesis_prompt"]
         assert all(t["status"] == "done" for t in resumed["tasks"])
 
     def test_research_confirmation_declined_skips_research_entirely(self):

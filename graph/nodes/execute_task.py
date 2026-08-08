@@ -7,6 +7,15 @@ Cache payloads must be JSON-safe for Postgres storage; fetch_ohlcv's
 DataFrame result is the one tool output in the current catalogue that needs
 converting on the way in/out of the cache — everything else is already
 dict/list-shaped.
+
+Evidence.payload placed into GraphState is ALSO kept in this cacheable form
+(not the raw DataFrame) — GraphState is checkpointed by LangGraph's
+PostgresSaver after every superstep (graph/checkpointer.py), which uses
+msgpack and cannot serialize a raw DataFrame (this crashed every OHLCV-
+touching query before being caught). Consumers that need the real
+DataFrame back (research_executor.py's context-building for
+compute_technicals, communication_layer.py's chart lookup) call
+`_from_cacheable()` themselves at the point of use — see those modules.
 """
 from __future__ import annotations
 
@@ -22,15 +31,47 @@ from graph.tool_catalogue import get_tool
 from tools.data import evidence_cache
 
 
+_INDEX_COL_FALLBACK = "index"  # pandas' own default name for reset_index() on an unnamed index
+
+
 def _to_cacheable(payload: Any) -> Any:
     if isinstance(payload, pd.DataFrame):
-        return {"__dataframe__": True, "records": payload.reset_index().to_dict(orient="records")}
+        orig_index_name = payload.index.name
+        index_name = orig_index_name or _INDEX_COL_FALLBACK
+        index_is_datetime = bool(pd.api.types.is_datetime64_any_dtype(payload.index))
+        records = payload.reset_index().to_dict(orient="records")
+        # OHLCV's DatetimeIndex becomes a column of pandas Timestamp objects
+        # here — those aren't msgpack-safe either (LangGraph's checkpointer
+        # serializer round-trips them via a method-call form its own
+        # deserializer then refuses to execute for security reasons), so
+        # every record's values get flattened to plain ISO strings, not just
+        # the DataFrame shell.
+        for record in records:
+            for key, value in record.items():
+                if isinstance(value, (pd.Timestamp, datetime)):
+                    record[key] = value.isoformat()
+        return {
+            "__dataframe__": True, "records": records,
+            "index_name": index_name, "index_had_no_name": orig_index_name is None,
+            "index_is_datetime": index_is_datetime,
+        }
     return payload
 
 
-def _from_cacheable(payload: Any) -> Any:
+def from_cacheable(payload: Any) -> Any:
+    """Public (no leading underscore) since research_executor.py and
+    communication_layer.py both need to reconstruct a DataFrame from
+    GraphState's checkpoint-safe Evidence.payload — see module docstring."""
     if isinstance(payload, dict) and payload.get("__dataframe__"):
-        return pd.DataFrame(payload["records"])
+        df = pd.DataFrame(payload["records"])
+        index_name = payload.get("index_name") or _INDEX_COL_FALLBACK
+        if index_name in df.columns:
+            if payload.get("index_is_datetime"):
+                df[index_name] = pd.to_datetime(df[index_name])
+            df = df.set_index(index_name)
+            if payload.get("index_had_no_name"):
+                df.index.name = None  # restore the original unnamed-index shape exactly
+        return df
     return payload
 
 
@@ -49,12 +90,13 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
     spec = get_tool(task["tool"])
     cached = evidence_cache.get(task["tool"], task["entity"], spec.evidence_type)
     if cached is not None:
-        payload = _from_cacheable(cached["payload"])
+        cacheable_payload = cached["payload"]
         confidence = cached["confidence"]
     else:
-        payload = spec.fn(task["entity"], context)
+        raw_payload = spec.fn(task["entity"], context)
         confidence = 1.0
-        evidence_cache.put(task["tool"], task["entity"], spec.evidence_type, _to_cacheable(payload), confidence)
+        cacheable_payload = _to_cacheable(raw_payload)
+        evidence_cache.put(task["tool"], task["entity"], spec.evidence_type, cacheable_payload, confidence)
 
     evidence: Evidence = {
         "id": _evidence_id(task["tool"], task["entity"], spec.evidence_type),
@@ -62,7 +104,9 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
         "tool": task["tool"],
         "entity": task["entity"],
         "evidence_type": spec.evidence_type,
-        "payload": payload,
+        # Kept in checkpoint-safe form here (not the raw DataFrame) — see
+        # module docstring. Callers needing the real object use from_cacheable().
+        "payload": cacheable_payload,
         "timestamp": datetime.now(timezone.utc),
         "confidence": confidence,
         # Fine-grained per-ratio citation keys (matching fundamental.py's

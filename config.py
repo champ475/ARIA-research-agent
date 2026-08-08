@@ -20,16 +20,13 @@ _raw_groq_keys = [
 GROQ_API_KEYS = [k for k in _raw_groq_keys if k.strip()]
 
 GROQ_MODEL       = "llama-3.3-70b-versatile"   # 14,400 req/day per key
-GROQ_MODEL_FAST  = "gemma2-9b-it"              # lighter, for fast calls
+GROQ_MODEL_FAST  = "llama-3.1-8b-instant"      # lighter, for fast calls — gemma2-9b-it was decommissioned by Groq
 
 # ── Gemini fallback ───────────────────────────────────────────────────────────
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL     = "gemini-2.0-flash"
 
 PREFERRED_PROVIDER = os.getenv("PREFERRED_PROVIDER", "groq").lower()
-
-# ── Agentic research graph (see RFC_AGENTIC_RESEARCH_GRAPH.md) ───────────────
-USE_LANGGRAPH_ORCHESTRATOR = os.getenv("USE_LANGGRAPH_ORCHESTRATOR", "false").lower() == "true"
 
 # ── Token budgets (tune to stay within daily limits) ─────────────────────────
 TOKENS_SYNTHESIS  = 2000   # full report synthesis

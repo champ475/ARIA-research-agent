@@ -50,6 +50,7 @@ import pandas as pd
 from agents.llm_client import LLMClient
 from config import TOKENS_SYNTHESIS
 from graph.journal import log_decision
+from graph.nodes.execute_task import from_cacheable
 from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
@@ -82,8 +83,26 @@ _SYSTEM = (
 )
 
 
-def _build_prompt(objective: str, conclusions: list[Conclusion]) -> str:
-    lines = [f"Objective: {objective}", "", "Verified conclusions:"]
+_HISTORY_TURNS_IN_PROMPT = 6  # last N history messages included verbatim, same budget as query_analyzer.py
+
+
+def _render_history(history: list[dict]) -> str:
+    """Renders recent turns for inclusion in a synthesis prompt — this is
+    what makes follow-ups ("what about its RSI") read as a continued
+    conversation instead of a fresh, context-free question, matching how the
+    deleted per-domain agents' own ConversationMemory-backed .chat() calls
+    used to behave."""
+    if not history:
+        return ""
+    lines = ["Recent conversation (oldest first):"]
+    for msg in history[-_HISTORY_TURNS_IN_PROMPT:]:
+        lines.append(f"{msg.get('role', 'user')}: {msg.get('content', '')[:500]}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_prompt(objective: str, conclusions: list[Conclusion], history: list[dict]) -> str:
+    lines = [_render_history(history), f"Objective: {objective}", "", "Verified conclusions:"]
     for c in conclusions:
         marker = f" [^{c['citation_key']}]" if c["citation_key"] in _CANONICAL_RATIO_KEYS else ""
         lines.append(f"- {c['claim']}{marker} (confidence: {c['confidence']:.2f})")
@@ -97,7 +116,10 @@ def _confidence_summary(conclusions: list[Conclusion]) -> dict:
 def _find_ohlcv_evidence(evidence: list[dict], entity: str):
     for ev in evidence:
         if ev["tool"] == "fetch_ohlcv" and ev["entity"] == entity:
-            return ev["payload"]
+            # Evidence.payload is kept in checkpoint-safe form in GraphState
+            # (see graph/nodes/execute_task.py's module docstring) — candlestick()
+            # needs the real DataFrame back.
+            return from_cacheable(ev["payload"])
     return None
 
 
@@ -132,6 +154,8 @@ def _intents(state: GraphState) -> set[str]:
 def _empty_result(final_report: str, decision: str, reason: str) -> dict:
     return {
         "final_report": final_report,
+        "pending_synthesis_prompt": None,
+        "pending_fundamental_payload": None,
         "chart_html": None,
         "pdf_path": None,
         "md_path": None,
@@ -139,6 +163,17 @@ def _empty_result(final_report: str, decision: str, reason: str) -> dict:
         "confidence_summary": {},
         **log_decision("CommunicationLayer", decision, reason),
     }
+
+
+def _is_streamable(intent: str, intents: set[str]) -> bool:
+    """Equity/general-chat turns with no synchronous file output to write
+    stream token-by-token (GraphOrchestrator does the actual LLM call, see
+    its module docstring) — matches the deleted agents/equity_agent.py's
+    "only EquityAgent streams" behavior. Report/screener intents keep the
+    synchronous .ask() call here since they need the finished text
+    immediately (file write, DB save, footnote-appending) before this node
+    returns."""
+    return intent in ("equity", "chat") and "report" not in intents and "screener" not in intents
 
 
 def _handle_planning(client: LLMClient, state: GraphState) -> dict:
@@ -199,6 +234,10 @@ def build_communication_layer_node(client: LLMClient | None = None) -> Callable[
         entities = state.get("entities", [])
         evidence = state.get("evidence", [])
         query = state.get("query", "")
+        history = state.get("history", [])
+
+        intent = state.get("intent") or "equity"
+        intents = _intents(state)
 
         if not conclusions and state.get("complexity") == "simple":
             # Trivial path: Planner deliberately generated no tasks (RFC's
@@ -206,9 +245,23 @@ def build_communication_layer_node(client: LLMClient | None = None) -> Callable[
             # evidence to build conclusions from — this isn't a research
             # failure, just a question that doesn't need research. Answer
             # directly instead of reporting a gap that was never a gap.
-            report = client.ask(query or objective, max_tokens=TOKENS_SYNTHESIS)
+            prompt = _render_history(history) + (query or objective)
+            if _is_streamable(intent, intents):
+                return {
+                    "final_report": "",
+                    "pending_synthesis_prompt": prompt,
+                    "pending_fundamental_payload": None,
+                    "chart_html": None,
+                    "confidence_summary": {},
+                    **log_decision(
+                        "CommunicationLayer", "deferred to streaming, no research needed", "complexity=simple"
+                    ),
+                }
+            report = client.ask(prompt, max_tokens=TOKENS_SYNTHESIS)
             return {
                 "final_report": report,
+                "pending_synthesis_prompt": None,
+                "pending_fundamental_payload": None,
                 "chart_html": None,
                 "confidence_summary": {},
                 **log_decision(
@@ -220,6 +273,8 @@ def build_communication_layer_node(client: LLMClient | None = None) -> Callable[
             report = f"I wasn't able to verify enough evidence to answer: {objective or query}"
             return {
                 "final_report": report,
+                "pending_synthesis_prompt": None,
+                "pending_fundamental_payload": None,
                 "chart_html": None,
                 "confidence_summary": {},
                 **log_decision(
@@ -227,12 +282,8 @@ def build_communication_layer_node(client: LLMClient | None = None) -> Callable[
                 ),
             }
 
-        report = client.ask(_build_prompt(objective, conclusions), max_tokens=TOKENS_SYNTHESIS)
-
         primary_entity = entities[0] if entities else None
         fundamental_payload = _find_fundamental_payload(evidence, primary_entity) if primary_entity else {}
-        if fundamental_payload:
-            report = report + cited_footnotes(report, fundamental_payload)
 
         chart = None
         if primary_entity:
@@ -240,7 +291,28 @@ def build_communication_layer_node(client: LLMClient | None = None) -> Callable[
             if isinstance(ohlcv, pd.DataFrame) and not ohlcv.empty:
                 chart = candlestick(ohlcv, primary_entity)
 
-        intents = _intents(state)
+        if _is_streamable(intent, intents):
+            # Chart doesn't depend on the LLM call, so it's still available
+            # immediately alongside the streamed text — GraphOrchestrator
+            # yields it on the first chunk, matching the deleted
+            # agents/equity_agent.py's streaming behavior.
+            return {
+                "final_report": "",
+                "pending_synthesis_prompt": _build_prompt(objective, conclusions, history),
+                "pending_fundamental_payload": fundamental_payload or None,
+                "chart_html": chart,
+                "pdf_path": None,
+                "md_path": None,
+                "csv_path": None,
+                "confidence_summary": _confidence_summary(conclusions),
+                **log_decision(
+                    "CommunicationLayer", "deferred to streaming", f"{len(conclusions)} conclusion(s)"
+                ),
+            }
+
+        report = client.ask(_build_prompt(objective, conclusions, history), max_tokens=TOKENS_SYNTHESIS)
+        if fundamental_payload:
+            report = report + cited_footnotes(report, fundamental_payload)
 
         pdf_path = md_path = None
         if "report" in intents and primary_entity:
@@ -261,6 +333,8 @@ def build_communication_layer_node(client: LLMClient | None = None) -> Callable[
 
         return {
             "final_report": report,
+            "pending_synthesis_prompt": None,
+            "pending_fundamental_payload": None,
             "chart_html": chart,
             "pdf_path": pdf_path,
             "md_path": md_path,

@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from graph.nodes.execute_task import execute_task, _to_cacheable, _from_cacheable
+from graph.nodes.execute_task import execute_task, _to_cacheable, from_cacheable as _from_cacheable
 from graph.tool_catalogue import ToolSpec
 
 

@@ -23,24 +23,17 @@ LOADING_HTML = (
 )
 
 # ── Lazy orchestrator loader ──────────────────────────────────────────────────
-# One Orchestrator per user. USE_LANGGRAPH_ORCHESTRATOR (config.py, default
-# false) swaps in GraphOrchestrator (agents/graph_orchestrator.py) — the
-# LangGraph research-graph engine, see RFC_AGENTIC_RESEARCH_GRAPH.md — behind
-# the same process()/process_stream() interface, so nothing else in this
-# file needs to change to try it. Current graph scope is single-ticker
-# equity queries only (graph/tool_catalogue.py); the flag defaults off until
-# Phase 7 extends coverage to the other intents.
+# One GraphOrchestrator per user (agents/graph_orchestrator.py) — the LangGraph
+# research-graph engine, see RFC_AGENTIC_RESEARCH_GRAPH.md, is the only
+# orchestration path now (the legacy keyword-routed Orchestrator + its 6
+# specialist agent classes were retired once the graph reached feature parity
+# across all 6 domains — see ARCHITECTURE.md).
 _orchestrators = {}
 
 def get_orchestrator(user_id: int):
     if user_id not in _orchestrators:
-        from config import USE_LANGGRAPH_ORCHESTRATOR
-        if USE_LANGGRAPH_ORCHESTRATOR:
-            from agents.graph_orchestrator import GraphOrchestrator
-            _orchestrators[user_id] = GraphOrchestrator(user_id)
-        else:
-            from agents.orchestrator import Orchestrator
-            _orchestrators[user_id] = Orchestrator(user_id)
+        from agents.graph_orchestrator import GraphOrchestrator
+        _orchestrators[user_id] = GraphOrchestrator(user_id)
     return _orchestrators[user_id]
 
 

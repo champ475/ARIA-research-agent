@@ -14,6 +14,18 @@ WHOLE catalogue based on `objective` text, never gated by `intent` at all
 branches and by GraphOrchestrator's tab_used label). This field only exists
 so those two consumers know a second domain was named, not to change what
 tools Planner considers.
+
+Known gap (pre-existing, not introduced by any particular phase — logged
+here for follow-up, not fixed): `extract_all_entities()` runs unconditionally
+on every message regardless of domain, with no `validate_ticker()` filter
+before a candidate becomes a Planner task's entity. For domains with
+free-text profile-style input (planning intake: "I'm 30, have 10 lakhs, 15
+year horizon...") this treats ordinary capitalized English words as
+candidate tickers and dispatches real yfinance lookups for each one —
+wasteful (API cost, rate-limit exposure) though not corrupting for planning
+specifically, since `_handle_planning` (communication_layer.py) bypasses
+evidence/conclusions entirely. Worth a `validate_ticker()` pass over
+`entities` here before they reach `_build_tasks()` in planner.py.
 """
 from __future__ import annotations
 
@@ -25,7 +37,7 @@ from agents.llm_client import LLMClient
 from config import GROQ_MODEL_FAST, TOKENS_FAST
 from graph.journal import log_decision
 from graph.state import GraphState
-from utils.helpers import extract_all_entities
+from utils.helpers import extract_all_entities, validate_ticker
 
 log = logging.getLogger(__name__)
 
@@ -49,9 +61,36 @@ _SYSTEM = (
 _FALLBACK = {"intent": "chat", "secondary_intents": [], "objective": "", "complexity": "simple"}
 
 
-def _build_prompt(query: str, entities: list[str]) -> str:
+_HISTORY_TURNS_IN_PROMPT = 6  # last N history messages included verbatim — keeps this cheap call cheap
+
+
+def _recent_entity(history: list[dict]) -> list[str]:
+    """Falls back to the most recently mentioned valid ticker in prior USER
+    turns when the current message names none (e.g. "what about its RSI"
+    following "analyse TCS") — mirrors the last-known-entity carry-over the
+    deleted agents/equity_agent.py did via self._last_symbol, but sourced
+    from `history` (owned by GraphOrchestrator) since the graph itself has
+    no per-instance state of its own."""
+    for msg in reversed(history):
+        if msg.get("role") != "user":
+            continue
+        for entity in extract_all_entities(msg.get("content", "")):
+            if validate_ticker(entity):
+                return [entity]
+    return []
+
+
+def _build_prompt(query: str, entities: list[str], history: list[dict]) -> str:
     entity_line = f"Detected entities: {', '.join(entities)}" if entities else "Detected entities: none"
-    return f"{entity_line}\nUser query: {query}"
+    lines = []
+    if history:
+        lines.append("Recent conversation (oldest first):")
+        for msg in history[-_HISTORY_TURNS_IN_PROMPT:]:
+            lines.append(f"{msg.get('role', 'user')}: {msg.get('content', '')[:300]}")
+        lines.append("")
+    lines.append(entity_line)
+    lines.append(f"User query: {query}")
+    return "\n".join(lines)
 
 
 def _strip_code_fence(raw: str) -> str:
@@ -98,9 +137,10 @@ def build_query_analyzer_node(client: LLMClient | None = None) -> Callable[[Grap
 
     def query_analyzer(state: GraphState) -> dict:
         query = state["query"]
-        entities = extract_all_entities(query)
+        history = state.get("history", [])
+        entities = extract_all_entities(query) or _recent_entity(history)
         raw = client.ask(
-            _build_prompt(query, entities),
+            _build_prompt(query, entities, history),
             model=GROQ_MODEL_FAST,
             max_tokens=TOKENS_FAST,
             temperature=0.0,
