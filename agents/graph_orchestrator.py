@@ -60,9 +60,8 @@ way), and needs no cross-process counter coordination.
 """
 from __future__ import annotations
 
-import uuid
-
 import re
+import uuid
 
 from langgraph.types import Command
 
@@ -73,6 +72,14 @@ from graph.graph import build_graph
 
 _APPROVE_WORDS = {"y", "yes", "approve", "approved", "proceed", "confirm", "ok", "okay"}
 _DEFAULT_MAX_LOOPS = 2
+_FREE_TRIAL_DAILY_LIMIT = 5
+
+_TRIAL_EXHAUSTED_MESSAGE = (
+    "You've used today's 5 free messages. Add your own LLM API key in "
+    "Settings to keep chatting — any OpenAI-compatible provider works "
+    "(OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...), or come "
+    "back tomorrow for another 5 free."
+)
 
 # ── Cheap keyword pre-check for classify() (ported from the deleted
 # agents/orchestrator.py::route() — this orchestrator's actual routing
@@ -136,51 +143,6 @@ def _keyword_route(message: str) -> str:
     return best_tab if scores[best_tab] > 0 else "equity"
 
 
-_synthesis_client = None
-
-
-def _get_synthesis_client():
-    """Lazy singleton for the deferred equity/chat synthesis call — see
-    graph/nodes/communication_layer.py's `_is_streamable`/`pending_synthesis_prompt`
-    and this module's docstring's "Cross-turn memory" note. Uses the same
-    system prompt CommunicationLayer's own client would have, imported
-    directly rather than duplicated."""
-    global _synthesis_client
-    if _synthesis_client is None:
-        from agents.llm_client import LLMClient
-        from graph.nodes.communication_layer import _SYSTEM as _COMM_SYSTEM
-        _synthesis_client = LLMClient(system_prompt=_COMM_SYSTEM)
-    return _synthesis_client
-
-
-_suggestion_client = None
-
-
-def _get_suggestion_client():
-    """Lazy singleton, mirrors graph/tool_catalogue.py's _get_extract_client
-    — avoids constructing an LLMClient at import time for every process
-    that imports this module, only paying for it once suggestions are
-    actually requested."""
-    global _suggestion_client
-    if _suggestion_client is None:
-        from agents.llm_client import LLMClient
-        _suggestion_client = LLMClient(system_prompt="Generate short follow-up question suggestions.")
-    return _suggestion_client
-
-
-def _summarize_history(old_summary: str, chunk_text: str) -> str:
-    """ConversationMemory's overflow summarizer — reuses the same lazy
-    client as suggestions since both are cheap, single-shot, non-user-
-    facing utility calls."""
-    from config import TOKENS_FAST
-    prompt = (
-        f"Existing summary of earlier conversation (may be empty):\n{old_summary or '(none)'}\n\n"
-        f"New older messages to fold in:\n{chunk_text}\n\n"
-        "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
-        "tickers, and decisions mentioned, so later replies stay consistent with this history. "
-        "Return only the summary text."
-    )
-    return _get_suggestion_client().ask(prompt, temperature=0.2, max_tokens=TOKENS_FAST)
 
 
 class GraphOrchestrator:
@@ -188,7 +150,14 @@ class GraphOrchestrator:
         self._user_id = user_id
         self._turn = 0
         self._thread_id = self._new_thread_id()
-        self._graph = build_graph(checkpointer=get_postgres_checkpointer())
+        # BYO key resolved once per session (not re-checked every message) —
+        # a key added in Settings mid-session takes effect on the next new
+        # session/reset, not the very next message. Keeps `self._graph` a
+        # stable object for the orchestrator's lifetime, same as before BYO
+        # existed, rather than rebuilding it (and re-binding every node's
+        # LLMClient) on every single turn for a value that rarely changes.
+        self._provider_config = self._resolve_byo_config()
+        self._graph = build_graph(checkpointer=get_postgres_checkpointer(), provider_config=self._provider_config)
         self._awaiting_confirmation = False
         # Cross-turn conversation memory the graph itself has none of (each
         # turn mints a fresh thread_id — see module docstring). Owned here,
@@ -196,10 +165,55 @@ class GraphOrchestrator:
         # query_analyzer.py/communication_layer.py can read it, same 20-message
         # cap + overflow-summarization behavior every specialist agent's own
         # LLMClient used to give via this exact class.
-        self._memory = ConversationMemory(cap=20, summarizer=_summarize_history)
+        self._memory = ConversationMemory(cap=20, summarizer=self._summarize_history)
 
     def _new_thread_id(self) -> str:
         return f"user-{self._user_id}-{uuid.uuid4().hex[:16]}"
+
+    def _resolve_byo_config(self) -> dict | None:
+        """Returns the decrypted BYO-key config if this user has one
+        configured, else None (meaning: use the app's own trial Groq/Gemini
+        keys, agents/llm_client.py's existing path)."""
+        from utils.db import llm_config_get
+        row = llm_config_get(self._user_id)
+        if row is None:
+            return None
+        from utils.crypto import decrypt
+        return {
+            "provider": row["provider"], "base_url": row["base_url"],
+            "model": row["model"], "api_key": decrypt(row["api_key_encrypted"]),
+        }
+
+    def _trial_quota_exceeded(self) -> bool:
+        """Only meaningful when self._provider_config is None (no BYO key)
+        — checked fresh every message, unlike the BYO config above, since
+        the daily count genuinely changes turn to turn."""
+        if self._provider_config is not None:
+            return False
+        from datetime import datetime
+        from utils.db import trial_quota_check_and_increment
+        from utils.helpers import IST
+        allowed = trial_quota_check_and_increment(
+            self._user_id, _FREE_TRIAL_DAILY_LIMIT, datetime.now(IST).date(),
+        )
+        return not allowed
+
+    def _summarize_history(self, old_summary: str, chunk_text: str) -> str:
+        """ConversationMemory's overflow summarizer — uses whichever
+        provider this turn resolved (BYO or trial), never a separate
+        hardcoded client, so a BYO user's summarization also runs on their
+        own key/cost, not the app's trial quota."""
+        from agents.llm_client import LLMClient
+        from config import TOKENS_FAST
+        prompt = (
+            f"Existing summary of earlier conversation (may be empty):\n{old_summary or '(none)'}\n\n"
+            f"New older messages to fold in:\n{chunk_text}\n\n"
+            "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
+            "tickers, and decisions mentioned, so later replies stay consistent with this history. "
+            "Return only the summary text."
+        )
+        client = LLMClient(system_prompt="Summarize conversation history concisely.", provider_config=self._provider_config)
+        return client.ask(prompt, temperature=0.2, max_tokens=TOKENS_FAST)
 
     def classify(self, message: str) -> str:
         """Cheap pre-check used by app.py:102 to decide whether to append a
@@ -230,11 +244,19 @@ class GraphOrchestrator:
         matching the deleted legacy Orchestrator's "only EquityAgent
         streams" behavior."""
         if self._awaiting_confirmation:
-            # Must resume on the SAME thread the interrupt paused on.
+            # Must resume on the SAME thread the interrupt paused on — the
+            # config resolved for the turn that raised this interrupt is
+            # still current in self._provider_config, no need to re-resolve.
             config = {"configurable": {"thread_id": self._thread_id}}
             approved = message.strip().lower() in _APPROVE_WORDS
             result = self._graph.invoke(Command(resume=approved), config=config)
         else:
+            if self._trial_quota_exceeded():
+                self._memory.add_user(message)
+                self._memory.add_assistant(_TRIAL_EXHAUSTED_MESSAGE)
+                yield _TRIAL_EXHAUSTED_MESSAGE, None, None, None, None, "equity"
+                return
+
             # Fresh top-level turn: mint a new thread_id so this run starts
             # with no prior GraphState to (incorrectly) merge against —
             # see module docstring's "Thread-id scoping" note.
@@ -245,7 +267,7 @@ class GraphOrchestrator:
             result = self._graph.invoke(
                 {
                     "query": message, "max_loops": _DEFAULT_MAX_LOOPS, "user_id": self._user_id,
-                    "history": self._memory.context(),
+                    "history": self._memory.context(), "llm_config": self._provider_config,
                 },
                 config=config,
             )
@@ -275,9 +297,12 @@ class GraphOrchestrator:
 
         pending_prompt = result.get("pending_synthesis_prompt")
         if pending_prompt:
+            from agents.llm_client import LLMClient
+            from graph.nodes.communication_layer import _SYSTEM as _COMM_SYSTEM
             from tools.analysis.fundamental import cited_footnotes
+            synthesis_client = LLMClient(system_prompt=_COMM_SYSTEM, provider_config=self._provider_config)
             chunks: list[str] = []
-            for delta in _get_synthesis_client().stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
+            for delta in synthesis_client.stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
                 chunks.append(delta)
                 yield "".join(chunks), chart, None, None, None, tab_used
             text = "".join(chunks)
@@ -296,8 +321,11 @@ class GraphOrchestrator:
         """Cheap follow-up-chip generator — same contract/prompt shape the
         deleted specialist agents each implemented individually (e.g.
         agents/equity_agent.py::generate_suggestions), now shared here since
-        it's a UI concern of the orchestrator, not any one domain."""
+        it's a UI concern of the orchestrator, not any one domain. Uses
+        whichever provider the last-resolved turn used (BYO or trial) —
+        never a separate hardcoded client."""
         import json
+        from agents.llm_client import LLMClient
         from config import GROQ_MODEL_FAST, TOKENS_FAST
         prompt = (
             f'User asked: "{last_query[:80]}". Response was about Indian stocks/funds/'
@@ -306,9 +334,11 @@ class GraphOrchestrator:
             f'a user would ask next. Only the JSON array, nothing else.'
         )
         try:
-            raw = _get_suggestion_client().ask(
-                prompt, model=GROQ_MODEL_FAST, temperature=0.8, max_tokens=TOKENS_FAST,
-            )
+            client = LLMClient(system_prompt="Generate short follow-up question suggestions.", provider_config=self._provider_config)
+            # GROQ_MODEL_FAST is a Groq-only concept (see LLMClient providers'
+            # own model-override handling) — only meaningful on the trial path.
+            model_override = GROQ_MODEL_FAST if self._provider_config is None else None
+            raw = client.ask(prompt, model=model_override, temperature=0.8, max_tokens=TOKENS_FAST)
             raw = raw.strip().strip("```json").strip("```").strip()
             sug = json.loads(raw)
             if isinstance(sug, list):

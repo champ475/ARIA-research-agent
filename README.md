@@ -13,6 +13,7 @@ You ask a question in plain language; a LangGraph research engine (see [docs/RFC
 - **🔔 Price & technical alerts** — 14 condition types, delivered to your own Telegram chat the moment they fire (checked every 5 min, even while your machine is off).
 - **🎯 Goal-based planning** — multi-turn intake (age, capital, horizon, goal, risk tolerance), remembered across sessions, then a real allocation grounded in actual fund/stock data.
 - **📌 Watchlist** — a quick-glance tracked-symbol list, separate from alerts.
+- **⚙️ Bring your own LLM key** — 5 free messages/day on the app's keys, then plug in any OpenAI-compatible provider (OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...) for unlimited use, encrypted at rest.
 - **Follows the conversation** — like ChatGPT, a follow-up ("what about its RSI?") resolves against what you were just discussing, no need to repeat the ticker.
 - **Cites its numbers** — every ratio/claim links back to the exact evidence it came from, with an explicit confidence level when the underlying data was thin.
 
@@ -29,11 +30,13 @@ cp .env.example .env
 
 | Key | Where to get it | Required? |
 |---|---|---|
-| `GROQ_API_KEY_1` | [console.groq.com](https://console.groq.com) | Yes |
-| `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Yes |
+| `SECRET_KEY` | Any random string you make up | Yes — encrypts users' own LLM keys before storing them |
 | `DATABASE_URL` | [neon.tech](https://neon.tech) — create a free project, copy the connection string | Yes (skip if using Docker Compose — see below) |
-| `GROQ_API_KEY_2`, `_3` | Same as above, extra keys | Optional — lets you chat more before hitting free-tier limits |
+| `GROQ_API_KEY_1`, `GEMINI_API_KEY` | [console.groq.com](https://console.groq.com), [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Optional — powers the built-in free trial (see below); skip both if you'd rather everyone bring their own key from day one |
+| `GROQ_API_KEY_2`, `_3` | Same as above, extra keys | Optional — lets more trial users chat before hitting free-tier limits |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | See **Setting up Alerts** below | Only if you want alert notifications |
+
+**Free trial vs. bring your own key:** every signup gets 5 free messages/day on your Groq/Gemini keys above. Beyond that (or from message one, if you skip those keys), each user pastes their own key under the **⚙️ Settings** tab in-app — any OpenAI-compatible provider works (OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...), so you're never on the hook for a stranger's usage.
 
 **3. Run it**
 
@@ -45,10 +48,10 @@ Open **http://localhost:7860**, sign up with an email and password, and start ch
 
 ### Or run it with Docker
 
-No local Python, Postgres, or Neon account needed — Compose bundles a Postgres container for you. Still need `GROQ_API_KEY_1` and `GEMINI_API_KEY` in `.env` (LLM calls go to Groq/Gemini regardless of how you run the app).
+No local Python, Postgres, or Neon account needed — Compose bundles a Postgres container for you. Still need `SECRET_KEY` in `.env` (and `GROQ_API_KEY_1`/`GEMINI_API_KEY` if you want to offer the free trial — see above).
 
 ```bash
-cp .env.example .env   # fill in GROQ_API_KEY_1 and GEMINI_API_KEY
+cp .env.example .env   # fill in SECRET_KEY at minimum
 docker compose up --build
 ```
 

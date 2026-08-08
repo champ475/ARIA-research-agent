@@ -185,17 +185,13 @@ _ALERT_CREATE_SYSTEM = (
     "for ARIA's alerting system. Respond with ONLY the requested JSON."
 )
 
-_extract_client = None
-
-
-def _get_extract_client():
-    """Lazy singleton — avoids constructing an LLMClient at import time for
-    every graph build when this tool is never actually invoked."""
-    global _extract_client
-    if _extract_client is None:
-        from agents.llm_client import LLMClient
-        _extract_client = LLMClient(system_prompt=_ALERT_CREATE_SYSTEM)
-    return _extract_client
+def _get_extract_client(llm_config: dict | None):
+    """Built fresh per call (not a cached singleton) since `llm_config`
+    varies per user/turn — a BYO-key user's alert-condition extraction must
+    use THEIR provider, not a module-wide default that would silently spend
+    the app's trial quota on their behalf."""
+    from agents.llm_client import LLMClient
+    return LLMClient(system_prompt=_ALERT_CREATE_SYSTEM, provider_config=llm_config)
 
 
 def _regex_extract_alert(msg: str):
@@ -218,11 +214,11 @@ def _regex_extract_alert(msg: str):
     return None, None, None
 
 
-def _llm_extract_alert(msg: str, symbol: str):
+def _llm_extract_alert(msg: str, symbol: str, llm_config: dict | None):
     from config import TOKENS_FAST
     prompt = _EXTRACT_PROMPT.format(message=msg, symbol=symbol, types=_ALERT_TYPES)
     try:
-        raw = _get_extract_client().ask(prompt, temperature=0.0, max_tokens=TOKENS_FAST)
+        raw = _get_extract_client(llm_config).ask(prompt, temperature=0.0, max_tokens=TOKENS_FAST)
         raw = raw.strip().strip("```json").strip("```").strip()
         data = json.loads(raw)
         alert_type = data.get("alert_type")
@@ -245,7 +241,7 @@ def _alert_create(entity: str, context: dict[str, Any]) -> dict:
 
     alert_type, threshold, condition = _regex_extract_alert(msg)
     if alert_type is None:
-        alert_type, threshold, condition = _llm_extract_alert(msg, symbol)
+        alert_type, threshold, condition = _llm_extract_alert(msg, symbol, context.get("_llm_config"))
 
     if alert_type is None or alert_type not in _ALERT_TYPES:
         return {"action": "create", "symbol": symbol, "result": "unrecognized_condition"}

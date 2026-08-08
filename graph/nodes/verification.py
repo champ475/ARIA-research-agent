@@ -194,8 +194,10 @@ def _build_judge_prompt(objective: str, evidence_summary: dict) -> str:
     return f"Objective: {objective}\n\nEvidence summary:\n{json.dumps(evidence_summary, default=str)}"
 
 
-def build_verification_node(client: LLMClient | None = None) -> Callable[[GraphState], dict]:
-    client = client or LLMClient(_SYSTEM)
+def build_verification_node(
+    client: LLMClient | None = None, provider_config: dict | None = None,
+) -> Callable[[GraphState], dict]:
+    client = client or LLMClient(_SYSTEM, provider_config)
 
     def verification(state: GraphState) -> dict:
         evidence = state.get("evidence", [])

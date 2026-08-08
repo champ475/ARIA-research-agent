@@ -4,9 +4,18 @@ from agents.graph_orchestrator import GraphOrchestrator
 
 
 def _build_orchestrator(fake_graph):
+    """Patches build_graph/get_postgres_checkpointer for construction (which
+    resolves a BYO config once, see _resolve_byo_config), then monkey-patches
+    the instance's _trial_quota_exceeded so every test in this module stays
+    DB-free (trial path, never blocked) without needing its own patch —
+    process_stream() re-checks this every fresh turn, so it must survive
+    past the `with` block construction happens in."""
     with patch("agents.graph_orchestrator.build_graph", return_value=fake_graph), \
-         patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None):
-        return GraphOrchestrator(user_id=1)
+         patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None), \
+         patch.object(GraphOrchestrator, "_resolve_byo_config", return_value=None):
+        orch = GraphOrchestrator(user_id=1)
+    orch._trial_quota_exceeded = lambda: False
+    return orch
 
 
 class TestGraphOrchestratorNormalFlow:
@@ -235,7 +244,7 @@ class TestGraphOrchestratorMisc:
         orch = _build_orchestrator(MagicMock())
         fake_client = MagicMock()
         fake_client.ask.return_value = '["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]'
-        with patch("agents.graph_orchestrator._get_suggestion_client", return_value=fake_client):
+        with patch("agents.llm_client.LLMClient", return_value=fake_client):
             result = orch.generate_suggestions("resp", "query")
         assert result == ["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]
 
@@ -243,7 +252,7 @@ class TestGraphOrchestratorMisc:
         orch = _build_orchestrator(MagicMock())
         fake_client = MagicMock()
         fake_client.ask.side_effect = RuntimeError("rate limited")
-        with patch("agents.graph_orchestrator._get_suggestion_client", return_value=fake_client):
+        with patch("agents.llm_client.LLMClient", return_value=fake_client):
             result = orch.generate_suggestions("resp", "query")
         assert result == ["Analyse a stock", "Compare mutual funds", "Top gainers today", "Set a price alert"]
 

@@ -25,7 +25,13 @@ and `RUN_DB_TESTS=1` — CI runs without either, so those are opt-in locally.
 
 - `agents/graph_orchestrator.py` — the orchestration entry point (`GraphOrchestrator`),
   a drop-in `process_stream()`/`classify()`/`generate_suggestions()`/`load_history()`
-  adapter over the LangGraph engine in `graph/`.
+  adapter over the LangGraph engine in `graph/`. Also resolves each user's
+  LLM provider (bring-your-own key vs. the free-trial quota) before every turn.
+- `agents/llm_client.py` — `LLMClient`: trial path (Groq→Gemini fallback) with
+  no `provider_config`, or a single BYO provider (no fallback) with one.
+- `agents/providers/openai_compatible.py` — the one BYO adapter, works with
+  any OpenAI-compatible `base_url` (OpenAI, Groq, OpenRouter, Together,
+  Fireworks, Ollama, ...).
 - `tools/data/` — external data fetchers (yfinance, NSE bhavcopy, news,
   AMFI NAV) and the Parquet cache.
 - `tools/analysis/` — pure computation: technicals, fundamentals, risk,
@@ -35,7 +41,8 @@ and `RUN_DB_TESTS=1` — CI runs without either, so those are opt-in locally.
   `tools/` for Planner's tool selection, `graph/nodes/` holds each pipeline
   stage (QueryAnalyzer, Planner, ResearchExecutor, EvidenceSummarizer,
   Reflection, Verification, ConclusionBuilder, CommunicationLayer).
-- `utils/` — DB access, auth, ticker-alias resolution, IST time helpers.
+- `utils/` — DB access, auth, ticker-alias resolution, IST time helpers,
+  `crypto.py` (encrypts users' own LLM keys before storage).
 - `config.py` — single source of truth for token budgets, sector universe,
   and technical-analysis defaults. Change limits here, not inline in nodes.
 

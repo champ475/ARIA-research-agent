@@ -823,6 +823,98 @@ def _build_watchlist_tab(user_state: gr.State):
     return status
 
 
+# ── Settings tab (bring-your-own LLM key) ──────────────────────────────────────
+
+_TRIAL_DAILY_LIMIT = 5
+
+
+def _settings_status_md(user_id: int) -> str:
+    from utils.db import llm_config_get, _query
+    row = llm_config_get(user_id)
+    if row:
+        base = row["base_url"] or "api.openai.com (or provider default)"
+        return f"✅ **Using your own key** — model `{row['model']}` via `{base}`."
+    urow = _query(
+        "SELECT free_msgs_used_today, free_msgs_reset_at FROM users WHERE id=%s",
+        (user_id,), fetch="one",
+    )
+    used = urow["free_msgs_used_today"] if urow else 0
+    from datetime import datetime
+    from utils.helpers import IST
+    today = datetime.now(IST).date()
+    if urow and urow["free_msgs_reset_at"] != today:
+        used = 0
+    remaining = max(0, _TRIAL_DAILY_LIMIT - used)
+    return f"🆓 **Free trial** — {remaining}/{_TRIAL_DAILY_LIMIT} messages left today. Add your own key below for unlimited use."
+
+
+def _build_settings_tab(user_state: gr.State):
+    """
+    Bring-your-own LLM key: works with any OpenAI-compatible provider
+    (OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...). Without a
+    key configured, every user gets a small free trial on the app's own
+    Groq/Gemini keys (agents/graph_orchestrator.py's quota check).
+    """
+    gr.Markdown(
+        "## ⚙️ Settings\n"
+        "Bring your own LLM key — any OpenAI-compatible provider works. "
+        "Without one, you get a free daily trial on the app's shared keys."
+    )
+
+    status = gr.Markdown("")
+
+    with gr.Row():
+        model_box = gr.Textbox(label="Model", placeholder="e.g. gpt-4o-mini, llama-3.3-70b-versatile", scale=2)
+        base_url_box = gr.Textbox(label="Base URL (optional — leave blank for OpenAI itself)",
+                                   placeholder="e.g. https://openrouter.ai/api/v1", scale=3)
+    api_key_box = gr.Textbox(label="API Key", type="password", placeholder="sk-...")
+
+    with gr.Row():
+        save_btn = gr.Button("💾 Save key", variant="primary")
+        clear_btn = gr.Button("🗑️ Remove my key", variant="secondary")
+
+    def _refresh_status(user_id):
+        if not user_id:
+            return ""
+        return _settings_status_md(user_id)
+
+    def _save(user_id, model, base_url, api_key):
+        if not user_id:
+            return "", model, base_url, api_key
+        model = (model or "").strip()
+        api_key = (api_key or "").strip()
+        base_url = (base_url or "").strip() or None
+        if not model or not api_key:
+            return "⚠️ Model and API key are both required.", model, base_url or "", api_key
+        from utils.crypto import encrypt
+        from utils.db import llm_config_set
+        llm_config_set(user_id, "openai_compatible", model, encrypt(api_key), base_url=base_url)
+        # Evict the cached orchestrator so the new key applies on this
+        # user's very next message instead of waiting for a restart/reset —
+        # GraphOrchestrator resolves its BYO config once per instance
+        # (agents/graph_orchestrator.py), so a stale cached instance would
+        # otherwise keep using whatever was configured (or the trial path)
+        # when it was first built.
+        _orchestrators.pop(user_id, None)
+        return _settings_status_md(user_id), model, base_url or "", ""  # clear the key field, never echo it back
+
+    def _clear(user_id):
+        if not user_id:
+            return "", "", "", ""
+        from utils.db import llm_config_clear
+        llm_config_clear(user_id)
+        _orchestrators.pop(user_id, None)
+        return _settings_status_md(user_id), "", "", ""
+
+    save_btn.click(_save, inputs=[user_state, model_box, base_url_box, api_key_box],
+                    outputs=[status, model_box, base_url_box, api_key_box])
+    clear_btn.click(_clear, inputs=[user_state],
+                     outputs=[status, model_box, base_url_box, api_key_box])
+    user_state.change(_refresh_status, inputs=[user_state], outputs=[status])
+
+    return status
+
+
 # ── Auth gate ─────────────────────────────────────────────────────────────────
 
 def _build_auth_gate():
@@ -894,7 +986,7 @@ def build_ui() -> gr.Blocks:
               </div>
               <div style='font-size:10px;padding:3px 10px;border-radius:12px;
                           background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;'>
-                Groq Llama 3.3 70B → Gemini 2.0 Flash fallback
+                Free trial · bring your own key for unlimited use (Settings)
               </div>
             </div>
             """)
@@ -906,6 +998,9 @@ def build_ui() -> gr.Blocks:
 
                 with gr.Tab("📌 Watchlist") as watchlist_tab:
                     _build_watchlist_tab(user_state)
+
+                with gr.Tab("⚙️ Settings"):
+                    _build_settings_tab(user_state)
 
             # Footer
             gr.HTML("""

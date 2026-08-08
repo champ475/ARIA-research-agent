@@ -222,8 +222,10 @@ def _handle_planning(client: LLMClient, state: GraphState) -> dict:
     return _empty_result(reply, "planning: intake reply, no build triggered", f"user_id={user_id}")
 
 
-def build_communication_layer_node(client: LLMClient | None = None) -> Callable[[GraphState], dict]:
-    client = client or LLMClient(_SYSTEM)
+def build_communication_layer_node(
+    client: LLMClient | None = None, provider_config: dict | None = None,
+) -> Callable[[GraphState], dict]:
+    client = client or LLMClient(_SYSTEM, provider_config)
 
     def communication_layer(state: GraphState) -> dict:
         if state.get("intent") == "planning":

@@ -51,20 +51,24 @@ def build_graph(
     verification_client: LLMClient | None = None,
     communication_client: LLMClient | None = None,
     checkpointer=None,
+    provider_config: dict | None = None,
 ) -> CompiledStateGraph:
+    """`provider_config` (BYO-key dict or None for the trial path) is used
+    ONLY as a default when the corresponding `*_client` isn't explicitly
+    passed — tests inject stub clients directly and are unaffected."""
     graph = StateGraph(GraphState)
 
-    graph.add_node("QueryAnalyzer", build_query_analyzer_node(query_analyzer_client))
-    graph.add_node("Planner", build_planner_node(planner_client))
+    graph.add_node("QueryAnalyzer", build_query_analyzer_node(query_analyzer_client, provider_config))
+    graph.add_node("Planner", build_planner_node(planner_client, provider_config))
     graph.add_node("ResearchConfirmation", research_confirmation)
     graph.add_node("ResearchExecutor", research_executor)
     graph.add_node("execute_task_node", execute_task_node)
     graph.add_node("EvidenceSummarizer", evidence_summarizer)
-    graph.add_node("Reflection", build_reflection_node(reflection_client))
-    graph.add_node("Verification", build_verification_node(verification_client))
+    graph.add_node("Reflection", build_reflection_node(reflection_client, provider_config))
+    graph.add_node("Verification", build_verification_node(verification_client, provider_config))
     graph.add_node("VerificationGate", verification_gate)
     graph.add_node("ConclusionBuilder", conclusion_builder)
-    graph.add_node("CommunicationLayer", build_communication_layer_node(communication_client))
+    graph.add_node("CommunicationLayer", build_communication_layer_node(communication_client, provider_config))
 
     graph.add_edge(START, "QueryAnalyzer")
     graph.add_edge("QueryAnalyzer", "Planner")

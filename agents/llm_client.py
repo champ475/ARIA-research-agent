@@ -234,18 +234,40 @@ _DEFAULT_SYSTEM = (
 
 class LLMClient:
     """
-    Tries Groq (with key rotation) first.
-    On rate-limit or error, falls back to Gemini.
+    With no `provider_config`: tries Groq (with key rotation) first, falls
+    back to Gemini on rate-limit or error — the free-trial path (your own
+    keys, shared/rate-limited across every trial user).
+
+    With `provider_config` ({"api_key", "model", "base_url": optional}):
+    builds a single OpenAICompatibleProvider as the ONLY provider, no
+    fallback chain. This is a user's own key — silently falling back to the
+    app's Groq/Gemini keys on failure would spend your quota on their
+    behalf instead of surfacing their misconfiguration (bad key, wrong
+    model name, provider outage) to them directly.
     """
 
-    def __init__(self, system_prompt: str = ""):
+    def __init__(self, system_prompt: str = "", provider_config: dict | None = None):
         self._system = system_prompt or _DEFAULT_SYSTEM
         self._primary   = None
         self._secondary = None
         self._active    = "none"
-        self._init()
+        self._is_byo    = bool(provider_config)
+        if provider_config:
+            self._init_byo(provider_config)
+        else:
+            self._init_trial()
 
-    def _init(self):
+    def _init_byo(self, provider_config: dict):
+        from agents.providers.openai_compatible import OpenAICompatibleProvider
+        self._primary = OpenAICompatibleProvider(
+            self._system,
+            api_key=provider_config.get("api_key", ""),
+            model=provider_config.get("model", ""),
+            base_url=provider_config.get("base_url"),
+        )
+        self._active = self._primary.name
+
+    def _init_trial(self):
         PriCls, SecCls = (
             (_GroqProvider, _GeminiProvider)
             if PREFERRED_PROVIDER != "gemini"
@@ -307,13 +329,7 @@ class LLMClient:
                 if started:
                     yield f"\n\n⚠️ *Connection to {provider.name} dropped mid-response: {e}*"
                     return
-        yield (
-            f"⚠️ All LLM providers are currently rate-limited.\n\n"
-            f"**What to do:**\n"
-            f"- Groq: wait ~30 min for token quota to reset, or add more keys (GROQ_API_KEY_2, _3) to `.env`\n"
-            f"- Gemini: wait for daily quota reset\n\n"
-            f"Last error: `{last_err}`"
-        )
+        yield self._exhausted_message(last_err)
 
     def reset(self):
         if self._primary:   self._primary.reset()
@@ -342,6 +358,22 @@ class LLMClient:
                         wait = min(4 ** attempt, 16)
                         log.info(f"[LLMClient] Rate-limited, waiting {wait}s before fallback")
                         time.sleep(wait)
+        return self._exhausted_message(last_err)
+
+    def _exhausted_message(self, last_err: Exception | None) -> str:
+        """Every provider failed — the guidance differs by whether this
+        client is on the trial path (your Groq/Gemini keys, likely just
+        rate-limited) or a BYO key (their own provider, more likely a bad
+        key/model/base_url than a rate limit — telling a BYO user to "wait
+        for Gemini's daily quota to reset" would be actively wrong)."""
+        if self._is_byo:
+            return (
+                f"⚠️ Your configured LLM provider failed.\n\n"
+                f"Check your API key, model name, and base URL in Settings — "
+                f"this is usually a bad key, an unavailable model, or a provider outage, "
+                f"not a rate limit.\n\n"
+                f"Last error: `{last_err}`"
+            )
         return (
             f"⚠️ All LLM providers are currently rate-limited.\n\n"
             f"**What to do:**\n"

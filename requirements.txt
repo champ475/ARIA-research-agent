@@ -1,6 +1,10 @@
 # ── LLM providers ─────────────────────────────────────────────────────────────
 groq>=0.9.0
 google-genai>=1.0.0
+openai>=1.0.0
+
+# ── Crypto (encrypting user-supplied LLM API keys, utils/crypto.py) ──────────
+cryptography>=42.0.0
 
 # ── Agentic research graph ────────────────────────────────────────────────────
 langgraph>=0.2.0

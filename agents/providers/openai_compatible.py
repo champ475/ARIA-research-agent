@@ -1,0 +1,106 @@
+"""
+agents/providers/openai_compatible.py
+One adapter for every provider that speaks the OpenAI chat-completions
+shape — OpenAI itself, Groq, OpenRouter, Together, Fireworks, Ollama, and
+anything else exposing an OpenAI-compatible `base_url`. This is the only
+BYO-key path shipped today: Anthropic/Gemini users route through OpenRouter
+with the same key instead of a native adapter (see ARCHITECTURE.md).
+
+Mirrors agents/llm_client.py's _GroqProvider/_GeminiProvider shape exactly
+(ask/chat/stream/reset/load_history, ConversationMemory-backed) so
+LLMClient can swap this in as `self._primary` without any caller-visible
+difference.
+"""
+from __future__ import annotations
+
+from agents.conversation_memory import ConversationMemory
+from config import TOKENS_FAST
+
+_SUMMARY_PROMPT = (
+    "Existing summary of earlier conversation (may be empty):\n{old}\n\n"
+    "New older messages to fold in:\n{chunk}\n\n"
+    "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
+    "tickers, and decisions mentioned, so later replies stay consistent with this history. "
+    "Return only the summary text."
+)
+
+
+class OpenAICompatibleProvider:
+    def __init__(self, system: str, api_key: str, model: str, base_url: str | None = None):
+        if not api_key:
+            raise ValueError(
+                "No API key configured for your chosen LLM provider.\n"
+                "Add one in Settings — any OpenAI-compatible provider works "
+                "(OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...)."
+            )
+        if not model:
+            raise ValueError("No model configured for your chosen LLM provider — set one in Settings.")
+        try:
+            from openai import OpenAI as _OpenAI
+        except ImportError:
+            raise ImportError("Run: pip install openai")
+        self._client = _OpenAI(api_key=api_key, base_url=base_url or None)
+        self._model = model
+        self._system = system
+        self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
+        # Instance attribute (not the usual class-level `name`) since the
+        # displayed provider name should reflect what the user configured.
+        self.name = f"{model} ({base_url})" if base_url else model
+
+    def _summarize(self, old_summary: str, chunk_text: str) -> str:
+        prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
+        r = self._client.chat.completions.create(
+            model=self._model, messages=[{"role": "user", "content": prompt}],
+            temperature=0.2, max_tokens=TOKENS_FAST,
+        )
+        return r.choices[0].message.content.strip()
+
+    def ask(self, prompt: str, temperature: float = 0.3, max_tokens: int = 2000, model: str | None = None) -> str:
+        # `model` override is a Groq-only concept (fast vs primary model,
+        # see graph/nodes/{planner,query_analyzer,reflection,verification}.py)
+        # — a BYO user's configured model is authoritative, same stance
+        # agents/llm_client.py's _GeminiProvider already takes.
+        msgs = [{"role": "system", "content": self._system},
+                {"role": "user",   "content": prompt}]
+        r = self._client.chat.completions.create(
+            model=self._model, messages=msgs,
+            temperature=temperature, max_tokens=max_tokens,
+        )
+        return r.choices[0].message.content.strip()
+
+    def chat(self, msg: str, temperature: float = 0.3, max_tokens: int = 2000, model: str | None = None) -> str:
+        self._memory.add_user(msg)
+        msgs = [{"role": "system", "content": self._system}] + self._memory.context()
+        r = self._client.chat.completions.create(
+            model=self._model, messages=msgs,
+            temperature=temperature, max_tokens=max_tokens,
+        )
+        reply = r.choices[0].message.content.strip()
+        self._memory.add_assistant(reply)
+        return reply
+
+    def stream(self, msg: str, temperature: float = 0.3, max_tokens: int = 2000, model: str | None = None):
+        self._memory.add_user(msg)
+        msgs = [{"role": "system", "content": self._system}] + self._memory.context()
+        chunks: list[str] = []
+        try:
+            events = self._client.chat.completions.create(
+                model=self._model, messages=msgs,
+                temperature=temperature, max_tokens=max_tokens, stream=True,
+            )
+            for event in events:
+                delta = event.choices[0].delta.content
+                if delta:
+                    chunks.append(delta)
+                    yield delta
+        except Exception:
+            if not chunks:
+                self._memory.pop_last()
+            raise
+        self._memory.add_assistant("".join(chunks))
+
+    def reset(self):
+        self._memory.clear()
+
+    def load_history(self, messages: list[dict]):
+        self._memory.load(messages)

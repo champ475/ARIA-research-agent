@@ -129,11 +129,13 @@ def _parse(raw: str) -> dict:
         return dict(_FALLBACK)
 
 
-def build_query_analyzer_node(client: LLMClient | None = None) -> Callable[[GraphState], dict]:
+def build_query_analyzer_node(
+    client: LLMClient | None = None, provider_config: dict | None = None,
+) -> Callable[[GraphState], dict]:
     """Factory so the graph wiring builds one LLMClient per node type (with the
     right system prompt) and tests can inject a stub without touching a real
-    provider. `client=None` constructs a real LLMClient(_SYSTEM)."""
-    client = client or LLMClient(_SYSTEM)
+    provider. `client=None` constructs a real LLMClient(_SYSTEM, provider_config)."""
+    client = client or LLMClient(_SYSTEM, provider_config)
 
     def query_analyzer(state: GraphState) -> dict:
         query = state["query"]

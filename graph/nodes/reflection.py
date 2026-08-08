@@ -88,8 +88,10 @@ def _parse(raw: str) -> list[MissingInfoItem]:
     return items
 
 
-def build_reflection_node(client: LLMClient | None = None) -> Callable[[GraphState], dict]:
-    client = client or LLMClient(_SYSTEM)
+def build_reflection_node(
+    client: LLMClient | None = None, provider_config: dict | None = None,
+) -> Callable[[GraphState], dict]:
+    client = client or LLMClient(_SYSTEM, provider_config)
 
     def reflection(state: GraphState) -> dict:
         loop_count = state.get("loop_count", 0)

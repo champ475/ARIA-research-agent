@@ -107,6 +107,14 @@ def init_db():
             password_hash TEXT NOT NULL,
             created_at    TIMESTAMPTZ DEFAULT now()
         );
+        -- Free-trial quota (users without a user_llm_config row get N free
+        -- messages/day on the app's own Groq/Gemini keys), Telegram alert
+        -- linking, and signup ToS consent record — all additive, all
+        -- nullable/defaulted so existing rows need no backfill.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS free_msgs_used_today INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS free_msgs_reset_at DATE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS accepted_terms_at TIMESTAMPTZ;
 
         CREATE TABLE IF NOT EXISTS sessions (
             id          SERIAL PRIMARY KEY,
@@ -235,6 +243,39 @@ def init_db():
             UNIQUE (tool, args_hash)
         );
         CREATE INDEX IF NOT EXISTS idx_evidence_cache_entity ON evidence_cache (entity, evidence_type);
+
+        -- Bring-your-own LLM key. One row per user; provider is a free-text
+        -- tag ("openai_compatible" today) rather than an enum since new
+        -- providers are meant to be addable without a migration.
+        CREATE TABLE IF NOT EXISTS user_llm_config (
+            user_id           INTEGER PRIMARY KEY REFERENCES users(id),
+            provider          TEXT NOT NULL,
+            base_url          TEXT,
+            model             TEXT NOT NULL,
+            api_key_encrypted TEXT NOT NULL,
+            updated_at        TIMESTAMPTZ DEFAULT now()
+        );
+
+        -- Short-lived deep-link codes for the Telegram /start linking flow
+        -- (utils/telegram_link.py). A code is single-use and expires quickly;
+        -- old rows are harmless clutter, not cleaned up here.
+        CREATE TABLE IF NOT EXISTS telegram_link_codes (
+            code        TEXT PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            expires_at  TIMESTAMPTZ NOT NULL,
+            created_at  TIMESTAMPTZ DEFAULT now()
+        );
+
+        -- Postgres-backed signup/login rate limiting (utils/auth.py) —
+        -- durable across restarts, unlike the in-memory dict it replaces.
+        -- Old rows outside any window are inert (never matched by the
+        -- time-bounded query in _check_rate_limit) and cheap to leave.
+        CREATE TABLE IF NOT EXISTS auth_attempts (
+            id           SERIAL PRIMARY KEY,
+            key          TEXT NOT NULL,
+            attempted_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_attempts_key_time ON auth_attempts (key, attempted_at);
         """)
         conn.commit()
     finally:
@@ -527,3 +568,128 @@ def evidence_cache_put(tool: str, args_hash: str, entity: str, evidence_type: st
 
 def profile_clear(user_id: int):
     _query("DELETE FROM financial_profiles WHERE user_id=%s", (user_id,), fetch=None, commit=True)
+
+
+# ── LLM config helpers (bring-your-own-key, see utils/crypto.py) ─────────────
+
+def llm_config_get(user_id: int) -> dict | None:
+    return _query(
+        "SELECT provider, base_url, model, api_key_encrypted FROM user_llm_config WHERE user_id=%s",
+        (user_id,), fetch="one",
+    )
+
+
+def llm_config_set(user_id: int, provider: str, model: str, api_key_encrypted: str, base_url: str | None = None):
+    _query(
+        "INSERT INTO user_llm_config (user_id, provider, base_url, model, api_key_encrypted, updated_at) "
+        "VALUES (%s,%s,%s,%s,%s,now()) "
+        "ON CONFLICT (user_id) DO UPDATE SET provider=%s, base_url=%s, model=%s, api_key_encrypted=%s, updated_at=now()",
+        (user_id, provider, base_url, model, api_key_encrypted, provider, base_url, model, api_key_encrypted),
+        fetch=None, commit=True,
+    )
+
+
+def llm_config_clear(user_id: int):
+    _query("DELETE FROM user_llm_config WHERE user_id=%s", (user_id,), fetch=None, commit=True)
+
+
+# ── Free-trial quota helpers (agents/graph_orchestrator.py) ──────────────────
+
+def trial_quota_check_and_increment(user_id: int, daily_limit: int, today: "date") -> bool:
+    """Atomically checks-and-increments a user's free-trial message count for
+    `today` (an IST calendar date, passed in rather than computed here so
+    every caller uses the same clock read). Returns True if this message is
+    allowed. Resets the counter the first time a new day is seen — no
+    separate cron/cleanup job needed, the reset just happens lazily on next
+    use, same pattern as the alert cooldown check in scripts/check_alerts.py."""
+    row = _query(
+        "SELECT free_msgs_used_today, free_msgs_reset_at FROM users WHERE id=%s",
+        (user_id,), fetch="one",
+    )
+    if row is None:
+        return False
+    used = row["free_msgs_used_today"]
+    reset_at = row["free_msgs_reset_at"]
+    if reset_at != today:
+        used = 0
+    if used >= daily_limit:
+        _query(
+            "UPDATE users SET free_msgs_used_today=%s, free_msgs_reset_at=%s WHERE id=%s",
+            (used, today, user_id), fetch=None, commit=True,
+        )
+        return False
+    _query(
+        "UPDATE users SET free_msgs_used_today=%s, free_msgs_reset_at=%s WHERE id=%s",
+        (used + 1, today, user_id), fetch=None, commit=True,
+    )
+    return True
+
+
+# ── Telegram linking helpers (utils/telegram_link.py) ─────────────────────────
+
+def telegram_link_code_create(user_id: int, code: str, expires_at) -> None:
+    _query(
+        "INSERT INTO telegram_link_codes (code, user_id, expires_at) VALUES (%s,%s,%s)",
+        (code, user_id, expires_at), fetch=None, commit=True,
+    )
+
+
+def telegram_link_code_resolve(code: str):
+    """Returns the owning user_id if `code` exists and hasn't expired, else
+    None. Deletes the code either way (single-use) so a stale/guessed code
+    can't be retried."""
+    row = _query(
+        "SELECT user_id, expires_at FROM telegram_link_codes WHERE code=%s",
+        (code,), fetch="one",
+    )
+    _query("DELETE FROM telegram_link_codes WHERE code=%s", (code,), fetch=None, commit=True)
+    if row is None:
+        return None
+    from datetime import datetime, timezone
+    if row["expires_at"] < datetime.now(timezone.utc):
+        return None
+    return row["user_id"]
+
+
+def telegram_chat_id_set(user_id: int, chat_id: str) -> None:
+    _query("UPDATE users SET telegram_chat_id=%s WHERE id=%s", (chat_id, user_id), fetch=None, commit=True)
+
+
+def telegram_chat_id_get(user_id: int) -> str | None:
+    row = _query("SELECT telegram_chat_id FROM users WHERE id=%s", (user_id,), fetch="one")
+    return row["telegram_chat_id"] if row else None
+
+
+# ── Terms-of-service consent (utils/auth.py) ──────────────────────────────────
+
+def accept_terms(user_id: int) -> None:
+    _query("UPDATE users SET accepted_terms_at=now() WHERE id=%s", (user_id,), fetch=None, commit=True)
+
+
+# ── Postgres-backed auth rate limiting (replaces utils/auth.py's in-memory dict) ─
+
+def auth_attempt_record(key: str) -> None:
+    _query("INSERT INTO auth_attempts (key) VALUES (%s)", (key,), fetch=None, commit=True)
+
+
+def auth_attempt_count(key: str, since) -> int:
+    row = _query(
+        "SELECT COUNT(*) AS n FROM auth_attempts WHERE key=%s AND attempted_at >= %s",
+        (key, since), fetch="one",
+    )
+    return row["n"] if row else 0
+
+
+def auth_attempt_clear(key: str) -> None:
+    _query("DELETE FROM auth_attempts WHERE key=%s", (key,), fetch=None, commit=True)
+
+
+# ── Report content helper (regenerate-on-demand downloads, see app.py) ───────
+
+def report_get(user_id: int, report_id: int) -> dict | None:
+    """Fetches one report's full content — only if owned by user_id (tenant
+    isolation, mirrors session_delete/alert_remove's ownership-check pattern)."""
+    return _query(
+        "SELECT id, symbol, report_type, title, content, created_at FROM reports WHERE id=%s AND user_id=%s",
+        (report_id, user_id), fetch="one",
+    )

@@ -129,6 +129,10 @@ class GraphState(TypedDict):
                                # add_messages reducer persisting across turns on its own.
     query: str
     user_id: int              # needed by any domain that persists (reports, screeners, alerts, profiles)
+    llm_config: dict | None   # resolved BYO-key config ({"api_key","model","base_url"}) or None for the
+                               # trial path — carried so tool fns needing their own LLM call (e.g.
+                               # alert_create's condition extraction) use the SAME provider as everything
+                               # else this turn, not the app's shared trial keys behind a BYO user's back.
     entities: list[str]
     intent: str
     secondary_intents: list[str]  # Phase 7.4: other domains this message ALSO names, if any

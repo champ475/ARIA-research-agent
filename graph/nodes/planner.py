@@ -107,8 +107,10 @@ def _build_tasks(tool_names: list[str], entities: list[str]) -> list[Task]:
     return tasks
 
 
-def build_planner_node(client: LLMClient | None = None) -> Callable[[GraphState], dict]:
-    client = client or LLMClient(_SYSTEM)
+def build_planner_node(
+    client: LLMClient | None = None, provider_config: dict | None = None,
+) -> Callable[[GraphState], dict]:
+    client = client or LLMClient(_SYSTEM, provider_config)
 
     def planner(state: GraphState) -> dict:
         objective = state.get("objective", "")
