@@ -57,6 +57,17 @@ docker compose up --build
 
 Open **http://localhost:7860**. Data persists in a named Docker volume (`aria_pg_data`) across restarts.
 
+### Or deploy it for free on Hugging Face Spaces
+
+No server to manage, no card required. This works cleanly with the free tier specifically because nothing in this app depends on the host's disk surviving a restart — reports render on demand from Postgres (not a local file), and alerts run entirely on GitHub Actions, independent of whether the Space is asleep or awake.
+
+1. Create a new Space at [huggingface.co/new-space](https://huggingface.co/new-space) — pick **Docker** as the SDK.
+2. Push this repo's contents to the Space's git remote (shown on the Space's page after creation), or connect it to sync from your GitHub fork. The existing `Dockerfile` runs as-is — no changes needed.
+3. Under the Space's **Settings → Variables and secrets**, add the same values from your `.env`: `SECRET_KEY` and `DATABASE_URL` at minimum, plus `GROQ_API_KEY_1`/`GEMINI_API_KEY` if you want to offer the free trial, and `TELEGRAM_BOT_TOKEN`/`TELEGRAM_BOT_USERNAME` if you want alerts.
+4. The Space builds and starts automatically — open its URL, sign up, and start chatting.
+
+Free-tier Spaces sleep after a period of inactivity and cold-start on the next visit (a few seconds) — this only affects the chat UI itself, never alert delivery (see **Setting up Alerts** below for why).
+
 ## Setting up Alerts (optional, one-time)
 
 One Telegram bot serves every user — each person links their own chat in-app, there's no per-user bot setup. You (the operator) set this up once:
