@@ -16,6 +16,43 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-08-08 — Signup requires explicit Terms/Privacy consent
+
+**Problem.** Going open-source and public means unauthenticated strangers
+can sign up with no relationship to the app author beyond this software.
+The footer disclaimer ("Not SEBI-registered...") was the only place any of
+this was stated, and there was no record of anyone having seen or agreed
+to anything — a real gap once BYO-key (§ earlier entry) means a user's own
+prompts/data flow to a third-party LLM provider the operator doesn't
+control.
+
+**Alternatives considered.** A passive "by using this app you agree..."
+footer note — rejected, doesn't create an actual consent record and is
+easy to never read. A separate legal-acceptance page before the auth
+gate — rejected as unnecessary friction for what a checkbox next to the
+existing signup form already accomplishes.
+
+**Final decision.** New `LEGAL.md` (Terms of Use + Privacy Notice,
+written as a template since ARIA is self-hostable — it explicitly frames
+whoever runs a given instance as the "operator" responsible for that
+instance's actual practices, not a fixed company). Rendered inline in an
+accordion on the signup card (`app.py::_build_auth_gate`), gated by a
+required checkbox `_do_signup` checks before calling `signup()`. New
+`users.accepted_terms_at` timestamp, set via `utils/db.py::accept_terms()`
+right after a successful signup — the consent record.
+
+**Trade-offs.** Existing users created before this change have no
+`accepted_terms_at` value (column defaults NULL, no backfill) — acceptable,
+consent can't be retroactively manufactured; if this matters for a
+specific deployment, re-prompt existing users on next login is a follow-up
+someone can add.
+
+**Future improvements.** If an instance's terms ever change materially, a
+version/timestamp comparison against `accepted_terms_at` could re-prompt
+existing users — not needed yet since this is the first version.
+
+---
+
 ## 2026-08-08 — Per-user Telegram alert routing, no webhook
 
 **Problem.** Alerts fired to a single hardcoded `TELEGRAM_CHAT_ID` — that

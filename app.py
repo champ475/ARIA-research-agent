@@ -972,6 +972,14 @@ def _build_auth_gate():
     """
     user_state = gr.State(None)  # holds user_id once authenticated
 
+    def _load_legal_text() -> str:
+        try:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "LEGAL.md")
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return "Terms of Use & Privacy Notice unavailable — contact this instance's operator."
+
     with gr.Column(elem_id="auth-gate", visible=True) as auth_group:
         gr.HTML(
             "<div style='text-align:center;padding:30px 0 10px'>"
@@ -982,6 +990,9 @@ def _build_auth_gate():
         with gr.Column(scale=1, min_width=360, elem_id="auth-card"):
             email_box = gr.Textbox(label="Email", placeholder="you@example.com")
             pass_box  = gr.Textbox(label="Password", type="password", placeholder="At least 8 characters")
+            with gr.Accordion("📜 Terms of Use & Privacy Notice", open=False):
+                gr.Markdown(_load_legal_text(), elem_id="legal-text")
+            terms_box = gr.Checkbox(label="I agree to the Terms of Use & Privacy Notice above", value=False)
             auth_msg  = gr.Markdown("")
             with gr.Row():
                 login_btn  = gr.Button("Log in", variant="primary")
@@ -990,7 +1001,7 @@ def _build_auth_gate():
     with gr.Column(elem_id="main-app", visible=False) as main_group:
         pass  # populated by caller
 
-    def _do_login(email, password):
+    def _do_login(email, password, _agreed):
         try:
             token = login(email, password)
         except AuthError as e:
@@ -999,9 +1010,13 @@ def _build_auth_gate():
         uid = get_user_id(token)
         return "", gr.update(visible=False), gr.update(visible=True), uid
 
-    def _do_signup(email, password):
+    def _do_signup(email, password, agreed):
+        if not agreed:
+            return "⚠️ Please agree to the Terms of Use & Privacy Notice to sign up.", gr.update(visible=True), gr.update(visible=False), None
         try:
-            signup(email, password)
+            uid = signup(email, password)
+            from utils.db import accept_terms
+            accept_terms(uid)
             token = login(email, password)
         except AuthError as e:
             return str(e), gr.update(visible=True), gr.update(visible=False), None
@@ -1009,9 +1024,9 @@ def _build_auth_gate():
         uid = get_user_id(token)
         return "", gr.update(visible=False), gr.update(visible=True), uid
 
-    login_btn.click(_do_login,  [email_box, pass_box], [auth_msg, auth_group, main_group, user_state])
-    signup_btn.click(_do_signup, [email_box, pass_box], [auth_msg, auth_group, main_group, user_state])
-    pass_box.submit(_do_login,  [email_box, pass_box], [auth_msg, auth_group, main_group, user_state])
+    login_btn.click(_do_login,  [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state])
+    signup_btn.click(_do_signup, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state])
+    pass_box.submit(_do_login,  [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state])
 
     return auth_group, main_group, user_state
 
