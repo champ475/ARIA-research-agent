@@ -259,7 +259,7 @@ class TestCommunicationLayerReportFiles:
 
     def test_report_intent_writes_files_and_persists(self):
         stub = _StubClient("Full IC report body")
-        with patch("graph.nodes.communication_layer.save_report_files", return_value=("/tmp/x.md", "/tmp/x.pdf")) as mock_save, \
+        with patch("graph.nodes.communication_layer.render_report", return_value=("/tmp/x.md", "/tmp/x.pdf")) as mock_save, \
              patch("graph.nodes.communication_layer.report_save") as mock_persist:
             node = build_communication_layer_node(stub)
             result = node({
@@ -274,7 +274,7 @@ class TestCommunicationLayerReportFiles:
 
     def test_report_intent_detects_result_update_type(self):
         stub = _StubClient("RU report body")
-        with patch("graph.nodes.communication_layer.save_report_files", return_value=(None, None)) as mock_save, \
+        with patch("graph.nodes.communication_layer.render_report", return_value=(None, None)) as mock_save, \
              patch("graph.nodes.communication_layer.report_save"):
             node = build_communication_layer_node(stub)
             node({
@@ -286,7 +286,7 @@ class TestCommunicationLayerReportFiles:
 
     def test_non_report_intent_never_writes_files(self):
         stub = _StubClient("Equity answer")
-        with patch("graph.nodes.communication_layer.save_report_files") as mock_save, \
+        with patch("graph.nodes.communication_layer.render_report") as mock_save, \
              patch("graph.nodes.communication_layer.report_save") as mock_persist:
             node = build_communication_layer_node(stub)
             result = node({
@@ -340,7 +340,7 @@ class TestCommunicationLayerReportFiles:
         # Phase 7.4: primary intent is "alert" but "report" is a secondary
         # intent — the report branch must still fire.
         stub = _StubClient("Full report body")
-        with patch("graph.nodes.communication_layer.save_report_files", return_value=("/tmp/x.md", "/tmp/x.pdf")) as mock_save, \
+        with patch("graph.nodes.communication_layer.render_report", return_value=("/tmp/x.md", "/tmp/x.pdf")) as mock_save, \
              patch("graph.nodes.communication_layer.report_save"):
             node = build_communication_layer_node(stub)
             result = node({
@@ -361,7 +361,7 @@ class TestCommunicationLayerReportFiles:
 
     def test_persistence_failure_does_not_block_report_return(self):
         stub = _StubClient("Report body")
-        with patch("graph.nodes.communication_layer.save_report_files", return_value=("/tmp/x.md", "/tmp/x.pdf")), \
+        with patch("graph.nodes.communication_layer.render_report", return_value=("/tmp/x.md", "/tmp/x.pdf")), \
              patch("graph.nodes.communication_layer.report_save", side_effect=RuntimeError("db down")):
             node = build_communication_layer_node(stub)
             result = node({
@@ -370,3 +370,83 @@ class TestCommunicationLayerReportFiles:
             })
         assert result["final_report"] == "Report body"
         assert result["md_path"] == "/tmp/x.md"
+
+
+class TestCommunicationLayerReportManagement:
+    """Phase 3 of the open-source restructure: "show my reports" / "download
+    report #N" bypass Evidence/Conclusions entirely (_handle_report_management),
+    same pattern as planning's bypass — a DB read/render, not a research task."""
+
+    def test_missing_user_id_returns_early(self):
+        stub = _StubClient("should not be used")
+        node = build_communication_layer_node(stub)
+        result = node({"intent": "report", "query": "show my reports", "conclusions": []})
+        assert "sign in" in result["final_report"]
+        assert stub.last_prompt is None
+
+    def test_list_reports_renders_table(self):
+        stub = _StubClient("unused")
+        reports = [
+            {"id": 3, "report_type": "IC", "title": "IC — TCS", "created_at": __import__("datetime").datetime(2026, 1, 5)},
+        ]
+        with patch("graph.nodes.communication_layer.report_list", return_value=reports):
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "report", "query": "show my reports", "conclusions": [], "user_id": 1})
+        assert "IC — TCS" in result["final_report"]
+        assert "2026-01-05" in result["final_report"]
+        assert result["pdf_path"] is None  # listing never renders files
+        assert stub.last_prompt is None
+
+    def test_list_reports_empty_state(self):
+        stub = _StubClient("unused")
+        with patch("graph.nodes.communication_layer.report_list", return_value=[]):
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "report", "query": "list my reports", "conclusions": [], "user_id": 1})
+        assert "no saved reports" in result["final_report"]
+
+    def test_download_report_renders_from_stored_content(self):
+        stub = _StubClient("unused")
+        row = {"id": 3, "symbol": "TCS", "report_type": "IC", "title": "IC — TCS", "content": "Full report text"}
+        with patch("graph.nodes.communication_layer.report_get", return_value=row) as mock_get, \
+             patch("graph.nodes.communication_layer.render_report", return_value=("/tmp/x.md", "/tmp/x.pdf")) as mock_render:
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "report", "query": "download report #3", "conclusions": [], "user_id": 1})
+        mock_get.assert_called_once_with(1, 3)
+        mock_render.assert_called_once_with("TCS", "IC", "Full report text")
+        assert result["md_path"] == "/tmp/x.md"
+        assert result["pdf_path"] == "/tmp/x.pdf"
+        assert "IC — TCS" in result["final_report"]
+        assert stub.last_prompt is None
+
+    def test_download_report_not_found(self):
+        stub = _StubClient("unused")
+        with patch("graph.nodes.communication_layer.report_get", return_value=None):
+            node = build_communication_layer_node(stub)
+            result = node({"intent": "report", "query": "download report #99", "conclusions": [], "user_id": 1})
+        assert "Couldn't find report #99" in result["final_report"]
+        assert result["pdf_path"] is None
+
+    def test_download_without_report_id_falls_through_to_generation(self):
+        # "download" keyword present but no number — can't tell which report,
+        # so this must NOT be treated as a management action; it falls
+        # through to normal report generation further down in the function.
+        stub = _StubClient("Freshly generated report")
+        with patch("graph.nodes.communication_layer.render_report", return_value=(None, None)), \
+             patch("graph.nodes.communication_layer.report_save"):
+            node = build_communication_layer_node(stub)
+            result = node({
+                "intent": "report", "query": "download a report on TCS", "conclusions": [_conclusion()],
+                "objective": "x", "entities": ["TCS"], "evidence": [], "user_id": 1,
+            })
+        assert result["final_report"] == "Freshly generated report"
+
+    def test_plain_report_generation_query_is_unaffected(self):
+        stub = _StubClient("Full IC report body")
+        with patch("graph.nodes.communication_layer.render_report", return_value=("/tmp/x.md", "/tmp/x.pdf")), \
+             patch("graph.nodes.communication_layer.report_save"):
+            node = build_communication_layer_node(stub)
+            result = node({
+                "intent": "report", "query": "generate an IC report on RELIANCE", "conclusions": [_conclusion()],
+                "objective": "IC report on RELIANCE", "entities": ["RELIANCE"], "evidence": [], "user_id": 1,
+            })
+        assert result["final_report"] == "Full IC report body"

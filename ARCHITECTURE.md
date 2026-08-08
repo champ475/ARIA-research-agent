@@ -16,6 +16,51 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-08-08 — Reports render on demand; server never persists a file
+
+**Problem.** Reports were dual-written: full text to Postgres (`reports.content`)
+and a `.md`/`.pdf` copy to a server-local `reports/` directory
+(`utils/report_files.py::save_report_files`), for the download buttons to
+serve. Free/cheap hosting (the actual deployment target for this
+open-source project) is commonly ephemeral-disk (containers reset on
+restart/redeploy) — a report generated one session would silently 404 on
+re-download in the next, even though the text was safe in Postgres the
+whole time. There was also no way to re-download an older report at all:
+nothing in the graph path read `report_list()`/`report_get()`.
+
+**Alternatives considered.** (1) Keep dual-writing but mount a persistent
+volume for `reports/` — works, but couples the deployment to a specific
+host's disk-persistence guarantee, and does nothing for hosts that don't
+offer one (the free tiers this project is meant to run on). (2) Cache
+rendered files in Postgres as bytea — avoids disk entirely but stores a
+binary blob per report per format, non-trivial storage growth for no
+benefit over just re-rendering (rendering is fast, seconds, and rarely
+requested).
+
+**Final decision.** `utils/report_files.py::render_report()` is now a pure,
+stateless render: Markdown text → temp-dir `.md`/`.pdf`, always, whether
+this is a fresh generation or a redownload. `reports.content` (Postgres) is
+the only durable copy. New `_handle_report_management` in
+`graph/nodes/communication_layer.py` adds "show my reports" (lists via
+`report_list()`) and "download report #N" (fetches via the new
+`report_get()`, re-renders via the same `render_report()` fresh-generation
+already uses) — one render path, two callers, not two renderers. Deleted
+`utils/pdf_export.py` (confirmed dead code) and `config.py`'s `REPORTS_DIR`
+along with the repo's tracked `reports/` placeholder.
+
+**Trade-offs.** Every re-download pays a render cost again (Markdown→HTML→PDF
+via weasyprint) instead of serving a cached file — acceptable, this is a
+low-frequency action and the render itself is fast. Rendered temp files are
+never explicitly cleaned up (left to the OS/container lifecycle) — fine on
+the ephemeral hosts this targets, would very slowly accumulate on a
+long-lived persistent-disk deployment.
+
+**Future improvements.** If re-download volume ever justifies it, a short-TTL
+cache (render once, reuse for N minutes) would cut redundant renders
+without reintroducing a durability dependency on the render output itself.
+
+---
+
 ## 2026-08-08 — LangGraph orchestrator becomes the only path; legacy Orchestrator + 6 specialist agents retired
 
 **Problem.** Two orchestration paths (`agents/orchestrator.py`'s keyword-routed

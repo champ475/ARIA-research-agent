@@ -105,6 +105,9 @@ Responses stream in live, flag a **DATA CONFIDENCE** level (High/Medium/Low) whe
 > "Write a result update for TCS"
 > "Sector thematic on IT stocks"
 > "Show my saved reports"
+> "Download report #12"
+
+Every report's full text lives in your account, not on the server's disk — say "download report #&lt;id&gt;" anytime to get the PDF/Markdown again, regenerated on the spot.
 
 ### 💰 Mutual Funds
 > "Compare large cap funds"

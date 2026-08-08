@@ -1,21 +1,27 @@
 """
 utils/report_files.py
-Markdown/PDF file-writer for generated equity research reports, called from
-graph/nodes/communication_layer.py's report-domain branch.
+Renders a report's Markdown text into on-disk .md/.pdf files for exactly one
+Gradio DownloadButton response — never a durable store. The report's actual
+persistence is Postgres (`reports.content`, utils/db.py); these files live
+in the system temp dir just long enough to be streamed to the user's own
+machine, then are the OS's problem, not ours (fine on an ephemeral host that
+wipes on restart, and cheap enough elsewhere not to bother sweeping).
+Called both for a freshly generated report (graph/nodes/communication_layer.py)
+and for re-downloading an older one from history (app.py), via the same
+function — there's exactly one render path, not two.
 """
 from __future__ import annotations
 
 import os
+import tempfile
+import uuid
 
-from config import REPORTS_DIR
-from utils.helpers import now_ist
 
-
-def save_report_files(sym: str, rtype: str, content: str) -> tuple[str | None, str | None]:
-    """Save report as Markdown and (optionally) PDF. Returns (md_path, pdf_path)."""
-    os.makedirs(REPORTS_DIR, exist_ok=True)
-    ts   = now_ist().replace(" ", "_").replace(",", "").replace(":", "")
-    base = os.path.join(REPORTS_DIR, f"{sym}_{rtype}_{ts[:15]}")
+def render_report(sym: str, rtype: str, content: str) -> tuple[str | None, str | None]:
+    """Renders `content` as Markdown and (optionally) PDF into temp files.
+    Returns (md_path, pdf_path) — either may be None if that format failed
+    to render (PDF rendering failing shouldn't block the Markdown download)."""
+    base = os.path.join(tempfile.gettempdir(), f"{sym}_{rtype}_{uuid.uuid4().hex[:8]}")
     md_path = pdf_path = None
 
     try:

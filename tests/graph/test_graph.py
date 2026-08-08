@@ -306,7 +306,7 @@ class TestReportDomainEndToEnd:
         with patch("graph.tool_catalogue.get_latest_quarterly_results", return_value="Revenue up 10% YoY."), \
              patch("tools.data.evidence_cache.evidence_cache_get", return_value=None), \
              patch("tools.data.evidence_cache.evidence_cache_put", return_value=None), \
-             patch("graph.nodes.communication_layer.save_report_files", return_value=("/tmp/r.md", "/tmp/r.pdf")) as mock_save, \
+             patch("graph.nodes.communication_layer.render_report", return_value=("/tmp/r.md", "/tmp/r.pdf")) as mock_save, \
              patch("graph.nodes.communication_layer.report_save") as mock_persist:
             graph = build_graph(
                 query_analyzer_client=qa, planner_client=planner,
@@ -503,7 +503,7 @@ class TestMultiIntentEndToEnd:
         with patch("graph.tool_catalogue.get_latest_quarterly_results", return_value="Revenue up 10%."), \
              patch("tools.data.evidence_cache.evidence_cache_get", return_value=None), \
              patch("tools.data.evidence_cache.evidence_cache_put", return_value=None), \
-             patch("graph.nodes.communication_layer.save_report_files", return_value=("/tmp/r.md", "/tmp/r.pdf")), \
+             patch("graph.nodes.communication_layer.render_report", return_value=("/tmp/r.md", "/tmp/r.pdf")), \
              patch("graph.nodes.communication_layer.report_save"):
             graph = build_graph(
                 query_analyzer_client=qa, planner_client=planner,

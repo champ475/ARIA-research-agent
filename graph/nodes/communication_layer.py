@@ -14,12 +14,22 @@ UI-facing serialization is a Phase 6 integration decision, not this node's.
 
 Report-domain file output (Phase 7.1): PDF/MD generation is deliberately done
 HERE, not in ConclusionBuilder, even though the graph-expansion plan's first
-draft assumed ConclusionBuilder — `final_report` (the actual markdown text
-that gets written to disk) doesn't exist until this node's LLM call
-completes, so ConclusionBuilder never has a report body to save. Writing the
-files immediately after the LLM call keeps the "only CommunicationLayer
-calls the model" contract intact — save_report_files() itself is a pure,
-deterministic I/O side effect, not a second model call.
+draft assumed ConclusionBuilder — `final_report` (the actual markdown text)
+doesn't exist until this node's LLM call completes, so ConclusionBuilder
+never has a report body to save. Rendering immediately after the LLM call
+keeps the "only CommunicationLayer calls the model" contract intact —
+render_report() itself is a pure, deterministic I/O side effect, not a
+second model call. The rendered files are TEMPORARY (utils/report_files.py)
+— durable storage is `reports.content` in Postgres (report_save() below);
+re-downloading an older report re-renders from that stored text via the
+same render_report() call (see _handle_report_management below), not from
+a file that might not exist anymore.
+
+Report list/re-download (Phase 3 of the open-source restructure):
+`_handle_report_management` bypasses the Evidence/Conclusion pipeline
+entirely for "show my reports" / "download report #N" style queries — same
+reasoning as the planning bypass below, there's no tool-selection/evidence-
+gathering step useful here, just a DB read and (for a download) a render.
 
 Screener-domain CSV export (Phase 7.3) follows the same pattern: `csv_path`
 is populated from the raw `screener_run` evidence (not a Conclusion — the
@@ -43,6 +53,7 @@ NOT implemented yet — it needs more than this node can safely provide.
 """
 from __future__ import annotations
 
+import re
 from typing import Callable
 
 import pandas as pd
@@ -54,9 +65,9 @@ from graph.nodes.execute_task import from_cacheable
 from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
-from utils.db import report_save, profile_get, profile_upsert, profile_clear
+from utils.db import report_save, report_list, report_get, profile_get, profile_upsert, profile_clear
 from utils.helpers import detect_report_type
-from utils.report_files import save_report_files
+from utils.report_files import render_report
 from utils.screener_files import save_screener_csv
 from utils.planning_logic import (
     REQUIRED_FIELDS as _PLANNING_REQUIRED,
@@ -176,6 +187,65 @@ def _is_streamable(intent: str, intents: set[str]) -> bool:
     return intent in ("equity", "chat") and "report" not in intents and "screener" not in intents
 
 
+_REPORT_LIST_KW = ["list reports", "list my reports", "saved reports", "my reports", "show reports", "show my reports"]
+_REPORT_DOWNLOAD_KW = ["download", "regenerate", "resend", "re-download", "redownload"]
+_REPORT_ID_RE = re.compile(r"#?(\d+)")
+
+
+def _handle_report_management(state: GraphState) -> dict | None:
+    """"Show my reports" / "download report #N" bypass the Evidence/
+    Conclusion pipeline entirely, same reasoning as _handle_planning below —
+    there's no tool-selection/evidence-gathering step useful for a DB read
+    and a re-render. Returns None (not handled) for anything else, so a
+    plain "generate a report on TCS" falls through to the normal
+    generation flow further down in communication_layer()."""
+    user_id = state.get("user_id")
+    query = (state.get("query") or "").strip()
+    lower = query.lower()
+
+    if any(k in lower for k in _REPORT_LIST_KW):
+        if user_id is None:
+            return _empty_result(
+                "I need to know who you are to show your reports — please sign in again.",
+                "report: missing user_id", "cannot read reports without a user_id",
+            )
+        reports = report_list(user_id)
+        if not reports:
+            text = "You have no saved reports yet. Try \"generate an IC report for TCS\"."
+        else:
+            lines = ["## Your Reports\n", "| # | Type | Title | Date |", "|---|------|-------|------|"]
+            for r in reports:
+                lines.append(f"| {r['id']} | {r['report_type']} | {r['title']} | {r['created_at'].strftime('%Y-%m-%d')} |")
+            lines.append("\nSay \"download report #<id>\" to get the PDF/Markdown again.")
+            text = "\n".join(lines)
+        return _empty_result(text, "report: listed saved reports", f"user_id={user_id}")
+
+    if any(k in lower for k in _REPORT_DOWNLOAD_KW):
+        id_match = _REPORT_ID_RE.search(query)
+        if user_id is None or not id_match:
+            return None  # can't tell which report — fall through to normal generation
+        report_id = int(id_match.group(1))
+        row = report_get(user_id, report_id)
+        if row is None:
+            return _empty_result(
+                f"Couldn't find report #{report_id} — try \"show my reports\" to see the list.",
+                "report: download target not found", f"user_id={user_id}, report_id={report_id}",
+            )
+        # Re-renders from the durably stored text (reports.content) — the
+        # file from whenever this report was first generated is long gone
+        # on an ephemeral host, but the text never depended on it surviving.
+        md_path, pdf_path = render_report(row["symbol"] or "report", row["report_type"], row["content"])
+        result = _empty_result(
+            f"Here's report #{report_id} — **{row['title']}**.",
+            "report: regenerated from history", f"user_id={user_id}, report_id={report_id}",
+        )
+        result["md_path"] = md_path
+        result["pdf_path"] = pdf_path
+        return result
+
+    return None
+
+
 def _handle_planning(client: LLMClient, state: GraphState) -> dict:
     user_id = state.get("user_id")
     query = (state.get("query") or "").strip()
@@ -230,6 +300,11 @@ def build_communication_layer_node(
     def communication_layer(state: GraphState) -> dict:
         if state.get("intent") == "planning":
             return _handle_planning(client, state)
+
+        if state.get("intent") == "report":
+            report_mgmt_result = _handle_report_management(state)
+            if report_mgmt_result is not None:
+                return report_mgmt_result
 
         objective = state.get("objective", "")
         conclusions = state.get("conclusions", [])
@@ -319,7 +394,7 @@ def build_communication_layer_node(
         pdf_path = md_path = None
         if "report" in intents and primary_entity:
             rtype = detect_report_type((query or objective).lower())
-            md_path, pdf_path = save_report_files(primary_entity, rtype, report)
+            md_path, pdf_path = render_report(primary_entity, rtype, report)
             user_id = state.get("user_id")
             if user_id is not None:
                 try:
