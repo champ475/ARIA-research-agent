@@ -34,7 +34,7 @@ cp .env.example .env
 | `DATABASE_URL` | [neon.tech](https://neon.tech) — create a free project, copy the connection string | Yes (skip if using Docker Compose — see below) |
 | `GROQ_API_KEY_1`, `GEMINI_API_KEY` | [console.groq.com](https://console.groq.com), [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Optional — powers the built-in free trial (see below); skip both if you'd rather everyone bring their own key from day one |
 | `GROQ_API_KEY_2`, `_3` | Same as above, extra keys | Optional — lets more trial users chat before hitting free-tier limits |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | See **Setting up Alerts** below | Only if you want alert notifications |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` | See **Setting up Alerts** below | Only if you want alert notifications |
 
 **Free trial vs. bring your own key:** every signup gets 5 free messages/day on your Groq/Gemini keys above. Beyond that (or from message one, if you skip those keys), each user pastes their own key under the **⚙️ Settings** tab in-app — any OpenAI-compatible provider works (OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...), so you're never on the hook for a stranger's usage.
 
@@ -59,14 +59,15 @@ Open **http://localhost:7860**. Data persists in a named Docker volume (`aria_pg
 
 ## Setting up Alerts (optional, one-time)
 
-Alerts need a Telegram bot to notify you and a GitHub Actions cron job to check prices every 5 minutes even while your laptop is off.
+One Telegram bot serves every user — each person links their own chat in-app, there's no per-user bot setup. You (the operator) set this up once:
 
-1. **Create a Telegram bot** — message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`, follow the prompts, copy the token it gives you into `TELEGRAM_BOT_TOKEN`.
-2. **Get your chat ID** — send any message to your new bot, then message [@userinfobot](https://t.me/userinfobot) to get your numeric ID, put it in `TELEGRAM_CHAT_ID`.
-3. **Push this repo to a public GitHub repo** (public keeps GitHub Actions free at this checking frequency).
-4. **Add three repo secrets** — on GitHub, go to *Settings → Secrets and variables → Actions*, add `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` using the same values from your `.env`.
+1. **Create a Telegram bot** — message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`, follow the prompts, copy the token it gives you into `TELEGRAM_BOT_TOKEN` and the username it gives you (without the `@`) into `TELEGRAM_BOT_USERNAME`.
+2. **Push this repo to a public GitHub repo** (public keeps GitHub Actions free at this checking frequency).
+3. **Add two repo secrets** — on GitHub, go to *Settings → Secrets and variables → Actions*, add `DATABASE_URL` and `TELEGRAM_BOT_TOKEN` using the same values from your `.env`.
 
-That's it — the checker runs automatically every 5 minutes during NSE market hours (9:15 AM–3:30 PM IST, weekdays) and pings your Telegram the moment an alert fires.
+That's it on your end — the checker runs automatically every 5 minutes during NSE market hours (9:15 AM–3:30 PM IST, weekdays).
+
+**Each user connects their own chat** (no setup needed from you beyond the above): in-app, under **⚙️ Settings → 🔔 Telegram Alerts**, click "Connect Telegram" — it opens a link that starts a chat with your bot and links it to their account automatically. Alerts they create fire to that chat, and only that chat.
 
 ## What to expect
 

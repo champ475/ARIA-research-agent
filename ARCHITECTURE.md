@@ -16,6 +16,50 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-08-08 — Per-user Telegram alert routing, no webhook
+
+**Problem.** Alerts fired to a single hardcoded `TELEGRAM_CHAT_ID` — that
+was always the app author's own chat. Every real user needed their own
+destination, and `scripts/check_alerts.py` (a standalone GitHub Actions
+cron process, not the Gradio app) had no way to know which chat belonged
+to which alert's owner.
+
+**Alternatives considered.** (1) One Telegram bot per user — rejected,
+forces every user through BotFather themselves, the opposite of a smooth
+signup. (2) A webhook endpoint for Telegram to push `/start` updates to —
+rejected for now: requires a public HTTPS URL the app may not have (local
+dev, or a host without one configured), whereas long-polling works
+anywhere outbound HTTPS does. (3) Ask users to paste their numeric chat ID
+manually (via @userinfobot) — works but is exactly the kind of manual,
+easy-to-fumble step a "just click connect" flow should remove.
+
+**Final decision.** One bot (unchanged `TELEGRAM_BOT_TOKEN`, still a single
+shared value — Telegram's API is chat_id-addressed, one bot already serves
+unlimited chats) maps to many linked chats via a new
+`users.telegram_chat_id` column. Linking: `utils/telegram_link.py` mints a
+short-lived code (`telegram_link_codes` table) shown as a
+`t.me/<bot>?start=<code>` deep link in Settings; a background long-polling
+thread (started once at app startup, `start_polling_thread()`) reads the
+resulting `/start <code>` message via Telegram's `getUpdates` API and
+stores the chat_id — no public endpoint needed. `scripts/check_alerts.py`
+now JOINs `alerts` against `users.telegram_chat_id` in its existing raw-SQL
+query (kept raw deliberately — see the script's own docstring on why it
+doesn't use `utils/db.py`'s pooled connection) and sends each alert to its
+owner's chat only.
+
+**Trade-offs.** Long-polling means the app process must stay running for
+linking to work (an alert-check-only deployment with the web app asleep
+would delay a NEW connection attempt until it wakes — existing links keep
+firing regardless, since `check_alerts.py` never touches the web app at
+all). `TELEGRAM_BOT_USERNAME` is a second env var to configure (needed to
+build the deep link) — a small one-time addition for the operator.
+
+**Future improvements.** A webhook-based listener would remove the
+"app must be awake to link" caveat, worth revisiting once/if this deploys
+somewhere with a stable public HTTPS URL.
+
+---
+
 ## 2026-08-08 — Reports render on demand; server never persists a file
 
 **Problem.** Reports were dual-written: full text to Postgres (`reports.content`)

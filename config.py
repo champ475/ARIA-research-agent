@@ -44,9 +44,10 @@ DATA_DIR    = "data"
 # ── Database (Neon Postgres — shared by the app and the GH Actions alert checker) ─
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-# ── Telegram (alert notifications) ────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
+# ── Telegram (alert notifications — one shared bot, each user links their own
+# ── chat via the in-app "Connect Telegram" flow, utils/telegram_link.py) ─────
+TELEGRAM_BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")  # without the @, for building the deep link
 
 MACRO_TICKERS = {
     "Nifty 50"  : "^NSEI",

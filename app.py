@@ -9,11 +9,15 @@ import gradio as gr
 from utils.db    import init_db
 from utils.helpers import now_ist
 from utils.auth import signup, login, AuthError
+from utils.telegram_link import start_polling_thread
 
 log = logging.getLogger(__name__)
 
 # ── Init DB on startup ────────────────────────────────────────────────────────
 init_db()
+
+# ── Start the Telegram /start-code listener (no-ops if no bot token set) ──────
+start_polling_thread()
 
 # ── Loading indicator HTML (three bouncing dots, styled via global CSS) ──────
 LOADING_HTML = (
@@ -911,6 +915,49 @@ def _build_settings_tab(user_state: gr.State):
     clear_btn.click(_clear, inputs=[user_state],
                      outputs=[status, model_box, base_url_box, api_key_box])
     user_state.change(_refresh_status, inputs=[user_state], outputs=[status])
+
+    gr.Markdown("---\n### 🔔 Telegram Alerts\nConnect your own Telegram chat so alerts you create come straight to you.")
+    tg_status = gr.Markdown("")
+
+    with gr.Row():
+        tg_connect_btn = gr.Button("🔗 Connect Telegram", variant="primary")
+        tg_disconnect_btn = gr.Button("🔌 Disconnect", variant="secondary")
+
+    def _telegram_status_md(user_id: int) -> str:
+        from utils.db import telegram_chat_id_get
+        return "✅ **Telegram connected** — alerts will be sent to your linked chat." \
+            if telegram_chat_id_get(user_id) else \
+            "⚪ **Not connected** — click Connect Telegram below to link your chat."
+
+    def _tg_refresh(user_id):
+        return _telegram_status_md(user_id) if user_id else ""
+
+    def _tg_connect(user_id):
+        if not user_id:
+            return ""
+        from config import TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME
+        if not TELEGRAM_BOT_TOKEN:
+            return "⚠️ This ARIA instance hasn't configured a Telegram bot yet — ask the admin to set `TELEGRAM_BOT_TOKEN`."
+        if not TELEGRAM_BOT_USERNAME:
+            return "⚠️ Admin needs to set `TELEGRAM_BOT_USERNAME` for the connect link to work."
+        from utils.telegram_link import generate_link_code
+        code = generate_link_code(user_id)
+        link = f"https://t.me/{TELEGRAM_BOT_USERNAME}?start={code}"
+        return (
+            f"👉 [**Tap here to connect**]({link}) — opens Telegram, sends `/start` automatically. "
+            f"Link expires in 15 minutes."
+        )
+
+    def _tg_disconnect(user_id):
+        if not user_id:
+            return ""
+        from utils.db import telegram_chat_id_set
+        telegram_chat_id_set(user_id, None)
+        return _telegram_status_md(user_id)
+
+    tg_connect_btn.click(_tg_connect, inputs=[user_state], outputs=[tg_status])
+    tg_disconnect_btn.click(_tg_disconnect, inputs=[user_state], outputs=[tg_status])
+    user_state.change(_tg_refresh, inputs=[user_state], outputs=[tg_status])
 
     return status
 

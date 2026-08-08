@@ -5,10 +5,18 @@ Run on a schedule by .github/workflows/alert-check.yml (GitHub Actions cron,
 every 5 min). Not part of the Gradio app process — uses a single direct
 psycopg2 connection since this is a short-lived process that opens one
 connection and exits (the app's ThreadedConnectionPool in utils/db.py would
-be pointless here).
+be pointless here); this is a deliberate, still-valid choice, not something
+the multi-user Telegram routing below needed to change.
+
+Multi-user Telegram routing: each alert's notification goes to ITS OWNER's
+own linked Telegram chat (users.telegram_chat_id, set via the in-app
+"Connect Telegram" flow — utils/telegram_link.py), not a single shared
+TELEGRAM_CHAT_ID. The bot token stays a single shared value (one bot serves
+every user's chat, Telegram's API is chat_id-addressed already) — only the
+per-alert destination changed.
 
 Usage: python scripts/check_alerts.py
-Requires env vars: DATABASE_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+Requires env vars: DATABASE_URL, TELEGRAM_BOT_TOKEN.
 """
 
 import sys
@@ -21,7 +29,7 @@ import psycopg2
 import requests
 from psycopg2.extras import RealDictCursor
 
-from config import DATABASE_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config import DATABASE_URL, TELEGRAM_BOT_TOKEN
 from utils.helpers import IST
 from tools.data.fetcher import get_info, get_ohlcv
 from tools.analysis.technical import compute_all
@@ -37,9 +45,12 @@ def market_is_open() -> bool:
     return open_t <= now <= close_t
 
 
-def send_telegram(text: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram not configured — skipping notification:", text)
+def send_telegram(text: str, chat_id: str | None):
+    if not TELEGRAM_BOT_TOKEN:
+        print("Telegram bot not configured — skipping notification:", text)
+        return
+    if not chat_id:
+        print("Alert owner hasn't linked Telegram — skipping notification:", text)
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
@@ -48,7 +59,7 @@ def send_telegram(text: str):
         # malformed entities (e.g. "price_below" -> 400 Bad Request).
         r = requests.post(
             url,
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
+            json={"chat_id": chat_id, "text": text},
             timeout=10,
         )
         if r.status_code != 200:
@@ -205,7 +216,14 @@ def main():
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     try:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM alerts WHERE active=TRUE ORDER BY id")
+        # JOIN pulls each alert owner's linked Telegram chat_id in the same
+        # query — every alert notifies ITS OWNER's own chat, not a single
+        # shared one (see module docstring).
+        cur.execute(
+            "SELECT alerts.*, users.telegram_chat_id FROM alerts "
+            "JOIN users ON alerts.user_id = users.id "
+            "WHERE alerts.active=TRUE ORDER BY alerts.id"
+        )
         alerts = cur.fetchall()
         print(f"Evaluating {len(alerts)} active alert(s).")
         for alert in alerts:
@@ -218,7 +236,7 @@ def main():
                 print(f"Error evaluating alert {alert['id']} ({alert['symbol']}): {e}")
                 continue
             if msg:
-                send_telegram(msg)
+                send_telegram(msg, alert.get("telegram_chat_id"))
                 if alert.get("recurring"):
                     cur.execute("UPDATE alerts SET triggered_at=now() WHERE id=%s", (alert["id"],))
                 else:
