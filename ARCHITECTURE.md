@@ -16,6 +16,44 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-08-08 — Auth rate limiting moved from in-memory to Postgres (supersedes the "In-memory sliding-window throttle" entry below)
+
+**Problem.** The entry below explicitly reasoned that an in-memory dict was
+"correct for the single-instance deployment this app actually ships as."
+That framing was written before this restructure made the app genuinely
+multi-user/public-facing — the in-memory approach's actual weakness isn't
+multi-instance scaling (still not a concern for this deployment shape), it's
+that a restart (redeploy, crash, host recycling a container on an
+ephemeral-hosting free tier) silently wipes every tracked attempt, handing
+a brute-force attempt a free reset exactly when a public instance is most
+exposed to one.
+
+**Alternatives considered.** Keep in-memory, accept the reset-on-restart
+gap — rejected now that public exposure is the actual deployment target,
+not a hypothetical. Redis — rejected, still true that this app has no
+other need for it and a single-instance deployment gets nothing from a
+dedicated cache service one small table doesn't already provide.
+
+**Final decision.** New `auth_attempts` Postgres table (key, attempted_at),
+queried/inserted by `utils/auth.py::_check_rate_limit` via
+`utils/db.py::auth_attempt_count`/`auth_attempt_record`/`auth_attempt_clear` —
+same 5-attempts/5-minute window and semantics as before (a successful login
+clears its own key), just durable across restarts. No new dependency.
+
+**Trade-offs.** One extra indexed-table query per signup/login attempt
+instead of an in-memory dict lookup — negligible next to the PBKDF2 hash
++ user-row lookup already happening in the same call. A small
+check-then-insert race under concurrent requests from the same email could
+let one or two extra attempts through in the worst case — acceptable for a
+login throttle, not a security boundary this app relies on for anything
+stronger.
+
+**Future improvements.** None identified — this closes the gap the
+superseded entry's own reasoning left open once the deployment context
+changed.
+
+---
+
 ## 2026-08-08 — Signup requires explicit Terms/Privacy consent
 
 **Problem.** Going open-source and public means unauthenticated strangers
