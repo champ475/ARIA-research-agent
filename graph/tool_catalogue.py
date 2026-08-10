@@ -233,11 +233,23 @@ def _llm_extract_alert(msg: str, symbol: str, llm_config: dict | None):
 
 def _alert_create(entity: str, context: dict[str, Any]) -> dict:
     """`entity` is the ticker Planner already resolved (query_analyzer's
-    entity extraction runs before this task is ever built) — this tool only
-    extracts the CONDITION (alert_type/threshold), not the symbol."""
+    entity extraction runs before this task is ever built, gated through
+    utils/helpers.py::filter_valid_entities) — this tool only extracts the
+    CONDITION (alert_type/threshold), not the symbol.
+
+    Defense-in-depth: refuse to write an alert for NO_ENTITY_SENTINEL. Under
+    normal operation query_analyzer.py's filter should mean this task is
+    never even built for a message with no valid entity, but this is the
+    last line of defense before a DB write — confirmed necessary in
+    production before the entity-filtering fix landed (an unfiltered
+    garbage entity like "AN"/"SET"/"ALSO" wrote a real alert row with a
+    real threshold)."""
     msg = context.get("_query") or ""
     user_id = context.get("_user_id")
     symbol = entity
+
+    if symbol == NO_ENTITY_SENTINEL:
+        return {"action": "create", "symbol": symbol, "result": "invalid_symbol"}
 
     alert_type, threshold, condition = _regex_extract_alert(msg)
     if alert_type is None:

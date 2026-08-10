@@ -27,9 +27,10 @@ import json
 import logging
 from typing import Callable
 
-from agents.llm_client import LLMClient
-from config import GROQ_MODEL_FAST, TOKENS_AGENT
+from agents.llm_client import LLMClient, LLMProvidersExhausted
+from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
 from graph.journal import log_decision
+from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
 from graph.state import Evidence, GraphState, VerificationIssue
 
 log = logging.getLogger(__name__)
@@ -191,7 +192,8 @@ def _parse_llm_issues(raw: str) -> list[VerificationIssue]:
 
 
 def _build_judge_prompt(objective: str, evidence_summary: dict) -> str:
-    return f"Objective: {objective}\n\nEvidence summary:\n{json.dumps(evidence_summary, default=str)}"
+    capped = cap_evidence_for_prompt(evidence_summary, EVIDENCE_PROMPT_CHAR_BUDGET)
+    return f"Objective: {objective}\n\nEvidence summary:\n{json.dumps(capped, default=str)}"
 
 
 def build_verification_node(
@@ -227,12 +229,29 @@ def build_verification_node(
                 ),
             }
 
-        raw = client.ask(
-            _build_judge_prompt(state.get("objective", ""), state.get("evidence_summary", {})),
-            model=GROQ_MODEL_FAST,
-            max_tokens=TOKENS_AGENT,
-            temperature=0.0,
-        )
+        max_loops = state.get("max_loops", 2)
+        try:
+            raw = client.ask(
+                _build_judge_prompt(state.get("objective", ""), state.get("evidence_summary", {})),
+                model=GROQ_MODEL_FAST,
+                max_tokens=TOKENS_AGENT,
+                temperature=0.0,
+            )
+        except LLMProvidersExhausted as e:
+            # Honest terminal state instead of silently looking clean — an
+            # empty issues list here would be indistinguishable from "the
+            # judge actually found nothing wrong". loop_count forced to
+            # max_loops (reducer is Annotated[int, operator.add], see
+            # graph/state.py) so this doesn't trigger another retry cycle.
+            log.warning(f"Verification: all LLM providers exhausted, treating as terminal — {e}")
+            return {
+                "verification_issues": [{
+                    "claim": "Could not verify — all LLM providers were unavailable",
+                    "issue_type": "unsupported", "stage": "llm_judge", "evidence_ids": [],
+                }],
+                "loop_count": max_loops,
+                **log_decision("Verification", "llm_judge skipped — all providers exhausted", str(e)),
+            }
         stage3_issues = _parse_llm_issues(raw)
         # loop_count is a shared budget incremented by whichever side (Reflection
         # or Verification) is asking for another pass — this is what keeps a

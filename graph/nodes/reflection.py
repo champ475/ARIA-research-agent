@@ -21,9 +21,10 @@ import json
 import logging
 from typing import Callable
 
-from agents.llm_client import LLMClient
-from config import GROQ_MODEL_FAST, TOKENS_AGENT
+from agents.llm_client import LLMClient, LLMProvidersExhausted
+from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
 from graph.journal import log_decision
+from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
 from graph.nodes.planner import _ALL_TOOL_NAMES, _build_tasks, _with_transitive_deps
 from graph.state import GraphState, MissingInfoItem, Task
 
@@ -46,10 +47,11 @@ _DEFAULT_PRIORITY = "medium"
 
 
 def _build_prompt(query: str, objective: str, evidence_summary: dict) -> str:
+    capped = cap_evidence_for_prompt(evidence_summary, EVIDENCE_PROMPT_CHAR_BUDGET)
     return (
         f"Original query: {query}\n"
         f"Objective: {objective}\n\n"
-        f"Evidence collected so far:\n{json.dumps(evidence_summary, default=str)}\n\n"
+        f"Evidence collected so far:\n{json.dumps(capped, default=str)}\n\n"
         f"Available tools: {', '.join(sorted(_ALL_TOOL_NAMES))}"
     )
 
@@ -97,12 +99,25 @@ def build_reflection_node(
         loop_count = state.get("loop_count", 0)
         max_loops = state.get("max_loops", 2)
 
-        raw = client.ask(
-            _build_prompt(state.get("query", ""), state.get("objective", ""), state.get("evidence_summary", {})),
-            model=GROQ_MODEL_FAST,
-            max_tokens=TOKENS_AGENT,
-            temperature=0.0,
-        )
+        try:
+            raw = client.ask(
+                _build_prompt(state.get("query", ""), state.get("objective", ""), state.get("evidence_summary", {})),
+                model=GROQ_MODEL_FAST,
+                max_tokens=TOKENS_AGENT,
+                temperature=0.0,
+            )
+        except LLMProvidersExhausted as e:
+            # "Couldn't check" must never be conflated with "checked, found
+            # nothing" — forcing loop_count to max_loops (loop_count's
+            # reducer is Annotated[int, operator.add], see graph/state.py)
+            # makes _route_after_verification's loop_count < max_loops
+            # check exit terminally instead of looping on a doomed retry.
+            log.warning(f"Reflection: all LLM providers exhausted, treating as terminal — {e}")
+            return {
+                "missing_info": [],
+                "loop_count": max_loops,
+                **log_decision("Reflection", "skipped — all LLM providers exhausted", str(e)),
+            }
         missing_items = _parse(raw)
 
         if not missing_items:

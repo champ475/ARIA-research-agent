@@ -239,6 +239,36 @@ class TestGraphOrchestratorClassify:
         fake_graph.invoke.assert_not_called()
 
 
+class TestGraphOrchestratorResolveByoConfig:
+    """Bug fix: a decrypt() failure (e.g. SECRET_KEY unset/changed since a
+    BYO key was saved) must fall back to the trial path, not crash
+    orchestrator construction — same graceful-degrade philosophy as the
+    rest of __init__."""
+
+    def test_decrypt_failure_falls_back_to_trial_path(self):
+        fake_row = {"provider": "openai_compatible", "base_url": None,
+                    "model": "gpt-4o-mini", "api_key_encrypted": "bogus-ciphertext"}
+        with patch("agents.graph_orchestrator.build_graph", return_value=MagicMock()), \
+             patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None), \
+             patch("utils.db.llm_config_get", return_value=fake_row), \
+             patch("utils.crypto.decrypt", side_effect=ValueError("Stored API key could not be decrypted")):
+            orch = GraphOrchestrator(user_id=1)  # must not raise
+        assert orch._provider_config is None
+
+    def test_valid_byo_config_resolves_normally(self):
+        fake_row = {"provider": "openai_compatible", "base_url": "https://api.example.com",
+                    "model": "gpt-4o-mini", "api_key_encrypted": "ciphertext"}
+        with patch("agents.graph_orchestrator.build_graph", return_value=MagicMock()), \
+             patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None), \
+             patch("utils.db.llm_config_get", return_value=fake_row), \
+             patch("utils.crypto.decrypt", return_value="sk-real-key"):
+            orch = GraphOrchestrator(user_id=1)
+        assert orch._provider_config == {
+            "provider": "openai_compatible", "base_url": "https://api.example.com",
+            "model": "gpt-4o-mini", "api_key": "sk-real-key",
+        }
+
+
 class TestGraphOrchestratorMisc:
     def test_generate_suggestions_parses_llm_json_array(self):
         orch = _build_orchestrator(MagicMock())

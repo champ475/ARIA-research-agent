@@ -1,6 +1,7 @@
 import json
 
 from graph.nodes.query_analyzer import build_query_analyzer_node
+from unittest.mock import patch
 
 
 class _StubClient:
@@ -54,6 +55,30 @@ class TestQueryAnalyzer:
         result = node({"query": "RELIANCE outlook"})
         assert len(result["research_journal"]) == 1
         assert result["research_journal"][0]["node"] == "QueryAnalyzer"
+
+
+class TestQueryAnalyzerEntityFiltering:
+    """Bug fix: raw extract_all_entities() output is gated through
+    filter_valid_entities() before it reaches the prompt / GraphState —
+    garbage tokens must never survive to become Planner tasks."""
+
+    def test_garbage_tokens_are_filtered_out(self):
+        stub = _StubClient(json.dumps({
+            "intent": "report", "secondary_intents": ["alert"],
+            "objective": "x", "complexity": "complex",
+        }))
+        node = build_query_analyzer_node(stub)
+        with patch("graph.nodes.query_analyzer.filter_valid_entities", return_value=["INFY"]) as mock_filter:
+            result = node({"query": "Give me an IC report for INFY and also set an alert if it drops below 1400"})
+        mock_filter.assert_called_once()
+        assert result["entities"] == ["INFY"]
+
+    def test_real_multi_entity_query_still_resolves_both(self):
+        stub = _StubClient(json.dumps({"intent": "equity", "objective": "x", "complexity": "moderate"}))
+        node = build_query_analyzer_node(stub)
+        result = node({"query": "should I buy TCS or HDFC bank"})
+        assert "TCS" in result["entities"]
+        assert "HDFCBANK" in result["entities"]
 
 
 class TestQueryAnalyzerMultiIntent:

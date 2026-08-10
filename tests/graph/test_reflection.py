@@ -1,5 +1,6 @@
 import json
 
+from agents.llm_client import LLMProvidersExhausted
 from graph.nodes.reflection import build_reflection_node
 
 
@@ -11,6 +12,14 @@ class _StubClient:
     def ask(self, prompt, **kwargs):
         self.last_call_kwargs = kwargs
         return self._response
+
+
+class _ExhaustedClient:
+    """Raises LLMProvidersExhausted on every ask() call — simulates every
+    configured LLM provider being unavailable."""
+
+    def ask(self, prompt, **kwargs):
+        raise LLMProvidersExhausted(Exception("all providers down"), is_byo=False)
 
 
 def _base_state(**overrides):
@@ -117,6 +126,38 @@ class TestReflectionLoopBudget:
         }]
         result = node(_base_state(tasks=existing))
         assert result["tasks"] == []
+
+
+class TestReflectionProviderExhaustion:
+    """Bug fix: a total LLM-provider failure must never be conflated with
+    "checked, found nothing" — the node must return without raising, and
+    force the loop to terminate rather than route back to Reflection."""
+
+    def test_returns_without_raising(self):
+        node = build_reflection_node(_ExhaustedClient())
+        result = node(_base_state())  # must not raise
+        assert result["missing_info"] == []
+
+    def test_forces_loop_count_to_max_loops(self):
+        node = build_reflection_node(_ExhaustedClient())
+        result = node(_base_state(loop_count=0, max_loops=2))
+        # loop_count's reducer is Annotated[int, operator.add] — the raw
+        # delta returned here, added to the current count, must land at
+        # or above max_loops so the graph's loop_count < max_loops check
+        # exits terminally.
+        assert result["loop_count"] == 2
+
+    def test_no_new_tasks_queued(self):
+        node = build_reflection_node(_ExhaustedClient())
+        result = node(_base_state())
+        assert "tasks" not in result
+
+    def test_writes_journal_entry_noting_exhaustion(self):
+        node = build_reflection_node(_ExhaustedClient())
+        result = node(_base_state())
+        entry = result["research_journal"][0]
+        assert entry["node"] == "Reflection"
+        assert "exhausted" in entry["decision"].lower()
 
 
 class TestReflectionRouting:

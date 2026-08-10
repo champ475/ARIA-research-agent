@@ -60,15 +60,19 @@ way), and needs no cross-process counter coordination.
 """
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 
 from langgraph.types import Command
 
 from agents.conversation_memory import ConversationMemory
+from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS
 from graph.checkpointer import get_postgres_checkpointer
 from graph.graph import build_graph
+
+log = logging.getLogger(__name__)
 
 _APPROVE_WORDS = {"y", "yes", "approve", "approved", "proceed", "confirm", "ok", "okay"}
 _DEFAULT_MAX_LOOPS = 2
@@ -173,15 +177,24 @@ class GraphOrchestrator:
     def _resolve_byo_config(self) -> dict | None:
         """Returns the decrypted BYO-key config if this user has one
         configured, else None (meaning: use the app's own trial Groq/Gemini
-        keys, agents/llm_client.py's existing path)."""
+        keys, agents/llm_client.py's existing path). Falls back to the
+        trial path (rather than raising out of __init__) if decrypt() fails
+        — e.g. SECRET_KEY was unset/changed since the key was saved — same
+        graceful-degrade philosophy as the rest of this constructor."""
         from utils.db import llm_config_get
         row = llm_config_get(self._user_id)
         if row is None:
             return None
         from utils.crypto import decrypt
+        try:
+            api_key = decrypt(row["api_key_encrypted"])
+        except ValueError as e:
+            log.error(f"[GraphOrchestrator] BYO key decrypt failed for user {self._user_id}, "
+                      f"falling back to trial path: {e}")
+            return None
         return {
             "provider": row["provider"], "base_url": row["base_url"],
-            "model": row["model"], "api_key": decrypt(row["api_key_encrypted"]),
+            "model": row["model"], "api_key": api_key,
         }
 
     def _trial_quota_exceeded(self) -> bool:
@@ -242,80 +255,94 @@ class GraphOrchestrator:
         deferred its LLM call to `pending_synthesis_prompt` — see that
         module's `_is_streamable`), or exactly once for every other domain,
         matching the deleted legacy Orchestrator's "only EquityAgent
-        streams" behavior."""
-        if self._awaiting_confirmation:
-            # Must resume on the SAME thread the interrupt paused on — the
-            # config resolved for the turn that raised this interrupt is
-            # still current in self._provider_config, no need to re-resolve.
-            config = {"configurable": {"thread_id": self._thread_id}}
-            approved = message.strip().lower() in _APPROVE_WORDS
-            result = self._graph.invoke(Command(resume=approved), config=config)
-        else:
-            if self._trial_quota_exceeded():
+        streams" behavior.
+
+        LLMProvidersExhausted (agents/llm_client.py) can surface from any
+        node's client.ask() inside self._graph.invoke() (query_analyzer.py,
+        planner.py, communication_layer.py — none of them catch it locally,
+        by design, since this is the one place that knows how to format a
+        user-facing message either way) or from the deferred synthesis
+        stream below. Caught here as a single top-level safety net rather
+        than duplicated in every caller."""
+        try:
+            if self._awaiting_confirmation:
+                # Must resume on the SAME thread the interrupt paused on — the
+                # config resolved for the turn that raised this interrupt is
+                # still current in self._provider_config, no need to re-resolve.
+                config = {"configurable": {"thread_id": self._thread_id}}
+                approved = message.strip().lower() in _APPROVE_WORDS
+                result = self._graph.invoke(Command(resume=approved), config=config)
+            else:
+                if self._trial_quota_exceeded():
+                    self._memory.add_user(message)
+                    self._memory.add_assistant(_TRIAL_EXHAUSTED_MESSAGE)
+                    yield _TRIAL_EXHAUSTED_MESSAGE, None, None, None, None, "equity"
+                    return
+
+                # Fresh top-level turn: mint a new thread_id so this run starts
+                # with no prior GraphState to (incorrectly) merge against —
+                # see module docstring's "Thread-id scoping" note.
+                self._turn += 1
+                self._thread_id = self._new_thread_id()
+                config = {"configurable": {"thread_id": self._thread_id}}
                 self._memory.add_user(message)
-                self._memory.add_assistant(_TRIAL_EXHAUSTED_MESSAGE)
-                yield _TRIAL_EXHAUSTED_MESSAGE, None, None, None, None, "equity"
+                result = self._graph.invoke(
+                    {
+                        "query": message, "max_loops": _DEFAULT_MAX_LOOPS, "user_id": self._user_id,
+                        "history": self._memory.context(), "llm_config": self._provider_config,
+                    },
+                    config=config,
+                )
+
+            if result.get("__interrupt__"):
+                self._awaiting_confirmation = True
+                prompt = result["__interrupt__"][0].value.get("message", "Proceed?")
+                reply = f"{prompt} (reply yes/no)"
+                self._memory.add_assistant(reply)
+                yield reply, None, None, None, None, "equity"
                 return
 
-            # Fresh top-level turn: mint a new thread_id so this run starts
-            # with no prior GraphState to (incorrectly) merge against —
-            # see module docstring's "Thread-id scoping" note.
-            self._turn += 1
-            self._thread_id = self._new_thread_id()
-            config = {"configurable": {"thread_id": self._thread_id}}
-            self._memory.add_user(message)
-            result = self._graph.invoke(
-                {
-                    "query": message, "max_loops": _DEFAULT_MAX_LOOPS, "user_id": self._user_id,
-                    "history": self._memory.context(), "llm_config": self._provider_config,
-                },
-                config=config,
-            )
+            self._awaiting_confirmation = False
+            chart = result.get("chart_html")
+            pdf_path = result.get("pdf_path")
+            md_path = result.get("md_path")
+            csv_path = result.get("csv_path")
+            # tab_used: primary intent, plus any secondary ones QueryAnalyzer
+            # detected (Phase 7.4 multi-intent support), joined with "+" — still
+            # a single string, so app.py's existing (text, chart, pdf, md, csv,
+            # tab_used) 6-tuple contract needs no structural change. app.py's
+            # _TAB_LABELS.get(tab_used, tab_used) falls back to the raw joined
+            # string for a combo it doesn't have a pretty label for yet.
+            intent = result.get("intent") or "equity"
+            secondary = result.get("secondary_intents") or []
+            tab_used = "+".join([intent] + [s for s in secondary if s != intent])
 
-        if result.get("__interrupt__"):
-            self._awaiting_confirmation = True
-            prompt = result["__interrupt__"][0].value.get("message", "Proceed?")
-            reply = f"{prompt} (reply yes/no)"
-            self._memory.add_assistant(reply)
-            yield reply, None, None, None, None, "equity"
-            return
+            pending_prompt = result.get("pending_synthesis_prompt")
+            if pending_prompt:
+                from agents.llm_client import LLMClient
+                from graph.nodes.communication_layer import _SYSTEM as _COMM_SYSTEM
+                from tools.analysis.fundamental import cited_footnotes
+                synthesis_client = LLMClient(system_prompt=_COMM_SYSTEM, provider_config=self._provider_config)
+                chunks: list[str] = []
+                for delta in synthesis_client.stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
+                    chunks.append(delta)
+                    yield "".join(chunks), chart, None, None, None, tab_used
+                text = "".join(chunks)
+                fundamental_payload = result.get("pending_fundamental_payload")
+                if fundamental_payload:
+                    text = text + cited_footnotes(text, fundamental_payload)
+                self._memory.add_assistant(text)
+                yield text, chart, pdf_path, md_path, csv_path, tab_used
+                return
 
-        self._awaiting_confirmation = False
-        chart = result.get("chart_html")
-        pdf_path = result.get("pdf_path")
-        md_path = result.get("md_path")
-        csv_path = result.get("csv_path")
-        # tab_used: primary intent, plus any secondary ones QueryAnalyzer
-        # detected (Phase 7.4 multi-intent support), joined with "+" — still
-        # a single string, so app.py's existing (text, chart, pdf, md, csv,
-        # tab_used) 6-tuple contract needs no structural change. app.py's
-        # _TAB_LABELS.get(tab_used, tab_used) falls back to the raw joined
-        # string for a combo it doesn't have a pretty label for yet.
-        intent = result.get("intent") or "equity"
-        secondary = result.get("secondary_intents") or []
-        tab_used = "+".join([intent] + [s for s in secondary if s != intent])
-
-        pending_prompt = result.get("pending_synthesis_prompt")
-        if pending_prompt:
-            from agents.llm_client import LLMClient
-            from graph.nodes.communication_layer import _SYSTEM as _COMM_SYSTEM
-            from tools.analysis.fundamental import cited_footnotes
-            synthesis_client = LLMClient(system_prompt=_COMM_SYSTEM, provider_config=self._provider_config)
-            chunks: list[str] = []
-            for delta in synthesis_client.stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
-                chunks.append(delta)
-                yield "".join(chunks), chart, None, None, None, tab_used
-            text = "".join(chunks)
-            fundamental_payload = result.get("pending_fundamental_payload")
-            if fundamental_payload:
-                text = text + cited_footnotes(text, fundamental_payload)
+            text = result.get("final_report", "") or ""
             self._memory.add_assistant(text)
             yield text, chart, pdf_path, md_path, csv_path, tab_used
-            return
-
-        text = result.get("final_report", "") or ""
-        self._memory.add_assistant(text)
-        yield text, chart, pdf_path, md_path, csv_path, tab_used
+        except LLMProvidersExhausted as e:
+            from agents.llm_client import format_exhausted_message
+            text = format_exhausted_message(e)
+            self._memory.add_assistant(text)
+            yield text, None, None, None, None, "equity"
 
     def generate_suggestions(self, last_response: str, last_query: str) -> list[str]:
         """Cheap follow-up-chip generator — same contract/prompt shape the

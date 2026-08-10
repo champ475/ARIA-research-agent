@@ -15,6 +15,15 @@ class _StubClient:
         return self._response
 
 
+class _ExhaustedClient:
+    """Raises LLMProvidersExhausted on every ask() call — simulates every
+    configured LLM provider being unavailable."""
+
+    def ask(self, prompt, **kwargs):
+        from agents.llm_client import LLMProvidersExhausted
+        raise LLMProvidersExhausted(Exception("all providers down"), is_byo=False)
+
+
 def _build(qa_response: dict, planner_response: dict = None, reflection_response: dict = None, verification_response: dict = None):
     qa = _StubClient(json.dumps(qa_response))
     planner = _StubClient(json.dumps(planner_response or {}))
@@ -261,7 +270,7 @@ class TestHumanInTheLoopGates:
         config = {"configurable": {"thread_id": "rc-test-1"}}
         with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}):
             paused = graph.invoke(
-                {"query": "RELIANCE TCS INFY HDFC WIPRO ITC compare", "max_loops": 2}, config=config
+                {"query": "RELIANCE TCS INFY HDFCBANK WIPRO ITC compare", "max_loops": 2}, config=config
             )
         assert "__interrupt__" in paused
         assert paused["__interrupt__"][0].value["type"] == "research_confirmation"
@@ -272,7 +281,7 @@ class TestHumanInTheLoopGates:
         with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}), \
              patch("tools.data.evidence_cache.evidence_cache_get", return_value=None), \
              patch("tools.data.evidence_cache.evidence_cache_put", return_value=None):
-            graph.invoke({"query": "RELIANCE TCS INFY HDFC WIPRO ITC compare", "max_loops": 2}, config=config)
+            graph.invoke({"query": "RELIANCE TCS INFY HDFCBANK WIPRO ITC compare", "max_loops": 2}, config=config)
             resumed = graph.invoke(Command(resume=True), config=config)
         # intent="equity" defers the LLM call to GraphOrchestrator (see other
         # tests in this module) — the stub's canned text is never called.
@@ -283,11 +292,44 @@ class TestHumanInTheLoopGates:
         graph = self._build_with_many_tasks()
         config = {"configurable": {"thread_id": "rc-test-3"}}
         with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}):
-            graph.invoke({"query": "RELIANCE TCS INFY HDFC WIPRO ITC compare", "max_loops": 2}, config=config)
+            graph.invoke({"query": "RELIANCE TCS INFY HDFCBANK WIPRO ITC compare", "max_loops": 2}, config=config)
             resumed = graph.invoke(Command(resume=False), config=config)
         assert "declined" in resumed["final_report"]
         assert all(t["status"] == "skipped" for t in resumed["tasks"])
         assert "__interrupt__" not in resumed  # run completed, didn't pause again
+
+
+class TestProviderExhaustionTermination:
+    """Bug fix: when every LLM provider is unavailable, Verification's
+    llm_judge stage must reach a genuinely terminal state (a normal
+    verification_gate pause, same as any other unresolved-issue case) in
+    ONE pass — not loop back to Reflection repeatedly retrying a call that
+    cannot succeed."""
+
+    def test_reaches_verification_gate_without_looping_back_to_reflection(self):
+        qa = _StubClient(json.dumps({
+            "intent": "equity", "objective": "analyse RELIANCE", "complexity": "moderate",
+        }))
+        planner = _StubClient(json.dumps({"tools": ["fetch_info"]}))
+        reflection = _StubClient(json.dumps({"missing": []}))  # stage 1/2 clean, no gaps
+        verification = _ExhaustedClient()  # every provider down at the llm_judge stage
+        communication = _StubClient("Stub final report text.")
+        graph = build_graph(
+            query_analyzer_client=qa, planner_client=planner,
+            reflection_client=reflection, verification_client=verification,
+            communication_client=communication, checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "exhaustion-test-1"}}
+        with patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}), \
+             patch("tools.data.evidence_cache.evidence_cache_get", return_value=None), \
+             patch("tools.data.evidence_cache.evidence_cache_put", return_value=None):
+            paused = graph.invoke({"query": "analyse RELIANCE", "max_loops": 2}, config=config)
+
+        assert "__interrupt__" in paused
+        assert paused["__interrupt__"][0].value["type"] == "verification_gate"
+        node_order = [entry["node"] for entry in paused["research_journal"]]
+        assert node_order.count("Verification") == 1  # never looped back to Reflection
+        assert node_order.count("Reflection") == 1    # the initial pass only
 
 
 class TestReportDomainEndToEnd:

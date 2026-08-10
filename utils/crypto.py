@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import os
 
 from cryptography.fernet import Fernet, InvalidToken
+
+import config
 
 _fernet: Fernet | None = None
 
@@ -19,7 +20,7 @@ _fernet: Fernet | None = None
 def _get_fernet() -> Fernet:
     global _fernet
     if _fernet is None:
-        secret = os.getenv("SECRET_KEY", "")
+        secret = config.SECRET_KEY
         if not secret:
             raise ValueError(
                 "No SECRET_KEY found.\n"

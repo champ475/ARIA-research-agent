@@ -892,7 +892,16 @@ def _build_settings_tab(user_state: gr.State):
             return "⚠️ Model and API key are both required.", model, base_url or "", api_key
         from utils.crypto import encrypt
         from utils.db import llm_config_set
-        llm_config_set(user_id, "openai_compatible", model, encrypt(api_key), base_url=base_url)
+        try:
+            encrypted = encrypt(api_key)
+        except ValueError as e:
+            log.error(f"[Settings] encrypt() failed — SECRET_KEY misconfigured: {e}")
+            return (
+                "⚠️ Server misconfiguration: keys can't be saved securely right now. "
+                "Please contact the site operator.",
+                model, base_url or "", api_key,
+            )
+        llm_config_set(user_id, "openai_compatible", model, encrypted, base_url=base_url)
         # Evict the cached orchestrator so the new key applies on this
         # user's very next message instead of waiting for a restart/reset —
         # GraphOrchestrator resolves its BYO config once per instance
@@ -1104,6 +1113,11 @@ if __name__ == "__main__":
     print("  Primary  : Groq (Llama 3.3 70B) — 14,400 req/day per key")
     print("  Fallback : Google Gemini 2.0 Flash")
     print("=" * 62)
+    from config import SECRET_KEY
+    if not SECRET_KEY:
+        print("  ⚠️  SECRET_KEY is not set — BYO LLM key encryption (Settings tab)")
+        print("      will fail. Add SECRET_KEY=<any random string> to .env.")
+        print("=" * 62)
 
     os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,0.0.0.0")
     os.environ.setdefault("no_proxy", "localhost,127.0.0.1,0.0.0.0")

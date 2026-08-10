@@ -14,7 +14,9 @@ pip install -r requirements.txt
 
 # Configure API keys (copy and edit)
 cp .env.example .env
-# Set GROQ_API_KEY_1, GEMINI_API_KEY (required); GROQ_API_KEY_2/3 optional for higher rate limits
+# Set GROQ_API_KEY_1, GEMINI_API_KEY, SECRET_KEY (required); GROQ_API_KEY_2/3 optional for higher rate limits
+# SECRET_KEY: any random string (e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`) —
+# encrypts BYO LLM keys (Settings tab) before they're stored; without it, saving a key fails.
 
 # Run the app
 python app.py

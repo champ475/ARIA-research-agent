@@ -1,6 +1,7 @@
 import json
 
-from graph.nodes.planner import build_planner_node
+from graph.nodes.planner import _build_tasks, build_planner_node
+from graph.tool_catalogue import NO_ENTITY_SENTINEL
 
 
 class _StubClient:
@@ -11,6 +12,26 @@ class _StubClient:
     def ask(self, prompt, **kwargs):
         self.last_call_kwargs = kwargs
         return self._response
+
+
+class TestBuildTasksEntitySentinel:
+    """Locks in the interaction the alert_create entity-validation fix
+    depends on: no entities at all (e.g. QueryAnalyzer's
+    filter_valid_entities found nothing valid) still produces exactly one
+    task per tool, tagged NO_ENTITY_SENTINEL — which alert_create's guard
+    (graph/tool_catalogue.py) then refuses to write to the DB, rather than
+    Planner silently skipping the tool."""
+
+    def test_no_entities_produces_sentinel_tagged_task(self):
+        tasks = _build_tasks(["alert_create"], [])
+        assert len(tasks) == 1
+        assert tasks[0]["entity"] == NO_ENTITY_SENTINEL
+        assert tasks[0]["id"] == f"alert_create:{NO_ENTITY_SENTINEL}"
+
+    def test_real_entity_produces_one_task_per_entity(self):
+        tasks = _build_tasks(["alert_create"], ["INFY"])
+        assert len(tasks) == 1
+        assert tasks[0]["entity"] == "INFY"
 
 
 class TestPlannerTrivialPath:

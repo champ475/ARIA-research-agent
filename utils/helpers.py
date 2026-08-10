@@ -427,6 +427,32 @@ def validate_ticker(ticker: str | None) -> bool:
     return is_known_ticker(ticker) or ticker_has_market_data(ticker)
 
 
+def filter_valid_entities(entities: list[str], allow_network_fallback: bool = True) -> list[str]:
+    """
+    Gates extract_all_entities()'s raw output before it is trusted for
+    prompt-building, per-entity task fan-out (graph/nodes/planner.py),
+    alert creation (graph/tool_catalogue.py::_alert_create), or filename
+    derivation (graph/nodes/communication_layer.py) — extract_all_entities()
+    itself accepts any capitalized 2-15 char token not in the (necessarily
+    incomplete, see STOP_WORDS above) blocklist, which let ordinary English
+    words in queries like planning prompts get treated as ticker candidates.
+
+    Curated-universe membership (is_known_ticker, no network) is checked
+    first — if that already found something, that's the whole answer for
+    the common case. Only when it finds NOTHING does this spend a single
+    bounded network check (validate_ticker on the first remaining raw
+    candidate), so a real ticker not yet in STOCK_UNIVERSE isn't silently
+    dropped (extract_all_entities()'s own documented tradeoff) while still
+    bounding the network cost to at most one lookup per call — not one per
+    raw candidate, which is the exact wasted-API-call bug this closes.
+    """
+    curated = [e for e in entities if is_known_ticker(e)]
+    if curated or not entities or not allow_network_fallback:
+        return curated
+    candidate = entities[0]
+    return [candidate] if validate_ticker(candidate) else []
+
+
 def llm_resolve_query(query: str, client) -> dict:
     """
     LLM fallback for ticker + intent, used ONLY when the deterministic pass in

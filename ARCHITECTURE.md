@@ -16,6 +16,83 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-08-10 — LLMClient's exhaustion contract changed from a string return to a raised exception
+
+**Problem.** Live E2E testing found `LLMClient.ask()`/`.stream()` returning a
+canned "all providers rate-limited" *string* on total failure — indistinguishable,
+at the type level, from a genuine LLM response. Reflection/Verification's JSON
+parsers treated a failed `json.loads()` on that string as "0 issues found"
+(`except: return []`), so a provider outage silently looked like a clean pass
+instead of "couldn't check." Compounding it: the retry loop treated a Groq 413
+("Request too large" — the prompt itself was oversized, a deterministic
+failure) the same as a transient 429, retrying the identical oversized prompt
+`MAX_RETRIES+1` times against each provider before falling through to a
+configured Gemini key that reported `limit: 0` on every quota metric (never
+provisioned, not "exhausted for today") — so the fallback was attempted every
+single call despite being structurally incapable of succeeding. Root cause of
+the oversized prompts: Reflection/Verification serialize `evidence_summary`
+into the prompt with no size cap, and a single evidence entry (e.g.
+`fetch_info`'s 100+ yfinance fields) could alone push the prompt past Groq
+free tier's 6,000 TPM cap. Confirmed live: a single turn could burn 3×2
+doomed attempts per node, repeated once per self-correction loop iteration
+(up to `max_loops`), multiple minutes of pure retry latency for zero benefit.
+
+**Alternatives considered.** Keep the string-return contract and just fix the
+JSON-parse-failure ambiguity locally in Reflection/Verification (e.g. a
+sentinel string) — rejected, since "an LLM response that happens to look like
+an error" is exactly the class of bug a string contract can never fully rule
+out, and every future caller would have to remember the convention. Cap only
+the retry *count* without classifying error types — rejected, since a 413 on
+an already-at-budget prompt is deterministic; retrying it (even fewer times)
+still wastes calls a single fast failure avoids entirely. Drop Gemini as a
+fallback entirely — rejected, it's still useful when it isn't the specific
+zero-quota key configured in this environment; the fix instead makes a
+zero-quota state self-detecting.
+
+**Final decision.** `agents/llm_client.py`: (1) `_classify_error()` distinguishes
+`too_large` (413/context-length wording) from `rate_limited` (429/quota
+wording) from `zero_quota` (a "limit: 0" marker) from `other`. (2) `too_large`
+never sleeps and is never retried against the same provider again within that
+call — if every configured provider has already rejected the exact prompt,
+`_call()` stops immediately instead of exhausting `MAX_RETRIES`. (3)
+`zero_quota` marks that provider unavailable in a new module-level
+`_ProviderHealthCache` (TTL `config.PROVIDER_ZERO_QUOTA_TTL_SECONDS`, 1 hour)
+that subsequent calls check before even attempting the network round-trip.
+(4) `LLMClient.ask()`/`.stream()` now raise `LLMProvidersExhausted` on total
+failure instead of returning/yielding a string; `format_exhausted_message()`
+is the free-function formatter for whichever caller needs to show the user
+something. (5) `graph/nodes/reflection.py`/`verification.py` catch it locally
+and force `loop_count` to `max_loops` (the field's reducer is
+`Annotated[int, operator.add]`) so the self-correction loop exits terminally
+instead of silently treating exhaustion as "all clear"; every other caller
+(`planner.py`, `query_analyzer.py`, `communication_layer.py`) lets it
+propagate to one top-level catch in `agents/graph_orchestrator.py::process_stream`.
+(6) New `graph/nodes/evidence_summarizer.py::cap_evidence_for_prompt()` bounds
+the evidence payload (`config.EVIDENCE_PROMPT_CHAR_BUDGET`, ~1,500 tokens)
+before Reflection/Verification embed it in a prompt, addressing the root
+cause rather than just its symptom.
+
+**Trade-offs.** Every direct caller of `LLMClient.ask()`/`.stream()` outside
+Reflection/Verification now relies on the top-level `process_stream()` catch
+rather than handling exhaustion locally — correct for this app's one
+orchestration entry point, but a second caller of `LLMClient` outside
+`GraphOrchestrator` would need its own catch. The zero-quota TTL is a
+heuristic (1 hour): a key that's fixed sooner stays skipped until the TTL
+lapses, and the "limit: 0" substring match is best-effort against however the
+SDK stringifies its exception, biased toward false negatives (worst case:
+back to today's per-call retry) over false positives (skipping a call that
+might have worked).
+
+**Future improvements.** Respect Gemini's `retryDelay` field from a genuine
+(non-zero-quota) 429 instead of the current fixed exponential backoff — not
+implemented here since the zero-quota cache already eliminates the confirmed
+wasted-call case, and parsing `retryDelay` means committing to the exact
+`google-genai` SDK error shape. A tokenizer-based (rather than 4-chars-per-token
+heuristic) budget for `EVIDENCE_PROMPT_CHAR_BUDGET` would size the cap more
+precisely per model.
+
+---
+
 ## 2026-08-08 — Auth rate limiting moved from in-memory to Postgres (supersedes the "In-memory sliding-window throttle" entry below)
 
 **Problem.** The entry below explicitly reasoned that an in-memory dict was

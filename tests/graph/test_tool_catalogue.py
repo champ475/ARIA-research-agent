@@ -157,6 +157,29 @@ class TestAlertToolAdapters:
         assert get_tool("alert_pause").depends_on == ("alert_list",)
         assert get_tool("alert_resume").depends_on == ("alert_list",)
 
+    def test_alert_create_refuses_no_entity_sentinel(self):
+        """Regression test for the confirmed production bug: an unfiltered
+        garbage entity ("AN"/"SET"/"ALSO") reaching this tool wrote a real
+        alert row with a real threshold. NO_ENTITY_SENTINEL must never
+        reach db_alert_add."""
+        from graph.tool_catalogue import NO_ENTITY_SENTINEL
+        with patch("graph.tool_catalogue.db_alert_add") as mock_add:
+            result = get_tool("alert_create").fn(
+                NO_ENTITY_SENTINEL, {"_query": "set an alert if it drops below 1400", "_user_id": 1},
+            )
+        mock_add.assert_not_called()
+        assert result == {"action": "create", "symbol": NO_ENTITY_SENTINEL, "result": "invalid_symbol"}
+
+    def test_alert_create_still_writes_for_a_real_entity(self):
+        with patch("graph.tool_catalogue.db_alert_add", return_value=99) as mock_add:
+            result = get_tool("alert_create").fn(
+                "INFY", {"_query": "alert me if INFY drops below 1400", "_user_id": 1},
+            )
+        mock_add.assert_called_once()
+        assert result["symbol"] == "INFY"
+        assert result["result"] == "created"
+        assert result["alert_id"] == 99
+
 
 class TestScreenerToolAdapters:
     def test_screener_parse_query_reads_query_from_context(self):

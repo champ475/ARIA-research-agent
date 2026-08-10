@@ -15,17 +15,17 @@ branches and by GraphOrchestrator's tab_used label). This field only exists
 so those two consumers know a second domain was named, not to change what
 tools Planner considers.
 
-Known gap (pre-existing, not introduced by any particular phase — logged
-here for follow-up, not fixed): `extract_all_entities()` runs unconditionally
-on every message regardless of domain, with no `validate_ticker()` filter
-before a candidate becomes a Planner task's entity. For domains with
-free-text profile-style input (planning intake: "I'm 30, have 10 lakhs, 15
-year horizon...") this treats ordinary capitalized English words as
-candidate tickers and dispatches real yfinance lookups for each one —
-wasteful (API cost, rate-limit exposure) though not corrupting for planning
-specifically, since `_handle_planning` (communication_layer.py) bypasses
-evidence/conclusions entirely. Worth a `validate_ticker()` pass over
-`entities` here before they reach `_build_tasks()` in planner.py.
+Entity validation: `extract_all_entities()`'s raw output is gated through
+`filter_valid_entities()` (utils/helpers.py) before it's trusted for
+anything — the previous behavior (any capitalized 2-15 char token not in
+the necessarily-incomplete STOP_WORDS blocklist became a candidate ticker)
+let ordinary English words in free-text queries (planning intake, mutual
+fund names like "HDFC Flexicap") reach Planner's per-entity task fan-out,
+`tool_catalogue.py::_alert_create`'s DB write, and
+`communication_layer.py`'s filename derivation — confirmed in production to
+both waste yfinance calls on non-tickers and write garbage alert rows for
+words like "AN"/"SET"/"ALSO". Filtering happens once, here, since every
+downstream consumer reads `entities` from `GraphState`.
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ from agents.llm_client import LLMClient
 from config import GROQ_MODEL_FAST, TOKENS_FAST
 from graph.journal import log_decision
 from graph.state import GraphState
-from utils.helpers import extract_all_entities, validate_ticker
+from utils.helpers import extract_all_entities, filter_valid_entities, validate_ticker
 
 log = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ def build_query_analyzer_node(
     def query_analyzer(state: GraphState) -> dict:
         query = state["query"]
         history = state.get("history", [])
-        entities = extract_all_entities(query) or _recent_entity(history)
+        entities = filter_valid_entities(extract_all_entities(query)) or _recent_entity(history)
         raw = client.ask(
             _build_prompt(query, entities, history),
             model=GROQ_MODEL_FAST,

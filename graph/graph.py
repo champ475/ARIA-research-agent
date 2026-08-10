@@ -109,6 +109,14 @@ def build_graph(
     )
 
     def _route_after_verification(state: GraphState) -> str:
+        # loop_count < max_loops also does double duty as the exit for total
+        # LLM-provider exhaustion: reflection.py/verification.py's
+        # LLMProvidersExhausted handlers both return loop_count=max_loops as
+        # their delta (loop_count's reducer is Annotated[int, operator.add],
+        # graph/state.py) instead of a normal +1, which guarantees the new
+        # total is >= max_loops regardless of the count going in — so a
+        # provider outage routes straight to VerificationGate here, same as
+        # a genuinely exhausted retry budget, rather than looping forever.
         issues = state.get("verification_issues") or []
         loop_count = state.get("loop_count", 0)
         max_loops = state.get("max_loops", 2)

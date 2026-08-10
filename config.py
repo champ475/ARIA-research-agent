@@ -29,12 +29,32 @@ GEMINI_MODEL     = "gemini-2.0-flash"
 PREFERRED_PROVIDER = os.getenv("PREFERRED_PROVIDER", "groq").lower()
 
 # ── Token budgets (tune to stay within daily limits) ─────────────────────────
+# TOKENS_* below all cap OUTPUT tokens only (max_tokens/max_output_tokens on
+# the provider call) — none of them bound the size of the PROMPT itself.
 TOKENS_SYNTHESIS  = 2000   # full report synthesis
 TOKENS_COMPLEX    = 3000   # multi-part questions / comparisons — need more room to cover every sub-ask
 TOKENS_AGENT      = 800    # sub-agent calls
 TOKENS_FAST       = 200    # suggestions, tiny calls
 LLM_TEMPERATURE   = 0.3
 MAX_RETRIES       = 2      # per provider before fallback
+
+# ── Prompt INPUT budget (contrast with TOKENS_* above, which cap OUTPUT) ──────
+# Bounds graph/nodes/evidence_summarizer.py::cap_evidence_for_prompt(), used
+# by Reflection/Verification before embedding evidence_summary in a prompt.
+# Confirmed in production: an uncapped evidence_summary reached 10,000-11,000
+# tokens against Groq free tier's 6,000 TPM cap for llama-3.1-8b-instant in
+# ONE call. Rough 4-chars-per-token heuristic (no tokenizer dependency in
+# this repo) — 6,000 chars ≈ 1,500 tokens, leaving headroom under the 6,000
+# TPM cap after the system prompt, query/objective text, and TOKENS_AGENT's
+# 800 output tokens, with margin for burst concurrency across users.
+EVIDENCE_PROMPT_CHAR_BUDGET = 6000
+
+# How long a provider stays marked unavailable after reporting a
+# STRUCTURALLY zero quota (e.g. Gemini's "limit: 0" — never provisioned,
+# not "exhausted for today") — agents/llm_client.py's _ProviderHealthCache.
+# Long enough to actually stop the wasted retry cost, short enough to
+# auto-recover without a redeploy if the operator fixes the quota.
+PROVIDER_ZERO_QUOTA_TTL_SECONDS = 3600
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 NSE_SUFFIX  = ".NS"
@@ -43,6 +63,11 @@ DATA_DIR    = "data"
 
 # ── Database (Neon Postgres — shared by the app and the GH Actions alert checker) ─
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+# ── Crypto (encrypts user-supplied BYO LLM keys before Postgres storage,
+# ── utils/crypto.py — any string works, it's SHA-256-stretched into a
+# ── valid Fernet key) ──────────────────────────────────────────────────────────
+SECRET_KEY = os.getenv("SECRET_KEY", "")
 
 # ── Telegram (alert notifications — one shared bot, each user links their own
 # ── chat via the in-app "Connect Telegram" flow, utils/telegram_link.py) ─────
@@ -94,8 +119,13 @@ SECTOR_UNIVERSE = {
         "COFORGE","MPHASIS","OFSS","KPIT","TATAELXSI",
     ],
     "Financial Services": [
+        # NB: no bare "HDFC" — HDFC Ltd merged into HDFCBANK in 2023, and a
+        # stale standalone entry here let extract_all_entities() validate
+        # "HDFC" as a real ticker inside unrelated phrases like "HDFC
+        # Flexicap" (a mutual fund), misrouting mf-domain queries. The
+        # phrase "HDFC Bank" still resolves via TICKER_ALIASES above.
         "HDFCBANK","ICICIBANK","SBIN","KOTAKBANK","AXISBANK","INDUSINDBK",
-        "BAJFINANCE","BAJAJFINSV","HDFC","ICICIGI","HDFCLIFE","SBILIFE",
+        "BAJFINANCE","BAJAJFINSV","ICICIGI","HDFCLIFE","SBILIFE",
     ],
     "Energy": [
         "RELIANCE","ONGC","BPCL","IOC","GAIL","COALINDIA","NTPC",

@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 
+from agents.llm_client import LLMProvidersExhausted
 from graph.nodes.verification import build_verification_node
 
 
@@ -12,6 +13,14 @@ class _StubClient:
     def ask(self, prompt, **kwargs):
         self.call_count += 1
         return self._response
+
+
+class _ExhaustedClient:
+    """Raises LLMProvidersExhausted on every ask() call — simulates every
+    configured LLM provider being unavailable."""
+
+    def ask(self, prompt, **kwargs):
+        raise LLMProvidersExhausted(Exception("all providers down"), is_byo=False)
 
 
 def _evidence(**overrides):
@@ -158,6 +167,35 @@ class TestVerificationJournal:
         node = build_verification_node(stub)
         result = node({"evidence": [_evidence()], "tasks": [_task()]})
         assert result["research_journal"][0]["node"] == "Verification"
+
+
+class TestVerificationProviderExhaustion:
+    """Bug fix: a total LLM-provider failure at the llm_judge stage must
+    never look like "clean, all stages passed" — it returns a synthetic
+    issue explaining why, and forces the loop to terminate."""
+
+    def test_returns_without_raising_and_reports_synthetic_issue(self):
+        node = build_verification_node(_ExhaustedClient())
+        result = node({"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}})
+        assert len(result["verification_issues"]) == 1
+        assert result["verification_issues"][0]["stage"] == "llm_judge"
+        assert "unavailable" in result["verification_issues"][0]["claim"].lower()
+
+    def test_forces_loop_count_to_max_loops(self):
+        node = build_verification_node(_ExhaustedClient())
+        result = node({
+            "evidence": [_evidence()], "tasks": [_task()], "objective": "x",
+            "evidence_summary": {}, "loop_count": 0, "max_loops": 2,
+        })
+        assert result["loop_count"] == 2
+
+    def test_deterministic_and_semantic_stages_still_run_first(self):
+        # A stage-1 issue must still short-circuit before ever reaching the
+        # LLM judge — exhaustion handling only matters once stage 3 is hit.
+        node = build_verification_node(_ExhaustedClient())
+        broken = _evidence(citation_key="")
+        result = node({"evidence": [broken], "tasks": []})
+        assert result["verification_issues"][0]["stage"] == "deterministic"
 
 
 class TestVerificationLoopCount:

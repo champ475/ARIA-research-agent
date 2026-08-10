@@ -12,11 +12,15 @@ needs the full time series, just "there is price history and how much".
 """
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
 from graph.state import Evidence, GraphState
+
+_MAX_KEYS_PER_ENTRY = 40  # bounds one entry's own summary dict (e.g. get_info()'s 100+ fields)
 
 
 def _summarize_payload(payload) -> dict:
@@ -52,6 +56,58 @@ def _summarize(evidence: list[Evidence]) -> dict:
             "evidence_id": ev["id"],
         }
     return summary
+
+
+def _cap_entry_payload(summary_payload):
+    """Bounds a single evidence entry's own summary dict so one outsized
+    payload (e.g. get_info()'s 100+ yfinance fields) can't dominate the
+    prompt budget alone, regardless of how many entries there are."""
+    if isinstance(summary_payload, dict) and len(summary_payload) > _MAX_KEYS_PER_ENTRY:
+        capped = dict(list(summary_payload.items())[:_MAX_KEYS_PER_ENTRY])
+        capped["_truncated_keys"] = len(summary_payload) - _MAX_KEYS_PER_ENTRY
+        return capped
+    return summary_payload
+
+
+def cap_evidence_for_prompt(evidence_summary: dict, char_budget: int) -> dict:
+    """
+    Bounds the serialized size of evidence_summary before Reflection/
+    Verification embed it in an LLM prompt via json.dumps. Confirmed in
+    production: a single evidence_summary reached 10,000-11,000 tokens
+    against Groq free tier's 6,000 TPM cap in ONE call — no cap existed on
+    either a single entry's own payload size or on how many (entity,
+    evidence_type) entries accumulate across research loop iterations.
+
+    Two passes:
+    1. Per-entry cap (_cap_entry_payload) — bounds each entry's own
+       "summary" payload first, so one outsized entry can't dominate the
+       budget alone.
+    2. Budget pass — ranks entries by confidence descending, greedily
+       keeps whole entries (by their full serialized size) while they fit
+       under char_budget, skipping (not truncating) any that don't —
+       lower-confidence entries after a skip are still tried, so a
+       small low-confidence entry can fill space a large one couldn't.
+       An entry is never partially included; this never emits a
+       truncated/invalid JSON fragment.
+    """
+    flat: list[tuple[str, str, dict]] = []
+    for entity, by_type in evidence_summary.items():
+        for evidence_type, entry in by_type.items():
+            capped_entry = dict(entry)
+            capped_entry["summary"] = _cap_entry_payload(entry.get("summary"))
+            flat.append((entity, evidence_type, capped_entry))
+
+    flat.sort(key=lambda item: item[2].get("confidence", 0), reverse=True)
+
+    result: dict[str, dict] = {}
+    used = 0
+    for entity, evidence_type, entry in flat:
+        entry_size = len(json.dumps({evidence_type: entry}, default=str))
+        if used + entry_size > char_budget:
+            continue
+        result.setdefault(entity, {})[evidence_type] = entry
+        used += entry_size
+    return result
 
 
 def evidence_summarizer(state: GraphState) -> dict:
