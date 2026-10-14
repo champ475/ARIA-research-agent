@@ -139,6 +139,11 @@ class GraphState(TypedDict):
     # alert_create's condition extraction) use the SAME provider as everything
     # else this turn, not the app's shared trial keys behind a BYO user's back.
     entities: list[str]
+    # VAL-02: company mentions that didn't resolve to one listed symbol
+    # (Resolution.as_dict(): query/status/candidates/note) and notes such as
+    # "Zomato is now ETERNAL" — graph/entity_resolution.py.
+    entity_resolutions: list[dict]
+    entity_notes: list[str]
     intent: str
     secondary_intents: list[str]  # Phase 7.4: other domains this message ALSO names, if any
     objective: str

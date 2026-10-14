@@ -62,6 +62,7 @@ import pandas as pd
 
 from agents.llm_client import LLMClient
 from config import TOKENS_SYNTHESIS
+from graph.entity_resolution import blocking_resolutions, clarification_text
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
 from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
@@ -331,6 +332,21 @@ def build_communication_layer_node(
     client = client or LLMClient(_SYSTEM, provider_config)
 
     def communication_layer(state: GraphState) -> dict:
+        blocking = blocking_resolutions(state)
+        if blocking:
+            return {
+                "final_report": clarification_text(blocking),
+                "pending_synthesis_prompt": None,
+                "pending_fundamental_payload": None,
+                "chart_html": None,
+                "confidence_summary": {},
+                **log_decision(
+                    "CommunicationLayer",
+                    "asked which company",
+                    f"unresolved: {[u['query'] for u in blocking]}",
+                ),
+            }
+
         if state.get("intent") == "planning":
             return _handle_planning(client, state)
 

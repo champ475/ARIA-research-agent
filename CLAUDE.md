@@ -64,8 +64,8 @@ Central source of truth for: LLM token budgets (`TOKENS_SYNTHESIS=2000`, `TOKENS
 ### Persistence (`utils/db.py`)
 Postgres (Neon), via `psycopg2.pool.ThreadedConnectionPool`. Tables: `users`, `sessions`, `portfolio`, `watchlist`, `alerts`, `notifications`, `chat_sessions`, `chat_history`, `saved_screeners`, `reports`, `pdf_cache`, `financial_profiles`, `evidence_cache`, `user_llm_config`, `telegram_link_codes`, `auth_attempts`, plus LangGraph's `checkpoint*` tables. **Schema = Alembic migrations** (`migrations/versions/`, ARCH-01): add a new revision for any schema change (never DDL in app code); `python scripts/migrate.py` applies them (Docker runs it before the app); startup only checks the version (`utils/db.py::ensure_schema`). A leftover `data/aria.db` SQLite file exists in-repo but is unread by current code.
 
-### Ticker Resolution (`utils/helpers.py`)
-Maps common aliases to NSE symbols (e.g. `"SBI"` → `"SBIN"`, `"HUL"` → `"HINDUNILVR"`). All tickers must be suffixed with `.NS` for NSE or `.BO` for BSE when passed to yfinance.
+### Ticker Resolution (VAL-02: `tools/data/instruments.py`, `graph/entity_resolution.py`)
+Every company mention resolves against the vendored NSE/BSE instrument master (`data/instruments/`, refresh with `scripts/refresh_instruments.py`) to found / ambiguous / not_found — never trust a guessed or LLM-produced ticker. Aliases (`"SBI"` → `"SBIN"`) live in `utils/helpers.py::TICKER_ALIASES`; renamed symbols in `instruments.RENAMED`. `config.STOCK_UNIVERSE` and alias targets must be listed symbols (a test enforces it). All tickers must be suffixed with `.NS` for NSE or `.BO` for BSE when passed to yfinance.
 
 ## Production-readiness contracts (Phase 0, see ARCHITECTURE.md)
 

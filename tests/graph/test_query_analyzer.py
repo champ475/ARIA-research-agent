@@ -1,5 +1,4 @@
 import json
-from unittest.mock import patch
 
 from graph.nodes.query_analyzer import build_query_analyzer_node
 
@@ -69,9 +68,8 @@ class TestQueryAnalyzer:
 
 
 class TestQueryAnalyzerEntityFiltering:
-    """Bug fix: raw extract_all_entities() output is gated through
-    filter_valid_entities() before it reaches the prompt / GraphState —
-    garbage tokens must never survive to become Planner tasks."""
+    """Only mentions that resolve against the instrument master reach
+    `entities` (VAL-02) — garbage tokens must never become Planner tasks."""
 
     def test_garbage_tokens_are_filtered_out(self):
         stub = _StubClient(
@@ -85,12 +83,9 @@ class TestQueryAnalyzerEntityFiltering:
             )
         )
         node = build_query_analyzer_node(stub)
-        with patch("graph.nodes.query_analyzer.filter_valid_entities", return_value=["INFY"]) as mock_filter:
-            result = node(
-                {"query": "Give me an IC report for INFY and also set an alert if it drops below 1400"}
-            )
-        mock_filter.assert_called_once()
+        result = node({"query": "Give me an IC report for INFY and also set an alert if it drops below 1400"})
         assert result["entities"] == ["INFY"]
+        assert result["entity_resolutions"] == []
 
     def test_real_multi_entity_query_still_resolves_both(self):
         stub = _StubClient(json.dumps({"intent": "equity", "objective": "x", "complexity": "moderate"}))

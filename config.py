@@ -151,12 +151,12 @@ SECTOR_UNIVERSE = {
         "WIPRO",
         "HCLTECH",
         "TECHM",
-        "LTIM",
+        "LTM",  # LTIMindtree, renamed LTM Ltd
         "PERSISTENT",
         "COFORGE",
         "MPHASIS",
         "OFSS",
-        "KPIT",
+        "KPITTECH",
         "TATAELXSI",
     ],
     "Financial Services": [
@@ -194,11 +194,11 @@ SECTOR_UNIVERSE = {
     "Consumer Cyclical": [
         "TITAN",
         "MARUTI",
-        "TATAMOTORS",
+        "TMPV",  # Tata Motors Passenger Vehicles — the old TATAMOTORS listing after the demerger
         "BAJAJ-AUTO",
         "EICHERMOT",
         "HEROMOTOCO",
-        "TVS MOTOR",
+        "TVSMOTOR",
         "M&M",
         "TRENT",
         "DMART",
@@ -213,7 +213,7 @@ SECTOR_UNIVERSE = {
         "TORNTPHARM",
         "LUPIN",
         "ALKEM",
-        "IPCA",
+        "IPCALAB",
     ],
     "Consumer Defensive": [
         "HINDUNILVR",

@@ -16,6 +16,72 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Company names resolve against a vendored NSE/BSE instrument master (VAL-02)
+
+**Problem.**
+- **Wrong company.** An unrecognised name silently became the previous turn's
+  ticker: "XYZQ" after a TCS question was answered about TCS.
+- **Guessed entities.** Entities were guessed from capitalised tokens plus a
+  live yfinance lookup, so typos, BSE codes and group names ("HDFC",
+  "Tata Motors" after the demerger) behaved inconsistently.
+- **Stale symbols.** The curated universe had gone stale: `TVS MOTOR`
+  (space), `TATAMOTORS` (demerged), `LTIM` (renamed LTM), `KPIT`, `IPCA`.
+
+**Alternatives considered.**
+- *Ask the LLM to output tickers.* Rejected: it invents symbols, and local
+  models invent more.
+- *Live NSE/BSE lookups per turn.* Rejected: slow, rate-limited, and BSE's
+  API sits behind bot protection.
+- *yfinance Search.* Rejected: networked, fuzzy in undocumented ways, with
+  no ambiguity signal.
+
+**Final decision.**
+- **Vendored snapshots.** NSE `EQUITY_L.csv` (2,605 instruments) and BSE
+  scrip code → ISIN taken from BSE's public daily bhavcopy (5,033 codes,
+  2,410 also on NSE), refreshed by `scripts/refresh_instruments.py`.
+- **`tools/data/instruments.py::resolve`** returns a typed Resolution
+  (found / ambiguous / not_found). Stages, in order:
+  1. exact symbol
+  2. renamed symbol, with a note (ZOMATO → ETERNAL, TATAMOTORS → TMPV,
+     LTIM → LTM)
+  3. BSE code via ISIN
+  4. alias
+  5. company name: an exact name wins unless it is known-ambiguous; a bare
+     group name asks
+  6. rapidfuzz: the average of a distinctive-word score and a full-name
+     score; ≥90 with a margin resolves, 75–90 asks, otherwise not_found
+     with suggestions
+- **Mentions** (`graph/entity_resolution.py`):
+  - **Found deterministically:** aliases and names, `.NS`/`.BO`, BSE
+    codes, tickers typed in capitals, curated symbols in any case, and
+    words before "share"/"stock".
+  - **Masked first:** fund names and market jargon.
+  - **From the LLM:** QueryAnalyzer's call returns the companies *as
+    written*, and they are only resolved against the master.
+- **History** supplies an entity only when the message names no company.
+- **Blocking.** For company intents (equity, report, alert), an ambiguous
+  name, or a not-found one when nothing resolved, skips research.
+  CommunicationLayer then asks deterministically, with no LLM call.
+- **Notes.** Renamed-symbol notes and partially unresolved names are
+  appended to answers.
+
+**Trade-offs.**
+- **Snapshots go stale until refreshed.** A brand-new listing is
+  not_found until the next refresh.
+- **NSE only.** BSE-only companies are not_found with an explanation,
+  because the data layer is NSE-centric.
+- **One honest miss in the 200-name table** (99.5%): a made-up name one
+  word from a real one gets a weak "did you mean".
+- **Re-ask after clarifying.** After a clarification the user restates the
+  company. The original question isn't replayed automatically.
+
+**Future improvements.**
+- Refresh the snapshots nightly in CI with a PR for review.
+- Carry the pending question across a clarification.
+- Add an index and ETF master (DATA-05).
+
+---
+
 ## 2026-10-14 — Per-turn records in Postgres, optional redacted LangSmith traces (OBS-02)
 
 **Problem.** When an answer was wrong or slow, nothing showed which node,

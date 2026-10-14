@@ -72,6 +72,7 @@ from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS
 from graph.checkpointer import get_postgres_checkpointer
 from graph.deadline import data_gaps_note, new_deadline
+from graph.entity_resolution import entity_notes_text
 from graph.graph import build_graph
 
 log = logging.getLogger(__name__)
@@ -447,7 +448,7 @@ class GraphOrchestrator:
             secondary = result.get("secondary_intents") or []
             tab_used = "+".join([intent] + [s for s in secondary if s != intent])
 
-            gaps_note = data_gaps_note(result.get("tasks"))
+            gaps_note = entity_notes_text(result) + data_gaps_note(result.get("tasks"))
             rec.data_gaps = sum(
                 1 for t in result.get("tasks") or [] if t.get("status") in ("failed", "skipped")
             )

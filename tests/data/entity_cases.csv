@@ -1,0 +1,201 @@
+name,status,symbol,category
+TCS,found,TCS,symbol
+INFY,found,INFY,symbol
+RELIANCE,found,RELIANCE,symbol
+HDFCBANK,found,HDFCBANK,symbol
+ICICIBANK,found,ICICIBANK,symbol
+SBIN,found,SBIN,symbol
+WIPRO,found,WIPRO,symbol
+ITC,found,ITC,symbol
+LT,found,LT,symbol
+AXISBANK,found,AXISBANK,symbol
+KOTAKBANK,found,KOTAKBANK,symbol
+BHARTIARTL,found,BHARTIARTL,symbol
+HINDUNILVR,found,HINDUNILVR,symbol
+MARUTI,found,MARUTI,symbol
+TITAN,found,TITAN,symbol
+SUNPHARMA,found,SUNPHARMA,symbol
+ASIANPAINT,found,ASIANPAINT,symbol
+NESTLEIND,found,NESTLEIND,symbol
+ULTRACEMCO,found,ULTRACEMCO,symbol
+POWERGRID,found,POWERGRID,symbol
+NTPC,found,NTPC,symbol
+ONGC,found,ONGC,symbol
+COALINDIA,found,COALINDIA,symbol
+TATASTEEL,found,TATASTEEL,symbol
+JSWSTEEL,found,JSWSTEEL,symbol
+ADANIPORTS,found,ADANIPORTS,symbol
+BAJFINANCE,found,BAJFINANCE,symbol
+BAJAJFINSV,found,BAJAJFINSV,symbol
+HCLTECH,found,HCLTECH,symbol
+TECHM,found,TECHM,symbol
+CIPLA,found,CIPLA,symbol
+TVSMOTOR,found,TVSMOTOR,symbol
+IPCALAB,found,IPCALAB,symbol
+KPITTECH,found,KPITTECH,symbol
+TMPV,found,TMPV,symbol
+TMCV,found,TMCV,symbol
+ETERNAL,found,ETERNAL,symbol
+tcs,found,TCS,lowercase
+infy,found,INFY,lowercase
+reliance,found,RELIANCE,lowercase
+wipro,found,WIPRO,lowercase
+itc,found,ITC,lowercase
+sbin,found,SBIN,lowercase
+titan,found,TITAN,lowercase
+maruti,found,MARUTI,lowercase
+lt,found,LT,lowercase
+ongc,found,ONGC,lowercase
+ntpc,found,NTPC,lowercase
+hdfcbank,found,HDFCBANK,lowercase
+icicibank,found,ICICIBANK,lowercase
+cipla,found,CIPLA,lowercase
+lupin,found,LUPIN,lowercase
+Tcs,found,TCS,lowercase
+Infy,found,INFY,lowercase
+SBI,found,SBIN,alias
+HUL,found,HINDUNILVR,alias
+Airtel,found,BHARTIARTL,alias
+L&T,found,LT,alias
+Infosys,found,INFY,alias
+HDFC Bank,found,HDFCBANK,alias
+ICICI Bank,found,ICICIBANK,alias
+Axis Bank,found,AXISBANK,alias
+Kotak,found,KOTAKBANK,alias
+Asian Paints,found,ASIANPAINT,alias
+Sun Pharma,found,SUNPHARMA,alias
+Dr Reddys,found,DRREDDY,alias
+Nestle,found,NESTLEIND,alias
+Hero MotoCorp,found,HEROMOTOCO,alias
+Eicher,found,EICHERMOT,alias
+Coal India,found,COALINDIA,alias
+Power Grid,found,POWERGRID,alias
+Bajaj Finance,found,BAJFINANCE,alias
+Tata Steel,found,TATASTEEL,alias
+Maruti Suzuki,found,MARUTI,alias
+Tata Power,found,TATAPOWER,alias
+Mahindra,found,M&M,alias
+Bharti,found,BHARTIARTL,alias
+Vedanta,found,VEDL,alias
+KPIT,found,KPITTECH,alias
+TVS MOTOR,found,TVSMOTOR,name
+Tata Consultancy Services,found,TCS,name
+Reliance Industries Limited,found,RELIANCE,name
+Bharti Airtel,found,BHARTIARTL,name
+ITC Limited,found,ITC,name
+Larsen & Toubro,found,LT,name
+Hindustan Unilever Limited,found,HINDUNILVR,name
+State Bank of India,found,SBIN,name
+Wipro Limited,found,WIPRO,name
+Lupin Limited,found,LUPIN,name
+Titan Company,found,TITAN,name
+UltraTech Cement,found,ULTRACEMCO,name
+Grasim Industries,found,GRASIM,name
+Britannia Industries,found,BRITANNIA,name
+Divi's Laboratories,found,DIVISLAB,name
+Apollo Hospitals Enterprise,found,APOLLOHOSP,name
+Bajaj Auto,found,BAJAJ-AUTO,name
+Eicher Motors,found,EICHERMOT,name
+Hindalco Industries,found,HINDALCO,name
+Tech Mahindra,found,TECHM,name
+Mahindra & Mahindra,found,M&M,name
+TVS Motor Company,found,TVSMOTOR,name
+JSW Steel Limited,found,JSWSTEEL,name
+Godrej Consumer Products,found,GODREJCP,name
+Eternal Limited,found,ETERNAL,name
+Dr. Reddy's,found,DRREDDY,name
+IPCA Laboratories,found,IPCALAB,name
+KPIT Technologies,found,KPITTECH,name
+relaince industries,found,RELIANCE,typo
+hdfc bnk,found,HDFCBANK,typo
+asain paints,found,ASIANPAINT,typo
+Tata Consultancy Servics,found,TCS,typo
+ultratech cemnt,found,ULTRACEMCO,typo
+hindalco industires,found,HINDALCO,typo
+britania industries,found,BRITANNIA,typo
+kotak mahindra bnk,found,KOTAKBANK,typo
+bajaj finanace,found,BAJFINANCE,typo
+grasim industris,found,GRASIM,typo
+state bank of indya,found,SBIN,typo
+hindustan unilver,found,HINDUNILVR,typo
+eicher motor,found,EICHERMOT,typo
+infosis,ambiguous,INFY,typo
+wipr,ambiguous,WIPRO,typo
+relianse,ambiguous,RELIANCE,typo
+HDFCBNK,found,HDFCBANK,typo
+ICICIBNK,found,ICICIBANK,typo
+TATASTEL,found,TATASTEEL,typo
+500325,found,RELIANCE,bse_code
+532540,found,TCS,bse_code
+500180,found,HDFCBANK,bse_code
+500209,found,INFY,bse_code
+532174,found,ICICIBANK,bse_code
+500112,found,SBIN,bse_code
+507685,found,WIPRO,bse_code
+500875,found,ITC,bse_code
+500510,found,LT,bse_code
+532454,found,BHARTIARTL,bse_code
+500696,found,HINDUNILVR,bse_code
+500520,found,M&M,bse_code
+532500,found,MARUTI,bse_code
+500570,found,TMPV,bse_code
+500124,found,DRREDDY,bse_code
+599999,not_found,,bse_code
+ZOMATO,found,ETERNAL,renamed
+zomato,found,ETERNAL,renamed
+TATAMOTORS,found,TMPV,renamed
+LTIMindtree,found,LTM,renamed
+LTIM,found,LTM,renamed
+Mindtree,found,LTM,renamed
+Satyam Computer Services,not_found,,delisted
+Kingfisher Airlines,not_found,,delisted
+Ranbaxy Laboratories,not_found,,delisted
+HDFC,ambiguous,HDFCBANK,ambiguous
+HDFC Ltd,ambiguous,HDFCBANK,ambiguous
+ICICI,ambiguous,ICICIBANK,ambiguous
+Bajaj,ambiguous,BAJFINANCE,ambiguous
+Adani,ambiguous,ADANIPORTS,ambiguous
+Tata Motors,ambiguous,TMPV,ambiguous
+Zydus,ambiguous,ZYDUSLIFE,ambiguous
+Godrej,ambiguous,GODREJCP,ambiguous
+JSW,ambiguous,JSWSTEEL,ambiguous
+Aditya Birla,ambiguous,ABCAPITAL,ambiguous
+Tata,ambiguous,,ambiguous
+XYZQ,not_found,,unknown
+QWERTY,not_found,,unknown
+FOOBAR,not_found,,unknown
+ABCXYZ,not_found,,unknown
+Zorblax,not_found,,unknown
+Acme Widgets,not_found,,unknown
+Wakanda Vibranium,not_found,,unknown
+Gotham Steel Works,not_found,,unknown
+Stark Industries,not_found,,unknown
+Umbrella Corporation,not_found,,unknown
+ZZZZ,not_found,,unknown
+QQQQ,not_found,,unknown
+Hogwarts Holdings,not_found,,unknown
+Pied Piper,not_found,,unknown
+Initech,ambiguous,UNITECH,unknown
+HDFC Flexi Cap Fund,not_found,,mutual_fund
+SBI Bluechip Fund,not_found,,mutual_fund
+ICICI Prudential Bluechip Fund,not_found,,mutual_fund
+Axis Midcap Fund,not_found,,mutual_fund
+Kotak Emerging Equity Fund,not_found,,mutual_fund
+Nippon India Small Cap Fund,not_found,,mutual_fund
+Parag Parikh Flexi Cap Fund,not_found,,mutual_fund
+Mirae Asset Large Cap Fund,not_found,,mutual_fund
+Aditya Birla Sun Life Frontline Equity Fund,not_found,,mutual_fund
+UTI Nifty 50 Index Fund,not_found,,mutual_fund
+SBI Small Cap Fund,not_found,,mutual_fund
+HDFC Mid-Cap Opportunities Fund,not_found,,mutual_fund
+Axis Long Term Equity Fund,not_found,,mutual_fund
+DSP Tax Saver Fund,not_found,,mutual_fund
+Quant Small Cap Fund,not_found,,mutual_fund
+TCS.NS,found,TCS,suffix
+RELIANCE.BO,found,RELIANCE,suffix
+infy.ns,found,INFY,suffix
+  tcs  ,found,TCS,suffix
+M&M,found,M&M,suffix
+BAJAJ-AUTO,found,BAJAJ-AUTO,suffix
+bajaj-auto,found,BAJAJ-AUTO,suffix
+HDFCBANK.NS,found,HDFCBANK,suffix
