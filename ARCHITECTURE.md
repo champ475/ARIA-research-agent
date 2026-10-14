@@ -16,6 +16,35 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Logs are JSON lines with a per-turn correlation id
+
+**Problem.** No logging was configured at all, so library and app warnings
+went to Python's last-resort stderr handler as bare text, debug traces used
+`print()` (one dumped full LLM prompts), and nothing linked a log line to the
+user turn that produced it. Debugging a bad answer meant guessing.
+
+**Alternatives considered.** `structlog` (nicer API, but a new dependency and
+every module would need converting to its logger); plain-text logs with a
+`%(turn_id)s` format field (not machine-parseable by a hosted sink);
+OpenTelemetry logging now (right long-term answer, but OBS-02 tracing is the
+place to introduce it).
+
+**Final decision.** Stdlib `logging` with a custom `JsonFormatter`
+(`utils/logging_setup.py`), so existing `logging.getLogger(__name__)` calls
+work unchanged. Turn fields live in `contextvars`; `run_in_turn()` runs the
+whole chat generator in one persistent Context because Gradio resumes each
+generator step in a freshly copied context. The user id is logged only as a
+keyed HMAC pseudonym, and a redaction pass masks known secret shapes in
+messages and tracebacks.
+
+**Trade-offs.** Redaction is pattern-based, so a secret in an unknown shape
+can still leak; logs go to stderr only (no hosted sink is wired, which needs
+an account decision). The pseudonym changes if SECRET_KEY rotates.
+
+**Future improvements.** Ship logs to a hosted sink (Loki/Better Stack/Axiom),
+add OpenTelemetry trace/span ids (OBS-02), and a ruff T20 rule in CI (TEST-01)
+to keep `print()` out.
+
 ## 2026-08-10 — LLMClient's exhaustion contract changed from a string return to a raised exception
 
 **Problem.** Live E2E testing found `LLMClient.ask()`/`.stream()` returning a

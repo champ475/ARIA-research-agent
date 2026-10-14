@@ -4,8 +4,14 @@ Gradio 6 compatible. show_api=False fixes the proxy/launch error.
 """
 
 import os
+import time
 import logging
 import gradio as gr
+from utils.logging_setup import configure_logging, run_in_turn
+
+# Before anything else logs: JSON lines with turn ids + secret redaction (OBS-01).
+configure_logging()
+
 from utils.db    import init_db
 from utils.helpers import now_ist
 from utils.auth import signup, login, AuthError
@@ -120,6 +126,8 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         return
 
     clean = message.lstrip("📊📋📈📰🔀🌍❓✅🔍 ").strip()
+    started = time.monotonic()
+    log.info(f"[respond] turn start chars={len(clean)}")
 
     # Timeframe keyword only makes sense when equity handles the message —
     # decide the route up front so it isn't injected into an unrelated agent.
@@ -187,6 +195,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
             "Then restart: `python app.py`"
         )
     except Exception as e:
+        log.exception("[respond] turn failed")
         text = f"⚠️ Error: `{str(e)}`\n\nPlease try again."
 
     # A save failure here (e.g. a Neon connection dropped for being idle —
@@ -206,6 +215,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     ]
     chart_update = gr.update(value=chart_fig, visible=chart_fig is not None)
     btn_updates  = _make_btn_updates(new_sugg)
+    log.info(f"[respond] turn end ms={int((time.monotonic() - started) * 1000)}")
     yield (_INPUT_READY, _SEND_READY, updated_history, chart_update, new_sugg, pdf_update, md_update, csv_update) + btn_updates
 
 
@@ -669,7 +679,10 @@ def _build_chat_tab(user_state: gr.State):
             # ARCHITECTURE.md: the sidebar's @gr.render previously missed a
             # brand-new session for the rest of that browser session).
             refresh += 1
-        for i, out in enumerate(respond(user_id, msg, hist, sugg, session_id, tf)):
+        # run_in_turn keeps one turn_id on every log line of this turn, across
+        # yields (Gradio resumes each generator step in a fresh context).
+        turn = run_in_turn(respond(user_id, msg, hist, sugg, session_id, tf), user_id, session_id)
+        for i, out in enumerate(turn):
             yield out + (session_id, refresh if i == 0 else refresh + 1)
 
     def _clear(user_id):

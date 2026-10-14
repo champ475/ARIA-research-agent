@@ -2,8 +2,11 @@
 
 import re
 import math
+import logging
 import pytz
 from datetime import datetime
+
+log = logging.getLogger(__name__)
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -489,11 +492,11 @@ def llm_resolve_query(query: str, client) -> dict:
         '{"ticker": "SYMBOL_OR_null", "intent": "one_of_the_list_above"}'
     )
 
-    print(f"[LLM RESOLVE] prompt sent to LLM:\n{prompt}\n[LLM RESOLVE] --- end prompt ---")
+    log.debug(f"[LLM RESOLVE] prompt sent to LLM:\n{prompt}\n[LLM RESOLVE] --- end prompt ---")
 
     try:
         raw = client.ask(prompt, temperature=0.0, max_tokens=TOKENS_FAST)
-        print(f"[LLM RESOLVE] raw response: {raw!r}")
+        log.debug(f"[LLM RESOLVE] raw response: {raw!r}")
         raw = raw.strip().strip("```json").strip("```").strip()
         data = json.loads(raw)
 
@@ -508,10 +511,10 @@ def llm_resolve_query(query: str, client) -> dict:
         if intent not in _VALID_LLM_INTENTS:
             intent = "chat"
 
-        print(f"[LLM RESOLVE] parsed: ticker={ticker!r} intent={intent!r}")
+        log.debug(f"[LLM RESOLVE] parsed: ticker={ticker!r} intent={intent!r}")
         return {"ticker": ticker, "intent": intent}
     except Exception as e:
-        print(f"[LLM RESOLVE] failed to parse LLM output: {e!r}")
+        log.debug(f"[LLM RESOLVE] failed to parse LLM output: {e!r}")
         return {"ticker": None, "intent": "chat"}
 
 
@@ -540,8 +543,8 @@ def resolve_query(query: str, client=None, last_symbol: str | None = None) -> di
     det_intent = parse_intent(query)
     det_ok = validate_ticker(det_ticker)
 
-    print(f"[PARSE] query={query!r}")
-    print(f"[PARSE] deterministic: ticker={det_ticker!r} valid={det_ok} intent={det_intent!r} source={det_source!r}")
+    log.debug(f"[PARSE] query={query!r}")
+    log.debug(f"[PARSE] deterministic: ticker={det_ticker!r} valid={det_ok} intent={det_intent!r} source={det_source!r}")
 
     needs_llm = (det_ticker is None) or (not det_ok) or (det_ticker is not None and det_intent == "chat")
 
@@ -552,10 +555,10 @@ def resolve_query(query: str, client=None, last_symbol: str | None = None) -> di
             "source": det_source,
             "used_llm": False,
         }
-        print(f"[PARSE] final (no LLM call): {result}")
+        log.debug(f"[PARSE] final (no LLM call): {result}")
         return result
 
-    print(f"[PARSE] ambiguous -> falling back to LLM "
+    log.debug(f"[PARSE] ambiguous -> falling back to LLM "
           f"(det_ticker={det_ticker!r}, det_ok={det_ok}, det_intent={det_intent!r})")
 
     llm_result = llm_resolve_query(query, client)
@@ -579,5 +582,5 @@ def resolve_query(query: str, client=None, last_symbol: str | None = None) -> di
         "source": source,
         "used_llm": True,
     }
-    print(f"[PARSE] final (after LLM): {result}")
+    log.debug(f"[PARSE] final (after LLM): {result}")
     return result

@@ -21,6 +21,7 @@ Requires env vars: DATABASE_URL, TELEGRAM_BOT_TOKEN.
 
 import sys
 import os
+import logging
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,6 +35,9 @@ from utils.helpers import IST
 from tools.data.fetcher import get_info, get_ohlcv
 from tools.analysis.technical import compute_all
 from tools.data.nse_scraper import get_bulk_deals
+from utils.logging_setup import configure_logging
+
+log = logging.getLogger("check_alerts")
 
 
 def market_is_open() -> bool:
@@ -47,10 +51,10 @@ def market_is_open() -> bool:
 
 def send_telegram(text: str, chat_id: str | None):
     if not TELEGRAM_BOT_TOKEN:
-        print("Telegram bot not configured — skipping notification:", text)
+        log.warning(f"Telegram bot not configured — skipping notification: {text}")
         return
     if not chat_id:
-        print("Alert owner hasn't linked Telegram — skipping notification:", text)
+        log.info(f"Alert owner hasn't linked Telegram — skipping notification: {text}")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
@@ -63,9 +67,9 @@ def send_telegram(text: str, chat_id: str | None):
             timeout=10,
         )
         if r.status_code != 200:
-            print(f"Telegram send failed: {r.status_code} {r.text}")
+            log.warning(f"Telegram send failed: {r.status_code} {r.text}")
     except Exception as e:
-        print(f"Telegram send failed: {e}")
+        log.warning(f"Telegram send failed: {e}")
 
 
 def _price_alert(symbol: str, alert_type: str, threshold: float) -> str | None:
@@ -210,7 +214,7 @@ def evaluate(conn, alert: dict) -> str | None:
 
 def main():
     if not market_is_open():
-        print("Market closed — skipping.")
+        log.info("Market closed — skipping.")
         return
 
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
@@ -225,7 +229,7 @@ def main():
             "WHERE alerts.active=TRUE ORDER BY alerts.id"
         )
         alerts = cur.fetchall()
-        print(f"Evaluating {len(alerts)} active alert(s).")
+        log.info(f"Evaluating {len(alerts)} active alert(s).")
         for alert in alerts:
             alert = dict(alert)
             if in_cooldown(alert):
@@ -233,7 +237,7 @@ def main():
             try:
                 msg = evaluate(conn, alert)
             except Exception as e:
-                print(f"Error evaluating alert {alert['id']} ({alert['symbol']}): {e}")
+                log.exception(f"Error evaluating alert {alert['id']} ({alert['symbol']}): {e}")
                 continue
             if msg:
                 send_telegram(msg, alert.get("telegram_chat_id"))
@@ -245,10 +249,11 @@ def main():
                         (alert["id"],),
                     )
                 conn.commit()
-                print(f"Fired alert {alert['id']}: {msg}")
+                log.info(f"Fired alert {alert['id']}: {msg}")
     finally:
         conn.close()
 
 
 if __name__ == "__main__":
+    configure_logging()
     main()
