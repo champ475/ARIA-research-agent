@@ -208,7 +208,9 @@ def test_every_user_scoped_db_function_is_covered():
     user_scoped = {
         name
         for name, fn in inspect.getmembers(db_module, inspect.isfunction)
-        if fn.__module__ == db_module.__name__ and "user_id" in inspect.signature(fn).parameters
+        if fn.__module__ == db_module.__name__
+        and not name.startswith("_")  # private helpers are reached only through covered functions
+        and "user_id" in inspect.signature(fn).parameters
     }
     missing = sorted(user_scoped - set(COVERED))
     assert missing == [], f"user-scoped db functions without an isolation test: {missing}"
@@ -277,10 +279,14 @@ def test_two_users_creating_same_alert_within_a_minute_get_two_rows(db, two_user
 
 
 def test_same_user_creating_two_alerts_gets_two_rows(db, two_users):
+    """DATA-01: a second create is never served from the cache — and since
+    VAL-04 an identical one is reported as a duplicate rather than saved twice."""
     a, _ = two_users
-    q = "alert me if TCS drops below 3500"
-    _run("alert_create", "TCS", a, q)
-    _run("alert_create", "TCS", a, q)
+    first = _run("alert_create", "TCS", a, "alert me if TCS drops below 3500")
+    second = _run("alert_create", "TCS", a, "alert me if TCS drops below 3400")
+    same_again = _run("alert_create", "TCS", a, "alert me if TCS drops below 3500")
+    assert (first["result"], second["result"]) == ("created", "created")
+    assert same_again["result"] == "duplicate" and same_again["alert_id"] == first["alert_id"]
     assert len(db.alert_list(a)) == 2
 
 

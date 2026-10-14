@@ -1,0 +1,61 @@
+message,expect,threshold,direction
+alert me if TCS falls below 3500,price_below,3500,
+alert me if TCS falls below 3500 by Friday 2026,price_below,3500,
+notify me when TCS goes above 4200,price_above,4200,
+"TCS above ₹4,200",price_above,4200,
+tell me when TCS crosses 3.5k,price_above,3500,
+alert if TCS trades over Rs. 4100.50,price_above,4100.5,
+ping me if TCS dips under 3200 in 2 days,price_below,3200,
+alert when HDFC Bank crosses 1.2 lakh,price_above,120000,
+alert if MRF goes above 1.5L,price_above,150000,
+"alert me if TCS breaks below 3,450 support",price_below,3450,
+TCS > 4000 alert,price_above,4000,
+alert if TCS < 3000,price_below,3000,
+recurring alert if TCS goes above 4000,price_above,4000,
+alert me if TCS drops 5%,pct_change,5,down
+alert if TCS falls 3 percent,pct_change,3,down
+alert if reliance declines by 2.5%,pct_change,2.5,down
+tell me if TCS gains 4%,pct_change,4,up
+alert when infy rises 1.5 percent,pct_change,1.5,up
+alert if TCS jumps 6%,pct_change,6,up
+alert if TCS moves 3%,pct_change,3,either
+notify if TCS changes by 2%,pct_change,2,either
+TCS 5% drop alert,pct_change,5,down
+TCS 4% rise alert,pct_change,4,up
+alert if TCS crashes 10%,pct_change,10,down
+alert if TCS drops 80%,refuse,,
+alert if TCS moves 0.05%,refuse,,
+alert me when RSI crosses below 30,rsi_cross_below,30,
+alert if rsi goes above 70,rsi_cross_above,70,
+TCS rsi(14) under 25 alert,rsi_cross_below,25,
+rsi oversold alert,rsi_cross_below,30,
+rsi overbought alert,rsi_cross_above,70,
+alert if RSI above 150,refuse,,
+alert if rsi below 0,refuse,,
+RSI alert for TCS,refuse,,
+MACD bullish crossover alert,macd_bullish_cross,,
+alert when macd crosses above signal,macd_bullish_cross,,
+MACD bearish cross alert,macd_bearish_cross,,
+alert if macd crosses below signal line,macd_bearish_cross,,
+macd crossover alert,refuse,,
+golden cross alert for TCS,ma_cross,,
+death cross alert,ma_cross,,
+alert on 50 dma crossing 200 dma cross,ma_cross,,
+bollinger band breakout alert,bb_breakout,,
+alert on bb breakout,bb_breakout,,
+volume spike alert,volume_spike,2,
+alert if volume is 3x average,volume_spike,3,
+alert on 4 times normal volume,volume_spike,4,
+alert if volume spikes 50x,refuse,,
+52 week high alert,week52_high,,
+alert when TCS hits a new 52-week low,week52_low,,
+alert on 1 year high,week52_high,,
+bulk deal alert for TCS,bulk_deal,,
+alert me on block deals,bulk_deal,,
+alert if my TCS holding is down 10%,portfolio_pnl,10,down
+alert when my portfolio profit is above 20%,portfolio_pnl,20,up
+alert if my position P&L moves 15%,portfolio_pnl,15,either
+alert if price below -5,refuse,,
+alert if TCS hits 4000,refuse,,
+alert if TCS goes above 4000 or below 3000,refuse,,
+alert if TCS falls below 0,refuse,,

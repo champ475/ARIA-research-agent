@@ -39,6 +39,14 @@ def _no_real_database(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_alert_price(monkeypatch):
+    """alert_create checks the live price (VAL-04 "already true"). Tests
+    never reach yfinance for it: the price is "unknown" unless a test sets
+    one, so creation proceeds as if the check couldn't run."""
+    monkeypatch.setattr("graph.tool_catalogue._current_price", lambda symbol: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_local_llm(monkeypatch):
     """A developer's .env may set LOCAL_LLM_BASE_URL; unit tests must never
     reach a real local model server. Tests that need it re-enable it."""

@@ -365,6 +365,31 @@ def screener_list(user_id: int) -> list[dict]:
 # ── Alert helpers ─────────────────────────────────────────────────────────────
 
 
+class DuplicateAlert(ValueError):
+    """The same alert is already active (uq_alerts_active_spec, VAL-04)."""
+
+    def __init__(self, existing_id: int | None):
+        self.existing_id = existing_id
+        super().__init__(f"duplicate of active alert #{existing_id}")
+
+
+class AlertLimitReached(ValueError):
+    """The user already has MAX_ACTIVE_ALERTS active alerts (VAL-04)."""
+
+
+MAX_ACTIVE_ALERTS = 50
+
+
+def _existing_alert_id(user_id: int, symbol: str, alert_type: str, threshold, direction) -> int | None:
+    row = _query(
+        "SELECT id FROM alerts WHERE user_id=%s AND symbol=%s AND alert_type=%s AND active "
+        "AND COALESCE(threshold, -1) = COALESCE(%s, -1) AND COALESCE(direction, '') = COALESCE(%s, '')",
+        (user_id, symbol.upper(), alert_type, threshold, direction),
+        fetch="one",
+    )
+    return row["id"] if row else None
+
+
 def alert_add(
     user_id: int,
     symbol: str,
@@ -373,14 +398,38 @@ def alert_add(
     threshold: float | None,
     recurring: bool = False,
     cooldown_hours: int = 24,
+    direction: str | None = None,
 ) -> int:
-    row = _query(
-        "INSERT INTO alerts (user_id, symbol, alert_type, condition, threshold, recurring, cooldown_hours) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-        (user_id, symbol.upper(), alert_type, condition, threshold, recurring, cooldown_hours),
-        fetch="one",
-        commit=True,
-    )
+    """Raises DuplicateAlert if the same alert is already active, and
+    AlertLimitReached once the user has MAX_ACTIVE_ALERTS active alerts.
+    The cap is checked in the INSERT itself, so a burst can't overshoot it
+    by more than its own concurrency (and per-user turns run one at a time)."""
+    try:
+        row = _query(
+            "INSERT INTO alerts (user_id, symbol, alert_type, condition, threshold, recurring, cooldown_hours, "
+            "direction) "
+            "SELECT %s,%s,%s,%s,%s,%s,%s,%s "
+            "WHERE (SELECT count(*) FROM alerts WHERE user_id=%s AND active) < %s "
+            "RETURNING id",
+            (
+                user_id,
+                symbol.upper(),
+                alert_type,
+                condition,
+                threshold,
+                recurring,
+                cooldown_hours,
+                direction,
+                user_id,
+                MAX_ACTIVE_ALERTS,
+            ),
+            fetch="one",
+            commit=True,
+        )
+    except psycopg2.errors.UniqueViolation as e:
+        raise DuplicateAlert(_existing_alert_id(user_id, symbol, alert_type, threshold, direction)) from e
+    if row is None:
+        raise AlertLimitReached(f"you already have {MAX_ACTIVE_ALERTS} active alerts")
     return row["id"]
 
 
@@ -415,12 +464,16 @@ def alert_pause(user_id: int, alert_id: int):
 
 
 def alert_resume(user_id: int, alert_id: int):
-    _query(
-        "UPDATE alerts SET active=TRUE WHERE id=%s AND user_id=%s",
-        (alert_id, user_id),
-        fetch=None,
-        commit=True,
-    )
+    """Raises DuplicateAlert if an identical alert is already active."""
+    try:
+        _query(
+            "UPDATE alerts SET active=TRUE WHERE id=%s AND user_id=%s",
+            (alert_id, user_id),
+            fetch=None,
+            commit=True,
+        )
+    except psycopg2.errors.UniqueViolation as e:
+        raise DuplicateAlert(None) from e
 
 
 # ── In-app notification inbox (DATA-08) ───────────────────────────────────────

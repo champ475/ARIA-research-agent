@@ -16,6 +16,65 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Alerts are a validated AlertSpec before they're saved (VAL-04)
+
+**Problem.** Alert creation took the last number in the sentence ("below
+3500 by Friday 2026" → 2026). It accepted impossible values (RSI 150,
+negative prices) and saved alerts that would fire on the next check. It
+also saved exact duplicates, had no per-user cap, and `pct_change` used
+`abs()`, so a "drops 5%" alert fired on a 5% rise. With two alerts on one
+stock, cancel/pause/resume could only answer "ambiguous".
+
+**Alternatives considered.**
+- *Let the LLM extract every condition.* Rejected: it needs a network call
+  per alert, the output is unvalidated, and small local models are worse
+  at it.
+- *Validate only in the database* (CHECK constraints). Rejected: users
+  would get a raw error instead of a reason, and the database can't know
+  the live price.
+
+**Final decision.**
+- **`graph/alert_spec.py`:**
+  - A pydantic `AlertSpec` (14 types; per-type ranges; `direction`
+    up/down/either for percent and P&L alerts).
+  - A deterministic `parse_alert` that reads the number next to the
+    comparator, understands Indian amounts (`utils/indian_numbers.py`), and
+    returns a spec or an `AlertRefusal` with a reason. The LLM extractor is
+    only a fallback, and its JSON passes the same validation.
+  - `describe()` produces the plain-words echo in code.
+- **Creation** checks the live price. A condition that is already true asks
+  for confirmation ("add 'anyway'") instead of saving.
+- **Migration `0005`:**
+  - adds `direction`, with existing percent rows set to 'either' so their
+    behaviour is unchanged;
+  - deactivates pre-existing duplicate active alerts, keeping the oldest
+    and deleting nothing;
+  - adds a partial unique index on active alerts.
+- **`utils/db.py::alert_add`** raises `DuplicateAlert` (naming the existing
+  id) and `AlertLimitReached`. The cap of 50 active alerts is checked
+  inside the INSERT.
+- **Management.** Cancel, pause and resume honour "alert #id", restricted
+  to the user's own list. When several alerts match a symbol they are
+  listed with their ids.
+- **Checker.** `scripts/check_alerts.py` honours direction.
+
+**Trade-offs.**
+- **Confirmation is a re-ask.** Confirming an already-true alert means
+  sending the request again with "anyway"; the pending spec isn't held
+  across turns.
+- **The cap can be overshot slightly.** It is a count inside the INSERT,
+  not a lock, so it could only be exceeded by concurrent creates from the
+  same user, and per-user turns are serialised.
+- **No live-price check** for indicator alerts: there's no "already true"
+  check for those.
+
+**Future improvements.**
+- Hold the pending spec in state so "yes" confirms it.
+- Add UX-06's alert management screen.
+- Let users edit an alert's threshold in place.
+
+---
+
 ## 2026-10-14 — Company names resolve against a vendored NSE/BSE instrument master (VAL-02)
 
 **Problem.**

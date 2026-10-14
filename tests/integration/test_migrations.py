@@ -89,15 +89,25 @@ def test_legacy_database_upgrades_in_place_keeping_data(scratch_db):
             "INSERT INTO pdf_cache (symbol, doc_type, period, text_content) VALUES ('TCS', 'annual_report', NULL, %s)",
             (text,),
         )
+    # Pre-0005 duplicates: the same active alert twice.
+    for _ in range(2):
+        cur.execute(
+            "INSERT INTO alerts (user_id, symbol, alert_type, condition, threshold) "
+            "VALUES (%s, 'INFY', 'pct_change', 'c', 5)",
+            (uid,),
+        )
     assert migrations.current_revision(conn) is None  # pre-Alembic, like production
 
     migrations.upgrade(scratch_db)
+
+    cur.execute("SELECT active, direction FROM alerts WHERE symbol='INFY' ORDER BY id")
+    assert [(r["active"], r["direction"]) for r in cur.fetchall()] == [(True, "either"), (False, "either")]
 
     cur.execute("SELECT period, text_content FROM pdf_cache WHERE symbol='TCS'")
     assert cur.fetchall() == [{"period": "", "text_content": "newer"}]
 
     assert migrations.current_revision(conn) == migrations.head_revision()
-    cur.execute("SELECT count(*) AS n FROM alerts WHERE user_id=%s", (uid,))
+    cur.execute("SELECT count(*) AS n FROM alerts WHERE user_id=%s AND symbol='TCS'", (uid,))
     assert cur.fetchone()["n"] == 1
     assert _fk_delete_rule(conn, "alerts", "user_id") == "CASCADE"
     assert _fk_delete_rule(conn, "chat_history", "session_id") == "CASCADE"

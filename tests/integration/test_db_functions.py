@@ -188,6 +188,34 @@ def test_turns_are_deleted_with_their_user(db, two_users):
     assert db._query("SELECT count(*) AS n FROM turns")[0]["n"] == 0
 
 
+# ── VAL-04: alert uniqueness and cap ──────────────────────────────────────────
+
+
+def test_duplicate_active_alert_is_rejected_but_other_users_and_specs_are_fine(db, two_users):
+    a, b = two_users
+    first = db.alert_add(a, "TCS", "pct_change", "c", 5.0, direction="down")
+    with pytest.raises(db.DuplicateAlert) as e:
+        db.alert_add(a, "TCS", "pct_change", "c", 5.0, direction="down")
+    assert e.value.existing_id == first
+    db.alert_add(a, "TCS", "pct_change", "c", 5.0, direction="up")  # different direction
+    db.alert_add(b, "TCS", "pct_change", "c", 5.0, direction="down")  # different user
+    db.alert_pause(a, first)
+    again = db.alert_add(a, "TCS", "pct_change", "c", 5.0, direction="down")  # original paused
+    with pytest.raises(db.DuplicateAlert):
+        db.alert_resume(a, first)
+    assert again != first
+
+
+def test_fifty_active_alerts_is_the_cap(db, two_users):
+    a, _ = two_users
+    for i in range(db.MAX_ACTIVE_ALERTS):
+        db.alert_add(a, "TCS", "price_above", "c", 1000.0 + i)
+    with pytest.raises(db.AlertLimitReached):
+        db.alert_add(a, "TCS", "price_above", "c", 9999.0)
+    db.alert_pause(a, db.alert_list(a)[0]["id"])
+    db.alert_add(a, "TCS", "price_above", "c", 9999.0)  # room again after pausing one
+
+
 # ── coverage meta-test ────────────────────────────────────────────────────────
 
 # Public functions covered in this file (user-scoped ones are in ISOLATION_COVERED).
