@@ -1,9 +1,15 @@
 """tools/data/news_fetcher.py — RSS + Google News (free)"""
 
+import logging
+
 import feedparser
 import requests
 from bs4 import BeautifulSoup
+
 from config import NEWS_FEEDS
+from utils import http
+
+log = logging.getLogger(__name__)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0"
@@ -25,9 +31,18 @@ def _parse(entry: dict, source: str = "") -> dict:
     }
 
 
+def _fetch_feed(url: str, source: str):
+    """feedparser.parse(url) has no timeout; fetch through the guarded HTTP
+    session (REL-02) and parse the bytes. Network errors propagate, so the
+    research task is marked failed and the answer says news is missing."""
+    resp = http.get(url, source=source, timeout=(3, 8))
+    resp.raise_for_status()
+    return feedparser.parse(resp.content)
+
+
 def google_news(query: str, n: int = 12) -> list[dict]:
     url  = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=en-IN&gl=IN&ceid=IN:en"
-    feed = feedparser.parse(url)
+    feed = _fetch_feed(url, "google_news")
     return [_parse(e, "Google News") for e in feed.entries[:n]]
 
 
@@ -35,11 +50,11 @@ def rss_feeds(n_per_feed: int = 5) -> list[dict]:
     items = []
     for src, url in NEWS_FEEDS.items():
         try:
-            feed = feedparser.parse(url)
+            feed = _fetch_feed(url, f"rss:{src}")  # one breaker per feed
             for e in feed.entries[:n_per_feed]:
                 items.append(_parse(e, src))
-        except Exception:
-            pass
+        except Exception as e:
+            log.info(f"RSS feed {src} skipped: {e}")
     return items
 
 

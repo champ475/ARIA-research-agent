@@ -16,6 +16,70 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Every external call is bounded; turns have a deadline (REL-02)
+
+**Problem.** yfinance's `.info` / `.financials` and `feedparser.parse(url)` take
+no timeout at all. The LLM SDKs used library defaults (the OpenAI SDK waits
+600 s), plus their own hidden retries on top of `LLMClient`'s. One stalled
+upstream could hold a chat turn for minutes with the input locked, and a
+source that was down got hit again on every turn.
+
+**Alternatives considered.**
+- *`pybreaker`.* Rejected: it is about 100 lines to write ourselves, and we
+  need half-open handling that is thread-safe under concurrent turns
+  (REL-01).
+- *Kill stalled work.* Not possible for Python threads. Instead we bound how
+  long the caller waits, in bounded pools; a stuck worker finishes or dies
+  on its own.
+- *An asyncio rewrite with real cancellation.* Rejected: far too invasive
+  for the gain.
+
+**Final decision.**
+- **`utils/resilience.py`:**
+  - a thread-safe `CircuitBreaker` (closed → open after N failures within a
+    window → half-open with exactly one trial call);
+  - `call_with_timeout`, with separate "io" and "tool" pools so nesting
+    can't deadlock, and caller contextvars carried over so `turn_id`
+    survives in logs;
+  - `guarded_call(source, fn, timeout=)`.
+- **`utils/http.py::GuardedSession`:** default (3, 10) s timeouts, urllib3
+  `Retry` with jitter for idempotent requests, and the breaker. A network
+  error, 429 or 5xx counts as a failure.
+- **Applied to:** AMFI, NSE and BSE (bhavcopy, filings, PDFs), and Google
+  News and RSS (fetched with a timeout, then parsed from bytes).
+- **yfinance:** every touch goes through `fetcher._yf` (10 s and the
+  "yfinance" breaker). Errors fall into the existing BSE → bhavcopy
+  fallbacks.
+- **LLM calls:**
+  - cloud: 30 s per call, 15 s maximum gap between streamed chunks, SDK
+    retries off;
+  - local CPU model: 300 s.
+- **Turn deadline** (`graph/deadline.py`, `TURN_DEADLINE_SECONDS`, default 90):
+  - Stamped on each turn and each gate resume.
+  - Past 70% of it, ResearchExecutor skips unstarted tasks, except writes
+    and their dependencies, and Reflection and Verification stop looping.
+  - `execute_task` caps each tool call at `min(25 s, time left)`.
+  - Failed or skipped tasks carry a reason, and the orchestrator appends a
+    deterministic "Some data is missing: news for TCS (timed out)" line.
+
+**Trade-offs.**
+- **Background threads.** A timed-out call keeps running in the background
+  until it finishes on its own. The pools are bounded, so a long outage can
+  queue work behind stuck workers until the breaker opens.
+- **One shared yfinance breaker.** One flaky symbol can temporarily push
+  every symbol onto the bhavcopy fallback.
+- **LLM calls aren't cut by the deadline.** Only their own timeouts bound
+  them, so a slow synthesis can still overrun the turn budget.
+- **Local-LLM deployments** get a 600 s default deadline, because a CPU model
+  can't answer in 90 s.
+
+**Future improvements.**
+- Report breaker state on the OBS-03 dashboard.
+- Give the LLM synthesis step a share of the deadline.
+- Add per-symbol yfinance breakers if a shared one proves too coarse.
+
+---
+
 ## 2026-10-14 — Schema changes are Alembic migrations run as a release step (ARCH-01)
 
 **Problem.** `utils/db.py::init_db()` ran about 30 `CREATE ... IF NOT EXISTS` /

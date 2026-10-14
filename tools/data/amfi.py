@@ -5,9 +5,10 @@ NAV, fund details, top holdings, returns.
 """
 
 import time
-import requests
 import pandas as pd
 import logging
+
+from utils import http
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ def get_all_nav() -> pd.DataFrame:
         return _nav_cache
 
     try:
-        r = requests.get(AMFI_NAV_URL, headers=HEADERS, timeout=20)
+        r = http.get(AMFI_NAV_URL, source="amfi", headers=HEADERS, timeout=(3, 20))
         if r.status_code != 200:
             return _nav_cache if not _nav_cache.empty else pd.DataFrame()
 

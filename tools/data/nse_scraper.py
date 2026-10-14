@@ -6,6 +6,8 @@ Uses headers to avoid bot detection.
 
 import requests
 import pandas as pd
+
+from utils import http
 from datetime import datetime, timedelta
 from io import StringIO
 import logging
@@ -27,8 +29,8 @@ NSE_SESSION_URL = "https://www.nseindia.com"
 
 
 def _session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update(HEADERS)
+    # REL-02: default timeouts, retries with jitter, and the "nse" breaker.
+    s = http.session("nse", headers=HEADERS)
     try:
         s.get(NSE_SESSION_URL, timeout=10)
     except Exception:

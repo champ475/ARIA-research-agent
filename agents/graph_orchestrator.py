@@ -71,6 +71,7 @@ from agents.conversation_memory import ConversationMemory
 from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS
 from graph.checkpointer import get_postgres_checkpointer
+from graph.deadline import data_gaps_note, new_deadline
 from graph.graph import build_graph
 
 log = logging.getLogger(__name__)
@@ -368,7 +369,9 @@ class GraphOrchestrator:
                 # still current in self._provider_config, no need to re-resolve.
                 config = {"configurable": {"thread_id": self._thread_id}}
                 approved = message.strip().lower() in _APPROVE_WORDS
-                result = self._graph.invoke(Command(resume=approved), config=config)
+                # A fresh deadline: the user's think time at the gate mustn't
+                # count against the research budget (REL-02).
+                result = self._graph.invoke(Command(resume=approved, update=new_deadline()), config=config)
             else:
                 if self._trial_quota_exceeded():
                     self._memory.add_user(message)
@@ -390,6 +393,7 @@ class GraphOrchestrator:
                         "user_id": self._user_id,
                         "history": self._memory.context(),
                         "llm_config": self._provider_config,
+                        **new_deadline(),
                     },
                     config=config,
                 )
@@ -417,6 +421,7 @@ class GraphOrchestrator:
             secondary = result.get("secondary_intents") or []
             tab_used = "+".join([intent] + [s for s in secondary if s != intent])
 
+            gaps_note = data_gaps_note(result.get("tasks"))
             pending_prompt = result.get("pending_synthesis_prompt")
             if pending_prompt:
                 from agents.llm_client import LLMClient
@@ -434,11 +439,12 @@ class GraphOrchestrator:
                 fundamental_payload = result.get("pending_fundamental_payload")
                 if fundamental_payload:
                     text = text + cited_footnotes(text, fundamental_payload)
+                text += gaps_note
                 self._memory.add_assistant(text)
                 yield text, chart, pdf_path, md_path, csv_path, tab_used
                 return
 
-            text = result.get("final_report", "") or ""
+            text = (result.get("final_report", "") or "") + gaps_note
             self._memory.add_assistant(text)
             yield text, chart, pdf_path, md_path, csv_path, tab_used
         except LLMProvidersExhausted as e:

@@ -24,6 +24,7 @@ from collections.abc import Callable
 
 from agents.llm_client import LLMClient, LLMProvidersExhausted
 from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
+from graph.deadline import past_research_cutoff
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
 from graph.nodes.planner import _ALL_TOOL_NAMES, _build_tasks, _with_transitive_deps
@@ -107,6 +108,8 @@ def build_reflection_node(
     def reflection(state: GraphState) -> dict:
         loop_count = state.get("loop_count", 0)
         max_loops = state.get("max_loops", 2)
+        if past_research_cutoff(state):
+            return log_decision("Reflection", "skipped", "turn deadline reached — no further research")
 
         try:
             raw = client.ask(

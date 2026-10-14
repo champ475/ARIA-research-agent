@@ -733,7 +733,10 @@ def resolve_ticker(query: str) -> tuple[str | None, str]:
     try:
         import yfinance as yf
 
-        results = yf.Search(query, max_results=5)
+        from config import YF_TIMEOUT_SECONDS
+        from utils.resilience import guarded_call
+
+        results = guarded_call("yfinance", yf.Search, query, max_results=5, timeout=YF_TIMEOUT_SECONDS)
         for q in results.quotes or []:
             if q.get("exchange", "") in ("NSI", "BSE", "NSE", "BOM"):
                 sym = q.get("symbol", "").replace(".NS", "").replace(".BO", "")

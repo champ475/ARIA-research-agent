@@ -41,6 +41,21 @@ LOCAL_LLM_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "local")  # llama.cpp ignores
 LOCAL_LLM_MAX_TOKENS = int(os.getenv("LOCAL_LLM_MAX_TOKENS", "1024"))
 LOCAL_LLM_TIMEOUT_SECONDS = float(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
 
+# ── Timeouts and the turn deadline (REL-02) ───────────────────────────────────
+# Cloud LLM calls: total wait for a non-streaming reply, and the longest gap
+# allowed between streamed chunks (which also bounds time-to-first-token).
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+LLM_STREAM_TIMEOUT_SECONDS = float(os.getenv("LLM_STREAM_TIMEOUT_SECONDS", "15"))
+# One yfinance call (it takes no timeout of its own; utils/resilience.py bounds the wait).
+YF_TIMEOUT_SECONDS = float(os.getenv("YF_TIMEOUT_SECONDS", "10"))
+# One research tool call (may make several source calls).
+TOOL_TIMEOUT_SECONDS = float(os.getenv("TOOL_TIMEOUT_SECONDS", "25"))
+# Whole chat turn: research stops dispatching new work at 70% of it, and the
+# answer is built from whatever evidence arrived. A local CPU model needs
+# minutes per turn, so the default stretches when one is configured.
+TURN_DEADLINE_SECONDS = float(os.getenv("TURN_DEADLINE_SECONDS", "600" if LOCAL_LLM_BASE_URL else "90"))
+RESEARCH_DEADLINE_FRACTION = 0.7
+
 # ── Token budgets (tune to stay within daily limits) ─────────────────────────
 # TOKENS_* below all cap OUTPUT tokens only (max_tokens/max_output_tokens on
 # the provider call) — none of them bound the size of the PROMPT itself.

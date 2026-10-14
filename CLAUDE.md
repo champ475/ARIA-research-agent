@@ -74,6 +74,8 @@ Maps common aliases to NSE symbols (e.g. `"SBI"` → `"SBIN"`, `"HUL"` → `"HIN
 - **Write tools**: run only when `graph/write_policy.py::write_allowed` passes (intent owns the tool AND the user's message has an explicit verb). Wrap third-party text in prompts with `graph/prompt_safety.py::wrap_untrusted`.
 - **User input**: chat text goes through `utils/input_guard.py::clean_message` first; user-supplied URLs through `utils/url_safety.py`.
 - **Tenant isolation**: every new `utils/db.py` function taking `user_id` needs a case in `tests/integration/test_tenant_isolation.py::COVERED` (a meta-test fails otherwise).
+- **External calls** (REL-02): HTTP goes through `utils/http.py` (default timeouts, retry with jitter, per-source circuit breaker); libraries without a timeout (yfinance) go through `utils/resilience.py::guarded_call`. Never add a bare `requests.get` / `yf.Ticker(...).info` in app code. Each turn has a deadline (`graph/deadline.py`): research stops at 70% of `TURN_DEADLINE_SECONDS` and the answer names missing data.
+- **Schema** (ARCH-01): schema changes are new Alembic revisions in `migrations/versions/`; app code never runs DDL.
 - **Concurrency**: chat turns run concurrently (`CHAT_CONCURRENCY`), one per user (`respond_exclusive`); module-level mutable state must be thread-safe.
 
 ## Changelog

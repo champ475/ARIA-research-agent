@@ -31,6 +31,11 @@ def local_llm_configured() -> bool:
 
 
 class LocalLLMProvider(OpenAICompatibleProvider):
+    # A CPU model can take longer than the cloud stream cap just to process the
+    # prompt, so both waits use the local budget instead (REL-02).
+    _request_timeout = LOCAL_LLM_TIMEOUT_SECONDS
+    _stream_timeout = LOCAL_LLM_TIMEOUT_SECONDS
+
     def __init__(self, system: str):
         if not LOCAL_LLM_BASE_URL:
             raise ValueError("LOCAL_LLM_BASE_URL is not set — local LLM fallback disabled.")

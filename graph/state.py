@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import operator
 from datetime import datetime
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langgraph.graph.message import add_messages
 
@@ -39,6 +39,10 @@ class Task(TypedDict):
     depends_on: list[str]
     status: Literal["pending", "running", "done", "failed", "skipped"]
     result_evidence_ids: list[str]
+    # Why a failed/skipped task didn't produce evidence (REL-02):
+    # "timeout" | "circuit_open" | "deadline" | "error" — graph/deadline.py
+    # turns it into the user-visible "data missing" note.
+    error: NotRequired[str]
 
 
 class ResearchPlan(TypedDict):
@@ -148,6 +152,10 @@ class GraphState(TypedDict):
     conclusions: list[Conclusion]  # ConclusionBuilder output — what CommunicationLayer reads
     loop_count: Annotated[int, operator.add]
     max_loops: int
+    # REL-02 turn deadline (epoch seconds), set per turn by GraphOrchestrator —
+    # see graph/deadline.py.
+    deadline_ts: float
+    research_cutoff_ts: float
     confidence_summary: dict
     research_journal: Annotated[list[JournalEntry], operator.add]
     final_report: str

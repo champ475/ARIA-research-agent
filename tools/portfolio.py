@@ -1,8 +1,6 @@
 """tools/portfolio.py — persistent portfolio via SQLite"""
 
-import yfinance as yf
-
-from config import NSE_SUFFIX
+from tools.data.fetcher import get_info
 from utils.db import portfolio_add, portfolio_all, portfolio_remove
 
 
@@ -26,7 +24,7 @@ def get_live(user_id: int) -> tuple[list[dict], dict]:
         qty = r["qty"]
         avg = r["avg_price"]
         try:
-            info = yf.Ticker(f"{sym}{NSE_SUFFIX}").info
+            info = get_info(sym)
             price = float(info.get("currentPrice") or info.get("regularMarketPrice") or avg)
         except Exception:
             price = avg

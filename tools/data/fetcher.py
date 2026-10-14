@@ -16,8 +16,9 @@ import time
 import logging
 import yfinance as yf
 import pandas as pd
-from config import NSE_SUFFIX, BSE_SUFFIX, MACRO_TICKERS
+from config import NSE_SUFFIX, BSE_SUFFIX, MACRO_TICKERS, YF_TIMEOUT_SECONDS
 from tools.data.cache import cache_read, cache_write
+from utils.resilience import guarded_call
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,15 @@ _bhavcopy_cache: dict = {}   # "YYYY-MM-DD" -> DataFrame
 
 def _tk(symbol: str, nse: bool = True) -> yf.Ticker:
     return yf.Ticker(f"{symbol}{NSE_SUFFIX if nse else BSE_SUFFIX}")
+
+
+def _yf(fn, *args, **kwargs):
+    """Every yfinance network touch goes through here (REL-02): yfinance takes
+    no timeout for .info/.financials/etc., so the wait is bounded at
+    YF_TIMEOUT_SECONDS, and the shared "yfinance" breaker skips it entirely
+    for a cool-down after repeated failures. Errors raise into the callers'
+    existing except blocks, which already fall back (BSE, then bhavcopy)."""
+    return guarded_call("yfinance", fn, *args, timeout=YF_TIMEOUT_SECONDS, **kwargs)
 
 
 def _bhavcopy_row(symbol: str) -> dict | None:
@@ -78,14 +88,14 @@ def get_info(symbol: str) -> dict:
         return cached[0]
 
     try:
-        info = _tk(symbol).info or {}
+        info = _yf(lambda: _tk(symbol).info) or {}
     except Exception as e:
         log.warning(f"yfinance NSE get_info failed for {symbol}: {e}")
         info = {}
 
     if info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
         try:
-            info = _tk(symbol, nse=False).info or info
+            info = _yf(lambda: _tk(symbol, nse=False).info) or info
         except Exception as e:
             log.warning(f"yfinance BSE get_info failed for {symbol}: {e}")
 
@@ -124,7 +134,7 @@ def get_financials(symbol: str) -> dict:
         ("quarterly_cashflow",      "cashflow_quarterly"),
     ]:
         try:
-            out[key] = getattr(tk, attr)
+            out[key] = _yf(getattr, tk, attr)
         except Exception:
             out[key] = pd.DataFrame()
     _fins_cache[symbol] = (out, now)
@@ -136,7 +146,7 @@ def get_shareholders(symbol: str) -> dict:
     out = {}
     for attr in ("major_holders", "institutional_holders", "mutualfund_holders"):
         try:
-            out[attr] = getattr(tk, attr)
+            out[attr] = _yf(getattr, tk, attr)
         except Exception:
             pass
     return out
@@ -146,10 +156,10 @@ def get_options(symbol: str) -> dict:
     tk  = _tk(symbol)
     out = {"available": False, "calls": pd.DataFrame(), "puts": pd.DataFrame(), "expiry": None}
     try:
-        expiries = tk.options
+        expiries = _yf(lambda: tk.options)
         if not expiries:
             return out
-        chain = tk.option_chain(expiries[0])
+        chain = _yf(tk.option_chain, expiries[0])
         out.update({"available": True, "calls": chain.calls, "puts": chain.puts, "expiry": expiries[0]})
     except Exception:
         pass
@@ -158,7 +168,7 @@ def get_options(symbol: str) -> dict:
 
 def get_recommendations(symbol: str) -> pd.DataFrame:
     try:
-        recs = _tk(symbol).recommendations
+        recs = _yf(lambda: _tk(symbol).recommendations)
         return recs if recs is not None and not recs.empty else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
@@ -168,7 +178,7 @@ def get_macro() -> dict:
     out = {}
     for name, ticker in MACRO_TICKERS.items():
         try:
-            hist = yf.Ticker(ticker).history(period="2d", interval="1d")
+            hist = _yf(yf.Ticker(ticker).history, period="2d", interval="1d")
             if len(hist) >= 2:
                 latest = hist["Close"].iloc[-1]
                 prev   = hist["Close"].iloc[-2]
@@ -195,7 +205,7 @@ def get_sector_peers(symbol: str, info: dict) -> list[dict]:
     result = []
     for p in peers:
         try:
-            hist = yf.Ticker(f"{p}.NS").history(period="5d", interval="1d")
+            hist = _yf(yf.Ticker(f"{p}.NS").history, period="5d", interval="1d")
             if len(hist) >= 2:
                 chg = ((hist["Close"].iloc[-1] - hist["Close"].iloc[-2]) / hist["Close"].iloc[-2]) * 100
                 result.append({"symbol": p, "change": round(float(chg), 2), "price": round(float(hist["Close"].iloc[-1]), 2)})
@@ -210,14 +220,14 @@ def get_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
         return cached
 
     try:
-        df = _tk(symbol).history(period=period, interval=interval, auto_adjust=True)
+        df = _yf(_tk(symbol).history, period=period, interval=interval, auto_adjust=True)
     except Exception as e:
         log.warning(f"yfinance NSE OHLCV failed for {symbol}: {e}")
         df = pd.DataFrame()
 
     if df.empty:
         try:
-            df = _tk(symbol, nse=False).history(period=period, interval=interval, auto_adjust=True)
+            df = _yf(_tk(symbol, nse=False).history, period=period, interval=interval, auto_adjust=True)
         except Exception as e:
             log.warning(f"yfinance BSE OHLCV failed for {symbol}: {e}")
             df = pd.DataFrame()
@@ -264,7 +274,7 @@ def get_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
 
 def search_ticker(name: str) -> list[dict]:
     try:
-        results = yf.Search(name, max_results=6)
+        results = _yf(yf.Search, name, max_results=6)
         found   = []
         for q in (results.quotes or []):
             if q.get("exchange", "") in ("NSI", "BSE", "NSE", "BOM"):

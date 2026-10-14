@@ -313,3 +313,44 @@ class TestGraphOrchestratorMisc:
         orch._awaiting_confirmation = True
         orch.reset()
         assert orch._awaiting_confirmation is False
+
+
+class TestTurnDeadline:
+    """REL-02: every turn carries a deadline, a resume after a gate gets a
+    fresh one, and research that didn't make it is named in the answer."""
+
+    def test_fresh_turn_is_stamped_with_a_deadline(self):
+        import time
+
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {"final_report": "x"}
+        orch = _build_orchestrator(fake_graph)
+        list(orch.process_stream("analyse TCS"))
+        state = fake_graph.invoke.call_args[0][0]
+        assert state["research_cutoff_ts"] < state["deadline_ts"]
+        assert state["deadline_ts"] > time.time()
+
+    def test_resume_gets_a_fresh_deadline(self):
+        fake_graph = MagicMock()
+        fake_interrupt = MagicMock()
+        fake_interrupt.value = {"type": "research_confirmation", "message": "Proceed?"}
+        fake_graph.invoke.side_effect = [{"__interrupt__": [fake_interrupt]}, {"final_report": "done"}]
+        orch = _build_orchestrator(fake_graph)
+        list(orch.process_stream("compare six stocks"))
+        list(orch.process_stream("yes"))
+        resume = fake_graph.invoke.call_args_list[1][0][0]
+        assert set(resume.update) == {"deadline_ts", "research_cutoff_ts"}
+
+    def test_missing_data_is_named_in_the_answer(self):
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {
+            "final_report": "TCS trades at 4000.",
+            "tasks": [
+                {"tool": "fetch_info", "entity": "TCS", "status": "done"},
+                {"tool": "fetch_news", "entity": "TCS", "status": "failed", "error": "timeout"},
+            ],
+        }
+        orch = _build_orchestrator(fake_graph)
+        text = list(orch.process_stream("TCS price and news"))[-1][0]
+        assert text.startswith("TCS trades at 4000.")
+        assert "news for TCS (timed out)" in text

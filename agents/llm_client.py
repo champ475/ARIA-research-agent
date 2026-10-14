@@ -15,7 +15,9 @@ from config import (
     GROQ_API_KEYS,
     GROQ_MODEL,
     GROQ_MODEL_FAST,
+    LLM_STREAM_TIMEOUT_SECONDS,
     LLM_TEMPERATURE,
+    LLM_TIMEOUT_SECONDS,
     MAX_RETRIES,
     PREFERRED_PROVIDER,
     PROVIDER_ZERO_QUOTA_TTL_SECONDS,
@@ -253,7 +255,10 @@ class _GroqProvider:
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
 
     def _client(self):
-        return self._Groq(api_key=_groq_rotator.next())
+        # REL-02: explicit timeout (the SDK default is 60 s), and no SDK-level
+        # retries — LLMClient._call owns retry/fallback, so SDK retries would
+        # multiply every slow failure.
+        return self._Groq(api_key=_groq_rotator.next(), timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
 
     def _summarize(self, old_summary: str, chunk_text: str) -> str:
         prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
@@ -317,6 +322,8 @@ class _GroqProvider:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
+                # Longest gap between chunks, so also the time-to-first-token cap.
+                timeout=LLM_STREAM_TIMEOUT_SECONDS,
             )
             for event in events:
                 delta = event.choices[0].delta.content
@@ -348,7 +355,11 @@ class _GeminiProvider:
             from google import genai
             from google.genai import types as gt
 
-            self._client = genai.Client(api_key=GEMINI_API_KEY)
+            # REL-02: HttpOptions.timeout is in milliseconds.
+            self._client = genai.Client(
+                api_key=GEMINI_API_KEY,
+                http_options=gt.HttpOptions(timeout=int(LLM_TIMEOUT_SECONDS * 1000)),
+            )
             self._types = gt
         except ImportError as e:
             raise ImportError("Run: pip install google-genai") from e
