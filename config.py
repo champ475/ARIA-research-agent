@@ -80,6 +80,12 @@ MAX_CHAT_CHARS = 4000  # one chat message, after normalisation (utils/input_guar
 # 800 output tokens, with margin for burst concurrency across users.
 EVIDENCE_PROMPT_CHAR_BUDGET = 6000
 
+# LLM-02: the answer (synthesis) prompt's budget for rendered evidence —
+# fund rows, headlines, filing passages (graph/evidence_render.py). ~3k
+# tokens: fits Groq's primary model and an 8k-context local model with room
+# for the conclusions, history and the answer itself.
+SYNTHESIS_EVIDENCE_CHAR_BUDGET = int(os.getenv("SYNTHESIS_EVIDENCE_CHAR_BUDGET", "12000"))
+
 # How long a provider stays marked unavailable after reporting a
 # STRUCTURALLY zero quota (e.g. Gemini's "limit: 0" — never provisioned,
 # not "exhausted for today") — agents/llm_client.py's _ProviderHealthCache.

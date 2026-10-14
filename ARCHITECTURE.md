@@ -16,6 +16,54 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — The answer model reads rendered evidence, not just claim strings (LLM-02)
+
+**Problem.** CommunicationLayer passed only each Conclusion's one-line
+claim. Fund searches, movers and deals became counts, news became a headline
+count, and filings were cut to 150 words. Asked for "best ELSS funds" or "why
+TCS is down", the model had nothing to quote, so it either refused or
+invented names. The system prompt forbade inventing them, but nothing
+supplied the real ones.
+
+**Alternatives considered.**
+- *Make conclusions richer* (one claim per fund or headline). Rejected: it
+  blows up Verification and Reflection, which also read conclusions and are
+  budgeted to about 6k characters.
+- *Dump the raw payloads.* Rejected: unbounded size (a filing can be
+  hundreds of kilobytes), and third-party text would arrive unfenced.
+
+**Final decision.**
+- **`graph/evidence_render.py`** renders each evidence type in a bounded
+  form:
+  - tables: the top 15 rows of the relevant columns, as Markdown;
+  - news: 8 deduplicated headlines with source and date;
+  - filings: the passages around results, segment and commentary
+    headings;
+  - pre-rendered Markdown: truncated at a row boundary.
+- **Budget.** `SYNTHESIS_EVIDENCE_CHAR_BUDGET` (12k characters) is split by
+  relevance to the intent and question, with unused share redistributed.
+- **Fencing.** Third-party text is wrapped as untrusted, and numbers are
+  kept verbatim for LLM-03.
+- **Prompt.** CommunicationLayer appends an "Evidence data" section, and its
+  system prompt allows quoting it but nothing outside it. Conclusions
+  (Reflection/Verification's view) are unchanged.
+
+**Trade-offs.**
+- **Bigger prompts.** Up to about 3k extra tokens per synthesis, more
+  latency on the local model.
+- **Heuristic passage choice.** Filing passages are picked by heading
+  keywords, so an unusually formatted filing can fall back to its opening
+  text.
+- **Quality gain not yet measured.** The PRD's "completeness +1.0 judge
+  point" needs the LLM-01 judge, which needs a cloud key.
+
+**Future improvements.**
+- Relevance by embedding similarity, using a local `nomic-embed` model.
+- Table-aware PDF extraction.
+- Budget by tokens rather than characters.
+
+---
+
 ## 2026-10-14 — Education-only advice boundary, enforced in code (COMP-01, LLM-09)
 
 **Problem.** Planning named specific funds and percentages for one person,

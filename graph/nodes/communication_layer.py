@@ -61,10 +61,11 @@ from collections.abc import Callable
 import pandas as pd
 
 from agents.llm_client import LLMClient
-from config import TOKENS_SYNTHESIS
+from config import SYNTHESIS_EVIDENCE_CHAR_BUDGET, TOKENS_SYNTHESIS
 from graph.advice_policy import REFRAME_INSTRUCTION
 from graph.data_questions import NO_LIVE_DATA_INSTRUCTION
 from graph.entity_resolution import blocking_resolutions, clarification_text
+from graph.evidence_render import render_evidence_block
 from graph.guardrails import finalize
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
@@ -108,8 +109,10 @@ _SYSTEM = (
     "ratio using its exact [^key] marker where one is given, right after the "
     'number (e.g. "P/E of 24.3 [^pe]") — never invent a marker, never attach '
     "one to a value that has none. Do not introduce any number that isn't in "
-    "the conclusions list. If the conclusions don't fully cover the "
-    "objective, say so plainly rather than filling the gap." + UNTRUSTED_NOTICE
+    "the conclusions list or the evidence data. You may quote names, rows and "
+    "headlines from the evidence data section; never invent a fund, company, "
+    "headline or figure that isn't there. If the conclusions and evidence don't "
+    "fully cover the objective, say so plainly rather than filling the gap." + UNTRUSTED_NOTICE
 )
 
 
@@ -130,11 +133,16 @@ def _render_history(history: list[dict]) -> str:
     return "Recent conversation (oldest first):\n" + wrap_untrusted("history", "\n".join(lines)) + "\n"
 
 
-def _build_prompt(objective: str, conclusions: list[Conclusion], history: list[dict]) -> str:
+def _build_prompt(
+    objective: str, conclusions: list[Conclusion], history: list[dict], evidence_block: str = ""
+) -> str:
     lines = [_render_history(history), f"Objective: {objective}", "", "Verified conclusions:"]
     for c in conclusions:
         marker = f" [^{c['citation_key']}]" if c["citation_key"] in _CANONICAL_RATIO_KEYS else ""
         lines.append(f"- {c['claim']}{marker} (confidence: {c['confidence']:.2f})")
+    if evidence_block:
+        # LLM-02: the actual rows, headlines and passages behind the conclusions.
+        lines += ["", "Evidence data:", evidence_block]
     return "\n".join(lines)
 
 
@@ -374,6 +382,7 @@ def build_communication_layer_node(
         intents = _intents(state)
         # LLM-09: a request for a personal call is answered as analysis.
         advice = REFRAME_INSTRUCTION if state.get("advice_mode") == "reframe" else ""
+        evidence_block = render_evidence_block(evidence, SYNTHESIS_EVIDENCE_CHAR_BUDGET, intents, query)
 
         if not conclusions and state.get("complexity") == "simple":
             # Trivial path: Planner deliberately generated no tasks (RFC's
@@ -435,7 +444,8 @@ def build_communication_layer_node(
             # agents/equity_agent.py's streaming behavior.
             return {
                 "final_report": "",
-                "pending_synthesis_prompt": _build_prompt(objective, conclusions, history) + advice,
+                "pending_synthesis_prompt": _build_prompt(objective, conclusions, history, evidence_block)
+                + advice,
                 "pending_fundamental_payload": fundamental_payload or None,
                 "chart_html": chart,
                 "pdf_path": None,
@@ -448,7 +458,8 @@ def build_communication_layer_node(
             }
 
         report = client.ask(
-            _build_prompt(objective, conclusions, history) + advice, max_tokens=TOKENS_SYNTHESIS
+            _build_prompt(objective, conclusions, history, evidence_block) + advice,
+            max_tokens=TOKENS_SYNTHESIS,
         )
         if fundamental_payload:
             report = report + cited_footnotes(report, fundamental_payload)
