@@ -25,6 +25,7 @@ import os
 import re
 import tempfile
 import uuid
+from typing import NoReturn
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ class BlockedFetchError(ValueError):
     """Raised by the PDF URL fetcher for any non-data: URL."""
 
 
-def _deny_fetcher(url: str, *args, **kwargs):
+def _deny_fetcher(url: str, *args: object, **kwargs: object) -> NoReturn:
     """WeasyPrint url_fetcher that fetches nothing. Reports carry no images
     (sanitise_html strips <img> anyway), so even data: URIs aren't needed —
     and a deny-all fetcher works the same across WeasyPrint versions, whose

@@ -46,9 +46,7 @@ class TestEvidenceSummarizer:
         assert set(result["evidence_summary"].keys()) == {"RELIANCE", "TCS"}
 
     def test_keeps_latest_when_duplicate_entity_type(self):
-        old = _evidence(
-            id="old", payload={"pe": 20.0}, timestamp=datetime.now(UTC) - timedelta(hours=1)
-        )
+        old = _evidence(id="old", payload={"pe": 20.0}, timestamp=datetime.now(UTC) - timedelta(hours=1))
         new = _evidence(id="new", payload={"pe": 24.3}, timestamp=datetime.now(UTC))
         result = evidence_summarizer({"evidence": [old, new]})
         assert result["evidence_summary"]["RELIANCE"]["quote_info"]["evidence_id"] == "new"
@@ -127,8 +125,8 @@ class TestCapEvidenceForPrompt:
         for i in range(10):
             summary.update(self._big_summary(f"ENTITY{i}", "quote_info", 1.0 - i * 0.05, field_count=200))
         capped = cap_evidence_for_prompt(summary, char_budget=1500)
-        for entity, by_type in capped.items():
-            for evidence_type, entry in by_type.items():
+        for _entity, by_type in capped.items():
+            for _evidence_type, entry in by_type.items():
                 # Every kept entry has its full expected shape — no
                 # half-written keys.
                 assert set(entry.keys()) >= {"summary", "confidence", "source", "evidence_id"}

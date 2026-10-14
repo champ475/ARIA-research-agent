@@ -133,6 +133,6 @@ class TestSnapshot:
     def test_snapshot_no_nan_leak(self, ohlcv_df):
         out = technical.compute_all(ohlcv_df)
         snap = technical.snapshot(out)
-        for k, v in snap.items():
+        for _k, v in snap.items():
             if isinstance(v, float):
                 assert v == v  # not NaN

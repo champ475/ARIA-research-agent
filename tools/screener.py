@@ -126,7 +126,7 @@ def to_markdown(results: list[dict], filters: dict) -> str:
     ]
     for i, r in enumerate(results[:20], 1):
 
-        def _v(k):
+        def _v(k, r=r):
             return str(r.get(k)) if r.get(k) is not None else "N/A"
 
         lines.append(

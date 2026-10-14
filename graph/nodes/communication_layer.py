@@ -54,6 +54,7 @@ NOT implemented yet — it needs more than this node can safely provide.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 
@@ -94,6 +95,8 @@ _PLANNING_RESET_KW = [
 ]
 
 _CANONICAL_RATIO_KEYS = {"pe", "pb", "roce", "de", "cr"}
+
+log = logging.getLogger(__name__)
 
 _SYSTEM = (
     "You are ARIA, an autonomous financial research engine for Indian equity "
@@ -429,8 +432,9 @@ def build_communication_layer_node(
             if user_id is not None:
                 try:
                     report_save(user_id, primary_entity, rtype, f"{rtype} — {primary_entity}", report)
-                except Exception:
-                    pass  # persistence failure shouldn't block returning the report itself
+                except Exception as e:
+                    # Persistence failure shouldn't block returning the report itself.
+                    log.warning(f"[CommunicationLayer] report_save failed: {e}")
 
         csv_path = None
         if "screener" in intents:

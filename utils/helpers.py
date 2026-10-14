@@ -11,6 +11,21 @@ log = logging.getLogger(__name__)
 
 IST = pytz.timezone("Asia/Kolkata")
 
+
+def strip_code_fence(text: str) -> str:
+    """Remove a surrounding ```/```json Markdown fence from an LLM reply.
+    (str.strip("```json") is NOT this — it strips any of those characters
+    from both ends, so e.g. a bare `null` reply became `ull`.)"""
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = t[3:]
+        if t[:4].lower() == "json":
+            t = t[4:]
+        if "```" in t:
+            t = t.rsplit("```", 1)[0]
+    return t.strip()
+
+
 # ── Alias map: common names → NSE ticker ──────────────────────────────────────
 TICKER_ALIASES = {
     # Banks
@@ -311,7 +326,6 @@ STOP_WORDS = {
     "INVESTING",
     "INVESTMENT",
     "HOLD",
-    "HOLDING",
     # Alert-phrasing vocabulary — none of these are ever tickers, but they're
     # capitalized (query is upper-cased before token extraction) and common
     # in "alert me if/when X does Y" phrasing, so without this they can beat
@@ -840,7 +854,7 @@ def llm_resolve_query(query: str, client) -> dict:
     try:
         raw = client.ask(prompt, temperature=0.0, max_tokens=TOKENS_FAST)
         log.debug(f"[LLM RESOLVE] raw response: {raw!r}")
-        raw = raw.strip().strip("```json").strip("```").strip()
+        raw = strip_code_fence(raw)
         data = json.loads(raw)
 
         raw_ticker = data.get("ticker")

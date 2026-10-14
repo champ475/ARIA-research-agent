@@ -118,7 +118,9 @@ def intake_turn(client, msg: str, profile: dict) -> tuple[dict, bool, str]:
     )
     try:
         raw = client.ask(prompt, temperature=0.4, max_tokens=TOKENS_FAST)
-        raw = raw.strip().strip("```json").strip("```").strip()
+        from utils.helpers import strip_code_fence
+
+        raw = strip_code_fence(raw)
         data = json.loads(raw)
         updates = data.get("updates") or {}
         if not isinstance(updates, dict):

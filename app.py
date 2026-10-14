@@ -245,7 +245,8 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         # every other specialist yields exactly once with its finished
         # result, so this loop renders identically for both — it just runs
         # once for a non-streaming tab.
-        for text, chart, pdf_path, md_path, csv_path, tab_used in orch.process_stream(clean):
+        # pdf/md/csv paths are read after the loop (final yield), hence B007.
+        for text, chart, pdf_path, md_path, csv_path, tab_used in orch.process_stream(clean):  # noqa: B007
             if chart is not None:
                 chart_fig = chart
             streaming_hist = history + [
@@ -1451,7 +1452,7 @@ def build_ui() -> gr.Blocks:
                 with gr.Tab("💬 Chat"):
                     chat_chatbot, chat_chart, chat_session, chat_sugg_state = _build_chat_tab(user_state)
 
-                with gr.Tab("📌 Watchlist") as watchlist_tab:
+                with gr.Tab("📌 Watchlist"):
                     _build_watchlist_tab(user_state)
 
                 with gr.Tab("⚙️ Settings"):
@@ -1513,7 +1514,7 @@ if __name__ == "__main__":
 
     demo = build_ui()
     demo.launch(
-        server_name="0.0.0.0",
+        server_name="0.0.0.0",  # container entrypoint; host/proxy controls exposure  # noqa: S104  # nosec B104
         server_port=7860,
         share=False,
         show_error=True,

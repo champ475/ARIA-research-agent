@@ -68,7 +68,7 @@ def _send(chat_id, text: str):
 def _poll_once():
     global _offset
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    resp = requests.get(
+    resp = requests.get(  # timeout passed below  # nosec B113
         url, params={"offset": _offset, "timeout": _POLL_TIMEOUT_S}, timeout=_POLL_TIMEOUT_S + 10
     )
     resp.raise_for_status()

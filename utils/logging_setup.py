@@ -26,7 +26,7 @@ import re
 import sys
 import uuid
 from collections.abc import Generator, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from typing import Any, TypeVar
 
@@ -109,7 +109,7 @@ def configure_logging(level: str | None = None, stream: Any = None) -> None:
     handler = logging.StreamHandler(stream or sys.stderr)
     handler.setFormatter(JsonFormatter())
     root.addHandler(handler)
-    root.setLevel((level or os.getenv("LOG_LEVEL", "INFO")).upper())
+    root.setLevel((level or os.getenv("LOG_LEVEL") or "INFO").upper())
     # Third-party chatter that would drown the app's own lines at INFO.
     for noisy in ("httpx", "httpcore", "urllib3", "yfinance", "matplotlib", "fontTools", "weasyprint"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
@@ -134,11 +134,10 @@ def turn_context(user_id: Any, session_id: Any = None) -> Iterator[str]:
         yield tid
     finally:
         for var, tok in zip((turn_id_var, user_var, session_id_var), tokens, strict=True):
-            try:
+            # ValueError: exited in a different Context (a framework hopped
+            # threads), so there is nothing to restore.
+            with suppress(ValueError):
                 var.reset(tok)
-            except ValueError:
-                # Exited in a different Context (e.g. a framework hopped threads); nothing to restore.
-                pass
 
 
 T = TypeVar("T")

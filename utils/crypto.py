@@ -40,5 +40,5 @@ def encrypt(plaintext: str) -> str:
 def decrypt(ciphertext: str) -> str:
     try:
         return _get_fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
-    except InvalidToken:
-        raise ValueError("Stored API key could not be decrypted — SECRET_KEY may have changed.")
+    except InvalidToken as e:
+        raise ValueError("Stored API key could not be decrypted — SECRET_KEY may have changed.") from e

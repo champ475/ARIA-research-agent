@@ -14,7 +14,7 @@ def assess(fund: dict, ta: dict, sentiment_score: float, macro: dict) -> dict:
         try:
             f = float(str(v).replace("%", ""))
             return f * 100 if abs(f) <= 1.5 else f
-        except:
+        except (TypeError, ValueError):
             return None
 
     # Valuation risk

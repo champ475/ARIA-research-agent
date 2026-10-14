@@ -140,7 +140,7 @@ class TestResearchExecutorEndToEnd:
 
     def test_dependency_task_only_resolves_after_its_dependencies(self):
         result = self._run_with_mocked_tools()
-        node_order = [e["node"] for e in result["research_journal"]]
+        [e["node"] for e in result["research_journal"]]
         first_compute_idx = None
         last_fetch_idx = None
         for i, entry in enumerate(result["research_journal"]):

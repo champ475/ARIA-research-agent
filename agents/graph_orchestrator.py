@@ -342,7 +342,7 @@ class GraphOrchestrator:
     def process(self, message: str) -> tuple[str, object, str | None, str | None, str | None, str]:
         """Returns (text, chart, pdf_path, md_path, csv_path, tab_used) — the final result of process_stream()."""
         result = None
-        for result in self.process_stream(message):
+        for result in self.process_stream(message):  # noqa: B007 — keep only the final yield
             pass
         return result
 
@@ -475,7 +475,9 @@ class GraphOrchestrator:
             # own model-override handling) — only meaningful on the trial path.
             model_override = GROQ_MODEL_FAST if self._provider_config is None else None
             raw = client.ask(prompt, model=model_override, temperature=0.8, max_tokens=TOKENS_FAST)
-            raw = raw.strip().strip("```json").strip("```").strip()
+            from utils.helpers import strip_code_fence
+
+            raw = strip_code_fence(raw)
             sug = json.loads(raw)
             if isinstance(sug, list):
                 return [str(s) for s in sug[:4]]

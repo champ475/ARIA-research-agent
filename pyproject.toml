@@ -40,7 +40,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "T20", "B011", "E741"]
 "scripts/**" = ["T20", "E402"]       # CLI output; sys.path bootstrap before imports
-"app.py" = ["E402"]                  # configure_logging() must run before modules that log at import
+"app.py" = ["E402", "T201"]          # logging must be configured before other imports; T201: the __main__
+                                     # startup banner (tests/test_logging_setup.py forbids print elsewhere)
 
 [tool.ruff.lint.isort]
 known-first-party = ["agents", "graph", "tools", "utils", "config", "app", "scripts", "tests"]
@@ -54,8 +55,39 @@ disallow_incomplete_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
-# Ratchet toward the PRD's --strict: modules listed here are the next ones to
-# fully annotate; remove an entry once it passes under the global settings.
+
+# tools/ isn't in `files` yet; don't report its errors when it's imported.
+[[tool.mypy.overrides]]
+module = ["tools.*"]
+follow_imports = "silent"
+
+# Ratchet toward the PRD's --strict (TEST-01). Every module NOT listed here is
+# type-checked in CI; these legacy modules had errors when the gate was added
+# (2026-10-14: 169 errors, mostly missing annotations and Optional misuse).
+# Fix a module, delete its line, and CI keeps it clean from then on.
+[[tool.mypy.overrides]]
+module = [
+    "agents.conversation_memory",
+    "agents.graph_orchestrator",
+    "agents.llm_client",
+    "agents.providers.openai_compatible",
+    "graph.checkpointer",
+    "graph.graph",
+    "graph.nodes.communication_layer",
+    "graph.nodes.conclusion_builder",
+    "graph.nodes.evidence_summarizer",
+    "graph.nodes.planner",
+    "graph.nodes.reflection",
+    "graph.nodes.research_executor",
+    "graph.nodes.verification",
+    "graph.tool_catalogue",
+    "utils.auth",
+    "utils.db",
+    "utils.helpers",
+    "utils.planning_logic",
+    "utils.telegram_link",
+]
+ignore_errors = true
 
 [tool.coverage.run]
 source = ["agents", "graph", "tools", "utils"]
@@ -64,15 +96,15 @@ branch = true
 [tool.coverage.report]
 # Ratchet: set to the measured baseline (rounded down); raise it as tests are
 # added. PRD target is 85.
-fail_under = 0
+fail_under = 64  # measured 65% on 2026-10-14 (unit + integration)
 show_missing = false
 skip_covered = true
 
 [tool.bandit]
 exclude_dirs = ["tests", "venv", "scripts/load_test.py"]
-# B101 assert: only in tests (excluded). B608 SQL: the one dynamic SQL string
-# interpolates a constant fragment, never user input (scripts/check_alerts.py).
-skips = ["B101"]
+# Reviewed findings are annotated inline with `# nosec <id>` and a reason.
+# B110/B112 try-except-pass/continue: deliberate best-effort paths (same as ruff S110/S112).
+skips = ["B101", "B110", "B112"]
 
 [build-system]
 requires = ["setuptools>=68"]

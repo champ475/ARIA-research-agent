@@ -56,7 +56,7 @@ def _is_public(ip_text: str) -> bool:
 def resolve_host(host: str, port: int) -> list[str]:
     """Every address `host` resolves to (A and AAAA)."""
     infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    return sorted({info[4][0] for info in infos})
+    return sorted({str(info[4][0]) for info in infos})
 
 
 def check_host(host: str, port: int) -> None:

@@ -80,3 +80,26 @@ class TestFilterValidEntities:
             result = filter_valid_entities(["FOOBAR"], allow_network_fallback=False)
         assert result == []
         mock_check.assert_not_called()
+
+
+# ── strip_code_fence (replaced a str.strip("```json") character-set bug) ──────
+import pytest  # noqa: E402
+
+from utils.helpers import strip_code_fence  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('```json\n{"a": 1}\n```', '{"a": 1}'),
+        ('```\n{"a": 1}\n```', '{"a": 1}'),
+        ("```JSON\nnull\n```", "null"),
+        ("null", "null"),  # the old .strip("```json") turned this into "ull"
+        ('  {"ticker": "SBIN"}  ', '{"ticker": "SBIN"}'),
+        ("json", "json"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_strip_code_fence(raw, expected):
+    assert strip_code_fence(raw) == expected

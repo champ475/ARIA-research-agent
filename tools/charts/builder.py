@@ -221,7 +221,7 @@ def candlestick(
     # ── Volume ────────────────────────────────────────────────────────────────
     vol_colors = [
         "rgba(38,166,154,0.5)" if float(c) >= float(o) else "rgba(239,83,80,0.5)"
-        for c, o in zip(df["Close"], df["Open"])
+        for c, o in zip(df["Close"], df["Open"], strict=False)
     ]
     fig.add_trace(
         go.Bar(x=df.index, y=df["Volume"], marker_color=vol_colors, name="Vol", showlegend=False),
@@ -252,7 +252,7 @@ def candlestick(
             row=rsi_row,
             col=1,
         )
-        for lvl, clr in [(70, "rgba(239,83,80,0.3)"), (30, "rgba(38,166,154,0.3)")]:
+        for lvl, _clr in [(70, "rgba(239,83,80,0.3)"), (30, "rgba(38,166,154,0.3)")]:
             fig.add_hline(y=lvl, line_dash="dot", line_color="rgba(255,255,255,0.2)", row=rsi_row, col=1)
 
     # ── MACD ──────────────────────────────────────────────────────────────────
@@ -321,7 +321,7 @@ def sector_heatmap(peers: list[dict], sector: str):
     syms = [p["symbol"] for p in peers]
     changes = [p["change"] for p in peers]
     prices = [f"₹{p['price']}" for p in peers]
-    labels = [f"{s}<br>{c:+.2f}%<br>{pr}" for s, c, pr in zip(syms, changes, prices)]
+    labels = [f"{s}<br>{c:+.2f}%<br>{pr}" for s, c, pr in zip(syms, changes, prices, strict=False)]
     max_abs = max(abs(c) for c in changes) or 1
     norm = [c / max_abs for c in changes]
     colors = []

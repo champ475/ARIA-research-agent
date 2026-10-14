@@ -229,8 +229,8 @@ class _GroqProvider:
             from groq import Groq as _Groq
 
             self._Groq = _Groq
-        except ImportError:
-            raise ImportError("Run: pip install groq")
+        except ImportError as e:
+            raise ImportError("Run: pip install groq") from e
         self._system = system
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
 
@@ -332,8 +332,8 @@ class _GeminiProvider:
 
             self._client = genai.Client(api_key=GEMINI_API_KEY)
             self._types = gt
-        except ImportError:
-            raise ImportError("Run: pip install google-genai")
+        except ImportError as e:
+            raise ImportError("Run: pip install google-genai") from e
         self._system = system
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
 

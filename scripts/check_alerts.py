@@ -288,8 +288,9 @@ def evaluate(conn, alert: dict, cache: RunCache | None = None) -> str | None:
 
 def _mark_triggered(cur, alert: dict, channel: str) -> None:
     deactivate = "" if alert.get("recurring") else "active=FALSE, "
+    # `deactivate` is one of two constant fragments, never user input.
     cur.execute(
-        f"UPDATE alerts SET {deactivate}triggered_at=now(), delivery_status=%s, "
+        f"UPDATE alerts SET {deactivate}triggered_at=now(), delivery_status=%s, "  # noqa: S608  # nosec B608
         "delivery_attempts=0, last_delivery_error=NULL WHERE id=%s",
         (channel, alert["id"]),
     )

@@ -309,7 +309,9 @@ def _llm_extract_alert(msg: str, symbol: str, llm_config: dict | None):
     prompt = _EXTRACT_PROMPT.format(message=wrap_untrusted("user", msg), symbol=symbol, types=_ALERT_TYPES)
     try:
         raw = _get_extract_client(llm_config).ask(prompt, temperature=0.0, max_tokens=TOKENS_FAST)
-        raw = raw.strip().strip("```json").strip("```").strip()
+        from utils.helpers import strip_code_fence
+
+        raw = strip_code_fence(raw)
         data = json.loads(raw)
         alert_type = data.get("alert_type")
         threshold = data.get("threshold")

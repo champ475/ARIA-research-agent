@@ -132,9 +132,11 @@ class TestCallTooLargeNeverRetriesSameProvider:
         err = Exception("Error code: 413 - Request too large for model")
         client = _stub_client(primary_side_effect=err, secondary_side_effect=err)
 
-        with patch("agents.llm_client.time.sleep") as mock_sleep:
-            with pytest.raises(LLMProvidersExhausted) as exc_info:
-                client.ask("hello")
+        with (
+            patch("agents.llm_client.time.sleep") as mock_sleep,
+            pytest.raises(LLMProvidersExhausted) as exc_info,
+        ):
+            client.ask("hello")
 
         assert client._primary.ask.call_count == 1
         assert client._secondary.ask.call_count == 1
@@ -145,9 +147,11 @@ class TestCallTooLargeNeverRetriesSameProvider:
         err = Exception("413 request too large")
         client = _stub_client(primary_side_effect=err, is_byo=True)
 
-        with patch("agents.llm_client.time.sleep") as mock_sleep:
-            with pytest.raises(LLMProvidersExhausted) as exc_info:
-                client.ask("hello")
+        with (
+            patch("agents.llm_client.time.sleep") as mock_sleep,
+            pytest.raises(LLMProvidersExhausted) as exc_info,
+        ):
+            client.ask("hello")
 
         assert client._primary.ask.call_count == 1
         mock_sleep.assert_not_called()
@@ -161,9 +165,8 @@ class TestCallRateLimitedStillRetries:
         err = Exception("429 rate limit exceeded")
         client = _stub_client(primary_side_effect=err, secondary_side_effect=err)
 
-        with patch("agents.llm_client.time.sleep") as mock_sleep:
-            with pytest.raises(LLMProvidersExhausted):
-                client.ask("hello")
+        with patch("agents.llm_client.time.sleep") as mock_sleep, pytest.raises(LLMProvidersExhausted):
+            client.ask("hello")
 
         assert client._primary.ask.call_count == MAX_RETRIES + 1
         assert client._secondary.ask.call_count == MAX_RETRIES + 1

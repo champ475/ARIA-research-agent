@@ -21,6 +21,7 @@ pass --login-api / --chat-api.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import statistics
 import sys
 import threading
@@ -59,10 +60,8 @@ def _one_user(
         client = Client(url, verbose=False)
         email = f"loadtest+{idx}@example.com"
         # Sign up (ignored if it exists), then log in; state lives in this client's session.
-        try:
+        with contextlib.suppress(Exception):
             client.predict(email, password, True, api_name="/_do_signup")
-        except Exception:
-            pass
         client.predict(email, password, True, api_name=login_api)
         if start is not None:
             start.wait(timeout=120)

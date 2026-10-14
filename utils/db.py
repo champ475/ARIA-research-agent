@@ -5,11 +5,12 @@ scripts/check_alerts.py (run on a schedule via GitHub Actions).
 Creates the DB and all tables on first run.
 """
 
+import contextlib
 import json
 import logging
 import os
 import threading
-from datetime import UTC
+from datetime import UTC, date
 
 import psycopg2
 from psycopg2 import pool
@@ -72,10 +73,8 @@ def release_conn(conn, discard: bool = False):
     next caller."""
     try:
         if discard:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
             _get_pool().putconn(conn, close=True)
             return
         if not conn.closed:

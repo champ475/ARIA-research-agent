@@ -28,7 +28,7 @@ class TestResearchConfirmation:
     def test_skips_confirmation_when_not_complex(self):
         tasks = [_task(id=str(i)) for i in range(10)]
         with patch("graph.nodes.human_review.interrupt") as mock_interrupt:
-            result = research_confirmation({"tasks": tasks, "complexity": "moderate"})
+            research_confirmation({"tasks": tasks, "complexity": "moderate"})
         mock_interrupt.assert_not_called()
 
     def test_asks_when_complex_and_over_threshold(self):

@@ -38,8 +38,8 @@ class OpenAICompatibleProvider:
             raise ValueError("No model configured for your chosen LLM provider — set one in Settings.")
         try:
             from openai import OpenAI as _OpenAI
-        except ImportError:
-            raise ImportError("Run: pip install openai")
+        except ImportError as e:
+            raise ImportError("Run: pip install openai") from e
         # SEC-01: a user-supplied base_url must be a public https endpoint —
         # checked here (covers configs saved before validation existed) and
         # again on every request by SafeEgressTransport (DNS rebinding).

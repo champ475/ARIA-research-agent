@@ -8,6 +8,8 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from config import TA_BB_PERIOD, TA_MACD_FAST, TA_MACD_SIGNAL, TA_MACD_SLOW, TA_RSI_PERIOD
+
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 try:
@@ -18,8 +20,6 @@ try:
     TA_OK = True
 except ImportError:
     TA_OK = False
-
-from config import TA_BB_PERIOD, TA_MACD_FAST, TA_MACD_SIGNAL, TA_MACD_SLOW, TA_RSI_PERIOD
 
 
 def compute_all(df: pd.DataFrame) -> pd.DataFrame:
@@ -63,8 +63,8 @@ def compute_all(df: pd.DataFrame) -> pd.DataFrame:
         df["BB_Lower"] = mid - 2 * std
         delta = cls.diff()
         g = delta.clip(lower=0).rolling(14).mean()
-        l = (-delta.clip(upper=0)).rolling(14).mean()
-        df["RSI"] = 100 - (100 / (1 + g / l.replace(0, np.nan)))
+        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        df["RSI"] = 100 - (100 / (1 + g / loss.replace(0, np.nan)))
         e12 = cls.ewm(span=12, adjust=False).mean()
         e26 = cls.ewm(span=26, adjust=False).mean()
         df["MACD"] = e12 - e26
@@ -166,8 +166,8 @@ def swing_levels(df: pd.DataFrame, order: int = 5, n_levels: int = 3) -> dict:
     highs_dedup = _dedup(raw_highs)
     lows_dedup = _dedup(raw_lows)
 
-    resistances = sorted(l for l in highs_dedup if l > price)[:n_levels]
-    supports = sorted((l for l in lows_dedup if l < price), reverse=True)[:n_levels]
+    resistances = sorted(lvl for lvl in highs_dedup if lvl > price)[:n_levels]
+    supports = sorted((lvl for lvl in lows_dedup if lvl < price), reverse=True)[:n_levels]
 
     return {"swing_highs": resistances, "swing_lows": supports}
 
