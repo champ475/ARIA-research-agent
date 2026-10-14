@@ -62,7 +62,7 @@ _GUARANTEE_OK = re.compile(
     _I,
 )
 _PERSONAL_CALL = re.compile(
-    r"\bshould\s+i\s+(?:buy|sell|invest|exit|hold|book\s+profits?|average|enter|switch|keep)\b"
+    r"\bshould\s+i\s+(?:buy|sell|exit|hold|book\s+profits?|average|enter|switch|keep)\b"
     r"|\b(?:buy|sell)\s+(?:it\s+)?(?:now|today|tomorrow|this\s+week|or\s+(?:sell|buy|hold|wait))\b"
     r"|\btarget\s+price\b|\bstock\s+tips?\b|\btips?\s+for\s+(?:today|tomorrow|intraday|this\s+week)"
     r"|\bmulti[\s-]*baggers?\b|\bintraday\s+(?:calls?|tips?)\b"

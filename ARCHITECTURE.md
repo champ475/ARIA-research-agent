@@ -16,6 +16,65 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Golden-set evaluation with record/replay LLM fixtures (LLM-01)
+
+**Problem.** Prompt, model and graph changes shipped with no measurement of
+whether routing, entity resolution, tool choice or safety got better or
+worse, and model deprecations (Groq has already retired two of ours) went
+unnoticed until users hit errors.
+
+**Alternatives considered.**
+- *promptfoo or DeepEval.* Rejected: another toolchain (Node, or a large
+  dependency tree), and our scoring is mostly graph-specific (write gate,
+  entity resolution, blocking) rather than generic text metrics.
+- *Live LLM in CI.* Rejected: it is non-deterministic, needs keys in CI,
+  costs quota, and is slow on the local fallback.
+
+**Final decision.**
+- **Golden set.** `evals/cases/golden.jsonl` holds 240 cases authored in
+  `evals/build_golden.py`: 32 equity, 20 report, 25 MF, 21 screener,
+  25 alert, 20 planning, 15 chat, 30 VAL edge cases, 20 Hinglish/typo,
+  32 red-team.
+- **What it runs.** `evals/runner.py` drives the real path: guardrails →
+  QueryAnalyzer → Planner → write gate.
+- **LLM calls** go through a record/replay client keyed by
+  sha256(node, system prompt, prompt):
+  - `--replay` (CI) is deterministic and needs no network;
+  - `--record` fills in missing responses from whatever provider chain is
+    configured and is resumable.
+- **Metrics:**
+  - always computed: guardrail accuracy and entity F1;
+  - computed on recorded cases: intent, blocking, complexity, tool recall,
+    and write safety (no forbidden tool would *execute*).
+- **Results** go to `evals/results/<sha>.json`.
+- **CI.** An `eval` job compares against `evals/baseline.json`, fails on a
+  drop of more than 2 points, and comments the diff on the PR. `make eval`
+  runs it locally.
+- **First use.** The harness found real defects on its first run: a
+  guardrail false positive on "should I invest…", and "Kotak Mahindra Bank"
+  resolving to KOTAKBANK *and* M&M. Also generic words before "stocks"
+  becoming companies, Hinglish particles breaking extraction, and multi-word
+  typos. All are fixed in this change; deterministic metrics are now 100%.
+
+**Trade-offs.**
+- **Small-model baseline.** The baseline LLM responses come from the local
+  3B model (no cloud key). Re-record with the production model once keys
+  work; fixtures are keyed by prompt, so any prompt change invalidates its
+  fixtures, and those cases show as "unrecorded" until re-recorded.
+- **Not yet end-to-end.** Answers aren't generated and judged yet: the
+  LLM-as-judge needs a stronger model than the one under test plus 50
+  human-labelled calibration answers (the PRD asks for ≥80% agreement). The
+  runner reports it as "not configured".
+- **Grounding and disclaimers** are covered by unit tests rather than
+  answer-level eval metrics.
+
+**Future improvements.**
+- An end-to-end subset with recorded tool outputs and synthesis.
+- The judge, once a cloud key and labels exist.
+- A nightly run against the live model to catch provider deprecations.
+
+---
+
 ## 2026-10-14 — Mutual fund rankings from SEBI categories and computed returns (DATA-04)
 
 **Problem.**

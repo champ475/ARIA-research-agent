@@ -47,14 +47,44 @@ _BSE_CODE = re.compile(r"\b(5\d{5})\b")
 _COMPANY_INTENTS = {"equity", "report", "alert"}
 
 
+# Hindi particles in Hinglish questions ("tcs ka share price kya hai").
+_PARTICLES = frozenset(
+    [
+        "ka",
+        "ki",
+        "ke",
+        "ko",
+        "me",
+        "mein",
+        "se",
+        "hai",
+        "hain",
+        "kya",
+        "kaisa",
+        "kaise",
+        "kaisi",
+        "batao",
+        "bata",
+        "dikhao",
+        "wala",
+        "wali",
+        "vala",
+    ]
+)
+_WORD = re.compile(r"[A-Za-z][A-Za-z0-9&.'-]*")
+
+
 def _skip(word: str) -> bool:
     w = word.upper().strip(".")
-    return w in STOP_WORDS or w in NON_COMPANY_TERMS or len(w) < 2
+    return w in STOP_WORDS or w in NON_COMPANY_TERMS or len(w) < 2 or word.lower() in _PARTICLES
 
 
 def _phrases() -> list[str]:
     phrases = set(TICKER_ALIASES) | set(RENAMED) | {n.upper() for n in AMBIGUOUS_EXACT_NAMES}
     return sorted(phrases, key=len, reverse=True)
+
+
+_NAME_METHODS = {"name", "alias", "renamed", "symbol"}
 
 
 def extract_mentions(query: str) -> list[str]:
@@ -67,24 +97,63 @@ def extract_mentions(query: str) -> list[str]:
         for i in range(start, end):
             masked[i] = " "
 
+    def free(start: int, end: int) -> bool:
+        return all(
+            c != " " or text[i] == " " for i, c in zip(range(start, end), masked[start:end], strict=False)
+        )
+
+    # 1. Full company names written out, longest first: "Kotak Mahindra Bank"
+    #    must win over the single-word aliases "Kotak" and "Mahindra", and
+    #    "TVS Motor" over the ambiguous "TVS". Strong fuzzy matches count too
+    #    ("asain paints", "hdfc bnk"), but only for a 2+ word phrase.
+    words = [(m.start(), m.end(), m.group(0)) for m in _WORD.finditer(text)]
+    for n in (4, 3, 2):
+        for i in range(len(words) - n + 1):
+            window = words[i : i + n]
+            if _skip(window[0][2]) or _skip(window[-1][2]):
+                continue
+            start, end = window[0][0], window[-1][1]
+            if not free(start, end):
+                continue
+            phrase = text[start:end]
+            r = resolve(phrase)
+            if r.status == "found" and (
+                r.method in _NAME_METHODS or (r.method == "fuzzy" and len(phrase) >= 8)
+            ):
+                take(start, end, phrase)
+
     upper = text.upper()
     for phrase in _phrases():
         for m in re.finditer(rf"(?<![\w&]){re.escape(phrase)}(?![\w&])", upper):
-            if "".join(masked[m.start() : m.end()]).strip():
+            if "".join(masked[m.start() : m.end()]).strip() and free(m.start(), m.end()):
                 take(m.start(), m.end(), text[m.start() : m.end()])
 
     for regex in (_SUFFIXED, _BSE_CODE):
         for m in regex.finditer("".join(masked)):
             take(m.start(), m.end(), m.group(0))
 
-    # Words right before "share(s)/stock": "zydus share price", "xyzq stock".
+    # 2. Words right before "share(s)/stock": "zydus share price", "xyzq stock".
+    #    Generic words ("value stocks", "energy stocks") must not become a
+    #    company by fuzzy match: only an exact name/alias/symbol, an ambiguous
+    #    group name, or a single ticker-like unknown word is kept.
     for m in _STOCK_WORD.finditer("".join(masked)):
-        words = m.group(1).split()
-        while words and _skip(words[0]):
-            words.pop(0)
-        if words and not all(_skip(w) for w in words):
-            start = m.start(1) + m.group(1).find(words[0])
-            take(start, start + len(" ".join(words)), " ".join(words))
+        ws = m.group(1).split()
+        while ws and _skip(ws[0]):
+            ws.pop(0)
+        while ws and _skip(ws[-1]):
+            ws.pop()
+        if not ws:
+            continue
+        phrase = " ".join(ws)
+        r = resolve(phrase)
+        keep = (
+            (r.status == "found" and r.method in _NAME_METHODS | {"bse_code"})
+            or (r.status == "ambiguous" and r.method == "name_prefix")
+            or (r.status == "not_found" and len(ws) == 1 and 3 <= len(phrase) <= 12)
+        )
+        if keep:
+            start = m.start(1) + m.group(1).find(ws[0])
+            take(start, start + len(phrase), phrase)
 
     from config import STOCK_UNIVERSE
 
