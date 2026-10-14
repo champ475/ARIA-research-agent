@@ -370,7 +370,11 @@ def _alert_list(entity: str, context: dict[str, Any]) -> list[dict]:
 
 
 def _match_alerts_by_symbol(entity: str, context: dict[str, Any]) -> list[dict]:
-    alerts = context.get("alert_list") or db_alert_list(context.get("_user_id"), active_only=False)
+    # `is None`, not `or`: an empty dependency result means "this user has no
+    # alerts" — re-querying the database for it was a wasted round trip.
+    alerts = context.get("alert_list")
+    if alerts is None:
+        alerts = db_alert_list(context.get("_user_id"), active_only=False)
     return [a for a in alerts if a.get("symbol") == entity]
 
 

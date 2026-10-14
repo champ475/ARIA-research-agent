@@ -20,6 +20,25 @@ def import_app_without_side_effects():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_database(request, monkeypatch):
+    """Unit tests must never open a Postgres connection: locally .env's
+    DATABASE_URL is the production database, and in CI there is none. Only
+    tests under tests/integration/ (which point utils.db at a throwaway
+    database) may connect. psycopg2's pools connect via psycopg2.connect, so
+    this also covers utils.db.get_conn()."""
+    if "integration" in request.node.nodeid.split("::")[0].replace("\\", "/").split("/"):
+        return
+
+    def _refuse(*args, **kwargs):
+        raise RuntimeError(
+            f"{request.node.nodeid} tried to open a real database connection — "
+            "mock the utils.db call, or move the test to tests/integration/"
+        )
+
+    monkeypatch.setattr("psycopg2.connect", _refuse)
+
+
+@pytest.fixture(autouse=True)
 def _no_local_llm(monkeypatch):
     """A developer's .env may set LOCAL_LLM_BASE_URL; unit tests must never
     reach a real local model server. Tests that need it re-enable it."""

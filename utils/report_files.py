@@ -73,13 +73,26 @@ class BlockedFetchError(ValueError):
     """Raised by the PDF URL fetcher for any non-data: URL."""
 
 
-def _deny_fetcher(url: str, *args: object, **kwargs: object) -> NoReturn:
+class _DenyFetcher:
     """WeasyPrint url_fetcher that fetches nothing. Reports carry no images
-    (sanitise_html strips <img> anyway), so even data: URIs aren't needed —
-    and a deny-all fetcher works the same across WeasyPrint versions, whose
-    fetcher API changed in v63+. WeasyPrint logs the refusal and renders
-    without the resource."""
-    raise BlockedFetchError(f"external resource blocked in report rendering: {url[:80]}")
+    (sanitise_html strips <img> anyway), so even data: URIs aren't needed.
+    WeasyPrint logs the refusal and renders without the resource.
+
+    A callable object rather than a function: WeasyPrint 70 reads
+    `url_fetcher._fail_on_errors` off whatever fetcher it is given (False =
+    a refused resource is a warning, not a failed render), and a bare
+    function has no such attribute. Older versions just call it."""
+
+    _fail_on_errors = False
+
+    def __call__(self, url: str, *args: object, **kwargs: object) -> NoReturn:
+        raise BlockedFetchError(f"external resource blocked in report rendering: {url[:80]}")
+
+    def fetch(self, url: str, headers: object = None) -> NoReturn:
+        self(url)
+
+
+_deny_fetcher = _DenyFetcher()
 
 
 def _safe_name(part: str, fallback: str) -> str:
