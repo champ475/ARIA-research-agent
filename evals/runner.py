@@ -62,13 +62,15 @@ class FixtureStore:
             for line in path.read_text(encoding="utf-8").splitlines():
                 if line.strip():
                     row = json.loads(line)
-                    self.data[row["key"]] = row["response"]
+                    self.data[row["sha256"]] = row["response"]
 
     def put(self, key: str, node: str, response: str) -> None:
         self.data[key] = response
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"key": key, "node": node, "response": response}, ensure_ascii=False) + "\n")
+            f.write(
+                json.dumps({"sha256": key, "node": node, "response": response}, ensure_ascii=False) + "\n"
+            )
 
 
 class RecordReplayClient:
