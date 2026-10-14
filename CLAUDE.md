@@ -48,6 +48,7 @@ A LangGraph `StateGraph` (see `docs/RFC_AGENTIC_RESEARCH_GRAPH.md`) is the sole 
 - Thread-safe round-robin key rotation across up to 5 Groq API keys (enables scaling free tier)
 - Automatic fallback to Gemini 2.0 Flash on Groq 429 errors
 - Per-instance conversation history (capped at 20 messages)
+- Optional last-resort local LLM (`agents/providers/local_llm.py`) when `LOCAL_LLM_BASE_URL` is set — any OpenAI-compatible server (e.g. llama.cpp from `..\local-llm`, `.\start-server.ps1` → `http://127.0.0.1:8080/v1`). Tried after Groq/Gemini (or a BYO key) fail, once per call, output capped by `LOCAL_LLM_MAX_TOKENS`. Tests disable it via an autouse fixture in `tests/conftest.py`.
 
 Primary model: `llama-3.3-70b-versatile`. Fast model: `llama-3.1-8b-instant`. Fallback: `gemini-2.0-flash`.
 

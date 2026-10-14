@@ -47,13 +47,20 @@ class OpenAICompatibleProvider:
 
         if base_url:
             base_url = validate_public_https_url(base_url)
-        self._client = _OpenAI(api_key=api_key, base_url=base_url or None, http_client=safe_http_client())
-        self._model = model
-        self._system = system
-        self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
+        self._bind(
+            _OpenAI(api_key=api_key, base_url=base_url or None, http_client=safe_http_client()), model, system
+        )
         # Instance attribute (not the usual class-level `name`) since the
         # displayed provider name should reflect what the user configured.
         self.name = f"{model} ({base_url})" if base_url else model
+
+    def _bind(self, client, model: str, system: str) -> None:
+        """Shared tail of __init__, so a subclass that builds its client
+        differently (agents/providers/local_llm.py) reuses ask/chat/stream."""
+        self._client = client
+        self._model = model
+        self._system = system
+        self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
 
     def _summarize(self, old_summary: str, chunk_text: str) -> str:
         prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)

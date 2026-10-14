@@ -16,6 +16,66 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — A local LLM is the last fallback tier, behind trial and BYO keys
+
+**Problem.** When the shared Groq/Gemini keys are rate-limited, revoked or
+misconfigured, every chat turn fails. On 2026-10-14 that was the live state:
+Groq returned `model_not_found` for both models and the Gemini key was
+invalid. The operator already runs a llama.cpp server (Qwen2.5-3B, CPU, about
+5 tokens/s) that speaks the OpenAI API.
+
+**Alternatives considered.**
+- *Local first, cloud as fallback.* Rejected: a 3B CPU model is much weaker
+  and slower than Llama 3.3 70B, so it should only answer when nothing better
+  can.
+- *Route through the BYO path (`OpenAICompatibleProvider`).* Rejected: that
+  adapter enforces the SEC-01 public-https rule, which correctly rejects
+  `127.0.0.1`. The local URL comes from the operator's environment, not from
+  a user, so it is trusted config and gets its own provider.
+- *LiteLLM proxy in front of every provider.* Rejected for now: it is another
+  service to run, and it would bypass `_KeyRotator`.
+
+**Final decision.** `agents/providers/local_llm.py::LocalLLMProvider`
+subclasses the OpenAI-compatible adapter (shared `_bind`). `LLMClient` adds it
+as a third tier (`_chain()` = primary, secondary, local) when
+`LOCAL_LLM_BASE_URL` is set. It is off by default.
+- **Order.** It is used in both `_call` and `stream`, only after the cloud
+  providers fail.
+- **Retries.** It is tried at most once per call. A refused connection, a
+  timeout or a context overflow will not be fixed by retrying.
+- **Limits.** The SDK's own retries are off. Output is capped at
+  `LOCAL_LLM_MAX_TOKENS` (default 1024) and each call is bounded by
+  `LOCAL_LLM_TIMEOUT_SECONDS` (default 300).
+- **Errors.** llama.cpp's `exceed_context_size_error` is classified as
+  `too_large`.
+- **No cloud keys.** With neither Groq nor Gemini configured, the trial path
+  runs on the local model alone.
+
+It also backs **BYO** clients. This partly supersedes the 2026-10 "BYO has no
+fallback chain" stance. That rule existed so a user's failure never spends
+the operator's cloud quota, and a local model spends no quota. The Settings
+"Test connection" button still builds the BYO provider directly, so a bad
+user key is still reported there.
+
+**Trade-offs.**
+- **Quality.** Answers from the fallback are much weaker: a 3B model with a
+  4–8k context.
+- **Speed.** One server slot (`-np 1`) serialises the graph's parallel LLM
+  calls, so a fallback turn can take minutes.
+- **Visibility.** A BYO user with a broken key gets local answers in chat
+  instead of an error, unless they press "Test connection".
+- **Deployment.** On a host without the server, every exhausted call makes
+  one extra fast-failing connection attempt and logs one warning.
+
+**Future improvements.**
+- Mark the reply when it came from the fallback ("answered by local model").
+- Route Groq's fast-model calls to a separate `local-tiny` endpoint.
+- Add a short health-cache TTL so a down server is skipped without trying to
+  connect.
+- Trim prompts to fit the local context window.
+
+---
+
 ## 2026-10-14 — Tenant isolation is proven by a real-Postgres test suite with a coverage meta-test
 
 **Problem.** Every user-scoped query relies on a hand-written `WHERE user_id=%s`;

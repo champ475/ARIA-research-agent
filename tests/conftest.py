@@ -19,6 +19,13 @@ def import_app_without_side_effects():
     return app
 
 
+@pytest.fixture(autouse=True)
+def _no_local_llm(monkeypatch):
+    """A developer's .env may set LOCAL_LLM_BASE_URL; unit tests must never
+    reach a real local model server. Tests that need it re-enable it."""
+    monkeypatch.setattr("agents.providers.local_llm.LOCAL_LLM_BASE_URL", "")
+
+
 @pytest.fixture(scope="session")
 def app_module():
     return import_app_without_side_effects()

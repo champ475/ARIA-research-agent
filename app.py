@@ -1501,6 +1501,10 @@ if __name__ == "__main__":
     print("  URL      : http://localhost:7860")
     print("  Primary  : Groq (Llama 3.3 70B) — 14,400 req/day per key")
     print("  Fallback : Google Gemini 2.0 Flash")
+    from config import LOCAL_LLM_BASE_URL, LOCAL_LLM_MODEL
+
+    if LOCAL_LLM_BASE_URL:
+        print(f"  Local    : {LOCAL_LLM_MODEL} at {LOCAL_LLM_BASE_URL} (last resort)")
     print("=" * 62)
     from config import SECRET_KEY
 

@@ -1,6 +1,6 @@
 """
 agents/llm_client.py
-Groq round-robin key rotation → Gemini fallback.
+Groq round-robin key rotation → Gemini fallback → optional local LLM.
 Each LLMClient instance gets its own conversation history.
 """
 
@@ -64,7 +64,15 @@ _groq_rotator = _KeyRotator(GROQ_API_KEYS)
 # key reported a structurally zero quota (never provisioned, not "wait and
 # retry"). Both used to be retried blindly, 3x2 attempts, every single call.
 
-_TOO_LARGE_MARKERS = ("413", "too large", "request too large", "context length", "context_length_exceeded")
+_TOO_LARGE_MARKERS = (
+    "413",
+    "too large",
+    "request too large",
+    "context length",
+    "context_length_exceeded",
+    "exceed_context_size",  # llama.cpp: "request (N tokens) exceeds the available context size"
+    "exceeds the available context size",
+)
 _ZERO_QUOTA_MARKERS = ('"limit": "0"', "limit: 0", "limit=0")
 _RATE_LIMIT_MARKERS = ("429", "rate", "quota")
 
@@ -474,7 +482,14 @@ class LLMClient:
     app's Groq/Gemini keys on failure would spend your quota on their
     behalf instead of surfacing their misconfiguration (bad key, wrong
     model name, provider outage) to them directly.
+
+    Either way, when LOCAL_LLM_BASE_URL is set, a local model is the last
+    tier (agents/providers/local_llm.py). It spends nobody's quota, so it
+    also backs BYO keys; the Settings "Test connection" button builds the
+    BYO provider directly, so a bad key is still reported there.
     """
+
+    _local = None  # class default: tests build bare instances via __new__
 
     def __init__(self, system_prompt: str = "", provider_config: dict | None = None):
         self._system = system_prompt or _DEFAULT_SYSTEM
@@ -482,10 +497,22 @@ class LLMClient:
         self._secondary = None
         self._active = "none"
         self._is_byo = bool(provider_config)
+        self._local = self._init_local()
         if provider_config:
             self._init_byo(provider_config)
         else:
             self._init_trial()
+
+    def _init_local(self):
+        from agents.providers.local_llm import LocalLLMProvider, local_llm_configured
+
+        if not local_llm_configured():
+            return None
+        try:
+            return LocalLLMProvider(self._system)
+        except (ValueError, ImportError) as e:
+            log.warning(f"Local LLM init failed: {e}")
+            return None
 
     def _init_byo(self, provider_config: dict):
         from agents.providers.openai_compatible import OpenAICompatibleProvider
@@ -515,6 +542,9 @@ class LLMClient:
             log.warning(f"Secondary ({SecCls.name}) init failed: {e}")
 
         if self._primary is None and self._secondary is None:
+            if self._local is not None:
+                self._active = self._local.name
+                return
             raise ValueError(
                 "No LLM provider configured.\nAdd GROQ_API_KEY_1 or GEMINI_API_KEY to your .env file."
             )
@@ -522,6 +552,10 @@ class LLMClient:
             self._primary = self._secondary
             self._secondary = None
             self._active = self._primary.name
+
+    def _chain(self) -> list:
+        """Providers in fallback order: primary, secondary, then local."""
+        return [p for p in (self._primary, self._secondary, self._local) if p is not None]
 
     @property
     def provider(self) -> str:
@@ -553,7 +587,7 @@ class LLMClient:
         model: str | None = None,
     ):
         """
-        Yields incremental text chunks. Falls back Groq -> Gemini only if a
+        Yields incremental text chunks. Falls back Groq -> Gemini -> local only if a
         provider fails before yielding anything — once tokens are already on
         the wire, restarting on a different provider would duplicate output
         for the caller, so a mid-stream failure surfaces as a trailing note
@@ -562,9 +596,7 @@ class LLMClient:
         """
         last_err = None
         attempted = too_large = 0
-        for provider in [self._primary, self._secondary]:
-            if provider is None:
-                continue
+        for provider in self._chain():
             if _provider_health.is_unavailable(provider.name):
                 continue
             attempted += 1
@@ -593,28 +625,31 @@ class LLMClient:
         )
 
     def reset(self):
-        if self._primary:
-            self._primary.reset()
-        if self._secondary:
-            self._secondary.reset()
+        for provider in self._chain():
+            provider.reset()
 
     def load_history(self, messages: list[dict]):
         """Seeds conversation memory from a previously saved chat (resume-on-load)."""
-        if self._primary:
-            self._primary.load_history(messages)
-        if self._secondary:
-            self._secondary.load_history(messages)
+        for provider in self._chain():
+            provider.load_history(messages)
 
     def _call(
         self, method: str, prompt: str, temperature: float, max_tokens: int, model: str | None = None
     ) -> str:
         last_err = None
         too_large_providers: set[str] = set()
-        providers = [p for p in (self._primary, self._secondary) if p is not None]
+        local_tried = False
+        providers = self._chain()
         for attempt in range(MAX_RETRIES + 1):
             for provider in providers:
                 if provider.name in too_large_providers:
                     continue
+                if provider is self._local:
+                    # At most once per call: it is down (refused), hung (timeout)
+                    # or the prompt doesn't fit — none of which a retry fixes.
+                    if local_tried:
+                        continue
+                    local_tried = True
                 if _provider_health.is_unavailable(provider.name):
                     continue
                 try:

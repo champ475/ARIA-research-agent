@@ -29,6 +29,18 @@ GEMINI_MODEL = "gemini-2.0-flash"
 
 PREFERRED_PROVIDER = os.getenv("PREFERRED_PROVIDER", "groq").lower()
 
+# ── Local LLM fallback (last resort after the cloud providers) ────────────────
+# Any OpenAI-compatible server the operator runs, e.g. llama.cpp `llama-server`
+# at http://127.0.0.1:8080/v1. Empty = disabled. Used when Groq/Gemini (or a
+# user's own BYO key) are rate-limited or failing (agents/llm_client.py).
+LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "").strip()
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "local-fast")
+LOCAL_LLM_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "local")  # llama.cpp ignores it
+# A small CPU model generates ~5 tok/s, so a full TOKENS_SYNTHESIS (2000) answer
+# would take ~7 min; cap its output and bound how long one call may block.
+LOCAL_LLM_MAX_TOKENS = int(os.getenv("LOCAL_LLM_MAX_TOKENS", "1024"))
+LOCAL_LLM_TIMEOUT_SECONDS = float(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
+
 # ── Token budgets (tune to stay within daily limits) ─────────────────────────
 # TOKENS_* below all cap OUTPUT tokens only (max_tokens/max_output_tokens on
 # the provider call) — none of them bound the size of the PROMPT itself.
