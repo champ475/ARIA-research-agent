@@ -25,3 +25,10 @@ data/bhavcopy_history/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
