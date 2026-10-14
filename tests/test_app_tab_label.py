@@ -1,7 +1,9 @@
 """Phase 7.4: app.py::_tab_label() renders the routing badge, including a
 joined multi-domain label when GraphOrchestrator's tab_used names more than
 one domain (e.g. "report+alert")."""
-from app import _tab_label
+from tests.conftest import import_app_without_side_effects
+
+_tab_label = import_app_without_side_effects()._tab_label
 
 
 def test_single_known_domain_renders_its_label():

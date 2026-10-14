@@ -17,6 +17,8 @@ from utils.helpers import now_ist
 from utils.auth import signup, login, AuthError
 from utils.telegram_link import start_polling_thread
 from utils.url_safety import UnsafeURLError
+from utils.input_guard import CleanMessage, InputRejected, clean_message
+from config import MAX_CHAT_CHARS
 
 log = logging.getLogger(__name__)
 
@@ -122,9 +124,24 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     Yields: (cleared_input, send_btn, updated_history, chart, suggestions, pdf, md, csv, *btn_updates)
     """
     no_file = gr.update(value=None, visible=False)
-    if not message.strip():
-        yield (_INPUT_READY, _SEND_READY, history, gr.update(), suggestions, no_file, no_file, no_file) + tuple(gr.update() for _ in range(4))
+    # VAL-01: one input contract — normalise, strip invisible/control chars,
+    # bound the length — and use the cleaned text everywhere below.
+    checked = clean_message(message)
+    if isinstance(checked, InputRejected):
+        if checked.reason == "empty":
+            yield (_INPUT_READY, _SEND_READY, history, gr.update(), suggestions, no_file, no_file, no_file) + tuple(gr.update() for _ in range(4))
+            return
+        log.info(f"[respond] input rejected: {checked.reason}")
+        preview = message[:200] + "…" if isinstance(message, str) and len(message) > 200 else message
+        rejected_hist = history + [
+            {"role": "user", "content": preview or ""},
+            {"role": "assistant", "content": f"⚠️ {checked.user_message}"},
+        ]
+        # Keep the user's text in the box so they can shorten it instead of retyping.
+        keep_text = gr.update(value=message if isinstance(message, str) else "", interactive=True)
+        yield (keep_text, _SEND_READY, rejected_hist, gr.update(), suggestions, no_file, no_file, no_file) + tuple(gr.update() for _ in range(4))
         return
+    message = checked.text
 
     clean = message.lstrip("📊📋📈📰🔀🌍❓✅🔍 ").strip()
     started = time.monotonic()
@@ -662,6 +679,7 @@ def _build_chat_tab(user_state: gr.State):
                     placeholder=CHAT_PLACEHOLDER, label="", show_label=False,
                     lines=1, max_lines=3, autofocus=True,
                     elem_id=f"msg-{tab_id}", scale=10,
+                    max_length=MAX_CHAT_CHARS,  # UI hint; respond() enforces it (VAL-01)
                 )
                 send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
                 clear_btn = gr.Button("Clear chat", scale=1, min_width=60, elem_classes=["clear-btn"])
@@ -674,7 +692,7 @@ def _build_chat_tab(user_state: gr.State):
                + sug_btns + [session_state, refresh_state])
 
     def _respond(user_id, session_id, refresh, msg, hist, sugg, tf):
-        if session_id is None and msg.strip():
+        if session_id is None and isinstance(clean_message(msg), CleanMessage):
             from utils.db import session_create
             session_id = session_create(user_id, tab_id, title=_session_title(msg))
             # A freshly created session must show up in the sidebar the moment

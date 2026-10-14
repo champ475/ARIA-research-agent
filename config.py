@@ -38,6 +38,9 @@ TOKENS_FAST       = 200    # suggestions, tiny calls
 LLM_TEMPERATURE   = 0.3
 MAX_RETRIES       = 2      # per provider before fallback
 
+# ── Input limits (VAL-01) ─────────────────────────────────────────────────────
+MAX_CHAT_CHARS    = 4000   # one chat message, after normalisation (utils/input_guard.py)
+
 # ── Prompt INPUT budget (contrast with TOKENS_* above, which cap OUTPUT) ──────
 # Bounds graph/nodes/evidence_summarizer.py::cap_evidence_for_prompt(), used
 # by Reflection/Verification before embedding evidence_summary in a prompt.

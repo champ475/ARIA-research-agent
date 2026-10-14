@@ -447,11 +447,13 @@ class LLMClient:
         just no time.sleep() blocking the caller between attempts).
         """
         last_err = None
+        attempted = too_large = 0
         for provider in [self._primary, self._secondary]:
             if provider is None:
                 continue
             if _provider_health.is_unavailable(provider.name):
                 continue
+            attempted += 1
             started = False
             try:
                 for chunk in provider.stream(prompt, temperature, max_tokens, model):
@@ -465,10 +467,16 @@ class LLMClient:
                 log.warning(f"[LLMClient] {provider.name} stream failed ({kind}): {e}")
                 if kind == "zero_quota":
                     _provider_health.mark_unavailable(provider.name)
+                elif kind == "too_large":
+                    too_large += 1
                 if started:
-                    yield f"\n\n⚠️ *Connection to {provider.name} dropped mid-response: {e}*"
+                    # The raw error is logged above, never shown (SEC-01).
+                    yield "\n\n⚠️ *The connection to the model dropped mid-response — please ask again.*"
                     return
-        raise LLMProvidersExhausted(last_err, is_byo=self._is_byo)
+        # VAL-01: an oversized prompt must surface as "too long", not as a rate limit.
+        raise LLMProvidersExhausted(
+            last_err, is_byo=self._is_byo, too_large=attempted > 0 and too_large == attempted
+        )
 
     def reset(self):
         if self._primary:   self._primary.reset()
