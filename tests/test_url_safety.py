@@ -160,3 +160,24 @@ def test_exhausted_message_names_the_error_class_for_byo():
         LLMProvidersExhausted(RuntimeError("Error code: 401 - invalid api key"), is_byo=True)
     )
     assert "authentication failed" in msg
+
+
+@pytest.mark.parametrize(
+    ("err", "expected"),
+    [
+        ("Error code: 404 - model `llama-3.1-8b-instant` does not exist (model_not_found)", "model name"),
+        ("400 INVALID_ARGUMENT. API key not valid. Please pass a valid API key.", "authentication failed"),
+    ],
+)
+def test_trial_failures_that_are_not_rate_limits_say_so(err, expected):
+    msg = format_exhausted_message(LLMProvidersExhausted(RuntimeError(err), is_byo=False))
+    assert "rate-limited" not in msg
+    assert expected in msg
+    assert "Settings" in msg
+
+
+def test_trial_rate_limit_keeps_rate_limit_advice():
+    msg = format_exhausted_message(
+        LLMProvidersExhausted(RuntimeError("Error code: 429 rate limit"), is_byo=False)
+    )
+    assert "rate-limited" in msg

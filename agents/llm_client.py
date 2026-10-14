@@ -147,6 +147,8 @@ def _error_class(exc: LLMProvidersExhausted) -> str:
             "forbidden",
             "invalid api key",
             "incorrect api key",
+            "api key not valid",
+            "api_key_invalid",
             "authentication",
             "permission",
         )
@@ -203,6 +205,14 @@ def format_exhausted_message(exc: LLMProvidersExhausted) -> str:
             f"Check your API key, model name, and base URL in Settings — "
             f"this is usually a bad key, an unavailable model, or a provider outage, "
             f"not a rate limit."
+        )
+    if kind != "rate_limited":
+        # Smoke test 2026-10-14: a decommissioned model / invalid trial key was
+        # reported to users as "rate-limited, wait 30 min" — wrong advice.
+        return (
+            "⚠️ The shared AI service isn't available right now "
+            f"({_ERROR_CLASS_TEXT[kind].rstrip('.').lower()}).\n\n"
+            "Please try again later, or add your own LLM key in **Settings** to keep going."
         )
     return (
         "⚠️ All LLM providers are currently rate-limited.\n\n"

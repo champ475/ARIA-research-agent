@@ -250,7 +250,7 @@ class TestStreamProviderExhaustion:
 
 class TestFormatExhaustedMessage:
     def test_trial_path_message_mentions_groq_and_gemini(self):
-        exc = LLMProvidersExhausted(Exception("boom"), is_byo=False)
+        exc = LLMProvidersExhausted(Exception("429 rate limit exceeded"), is_byo=False)
         msg = format_exhausted_message(exc)
         assert "Groq" in msg
         assert "Gemini" in msg
