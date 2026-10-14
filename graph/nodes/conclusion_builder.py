@@ -119,6 +119,10 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
     elif ev["evidence_type"] in _DATAFRAME_EVIDENCE_TYPES and isinstance(ev["payload"], pd.DataFrame):
         n = len(ev["payload"])
         label = _DATAFRAME_EVIDENCE_TYPES[ev["evidence_type"]]
+        df = ev["payload"]
+        # DATA-04: a ranked fund list states how it was ranked, so the answer can too.
+        if "ranking_method" in df.columns and n:
+            label = f"{label} — {df['ranking_method'].iloc[0]}"
         conclusions.append(
             {
                 "claim": f"{ev['entity']}: {n} {label}",

@@ -810,3 +810,51 @@ def turns_by_error_id(error_id: str) -> list[dict]:
         "SELECT * FROM turns WHERE error_id=%s ORDER BY created_at DESC",
         ((error_id or "").strip().lower(),),
     )
+
+
+# ── Mutual fund metrics cache (DATA-04, tools/data/mf_data.py) ───────────────
+
+_MF_METRIC_COLS = (
+    "scheme_name",
+    "category",
+    "nav",
+    "nav_date",
+    "history_start",
+    "cagr_1y",
+    "cagr_3y",
+    "cagr_5y",
+    "volatility_1y",
+    "max_drawdown_3y",
+    "consistency_1y",
+)
+
+
+def mf_metrics_get(codes: list[str], computed_since: date) -> dict[str, dict]:
+    """Cached metrics for `codes` computed on or after `computed_since`."""
+    if not codes:
+        return {}
+    rows = _query(
+        "SELECT * FROM mf_metrics WHERE scheme_code = ANY(%s) AND computed_at::date >= %s",
+        (list(codes), computed_since),
+    )
+    return {r["scheme_code"]: {k: v for k, v in r.items() if k != "scheme_code"} for r in rows}
+
+
+# Built once from the constant column list above — no caller input reaches it.
+_MF_UPSERT_SQL = (
+    f"INSERT INTO mf_metrics (scheme_code, {', '.join(_MF_METRIC_COLS)}) "  # noqa: S608  # nosec B608
+    f"VALUES ({', '.join(['%s'] * (len(_MF_METRIC_COLS) + 1))}) "
+    f"ON CONFLICT (scheme_code) DO UPDATE SET {', '.join(f'{c}=EXCLUDED.{c}' for c in _MF_METRIC_COLS)}, "
+    "computed_at=now()"
+)
+
+
+def mf_metrics_put(rows: list[dict]) -> None:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        for row in rows:
+            cur.execute(_MF_UPSERT_SQL, (row["scheme_code"], *[row.get(c) for c in _MF_METRIC_COLS]))
+        conn.commit()
+    finally:
+        release_conn(conn)

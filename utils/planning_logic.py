@@ -122,6 +122,13 @@ def intake_turn(client, msg: str, profile: dict) -> tuple[dict, bool, str]:
         return {}, is_complete(profile), fallback_question(profile)
 
 
+def _horizon(profile: dict) -> float | None:
+    try:
+        return float(profile.get("horizon_years"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_fund_data(profile: dict) -> str:
     categories = list(CORE_CATEGORIES)
     tax_regime = str(profile.get("tax_regime", "")).lower()
@@ -131,7 +138,8 @@ def fetch_fund_data(profile: dict) -> str:
     blocks = []
     for cat in categories:
         try:
-            funds = get_category_funds(cat, top_n=5)
+            # DATA-04: ranked by the CAGR that matches the investor's horizon.
+            funds = get_category_funds(cat, top_n=5, horizon_years=_horizon(profile))
             blocks.append(f"--- {cat.title()} (AMFI NAV data) ---\n{format_fund_search_results(funds)}")
         except Exception as e:
             blocks.append(f"--- {cat.title()} ---\nUnavailable: {e}")

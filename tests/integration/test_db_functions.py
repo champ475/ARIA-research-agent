@@ -216,6 +216,34 @@ def test_fifty_active_alerts_is_the_cap(db, two_users):
     db.alert_add(a, "TCS", "price_above", "c", 9999.0)  # room again after pausing one
 
 
+# ── DATA-04: mutual fund metrics cache ────────────────────────────────────────
+
+
+def test_mf_metrics_cache_round_trip_and_freshness(db):
+    from datetime import date, timedelta
+
+    row = {
+        "scheme_code": "119544",
+        "scheme_name": "Alpha ELSS",
+        "category": "ELSS",
+        "nav": 65.55,
+        "nav_date": date(2026, 10, 13),
+        "history_start": date(2013, 1, 1),
+        "cagr_1y": -4.57,
+        "cagr_3y": 9.51,
+        "cagr_5y": 6.9,
+        "volatility_1y": 14.2,
+        "max_drawdown_3y": -18.0,
+        "consistency_1y": 80.0,
+    }
+    db.mf_metrics_put([row])
+    db.mf_metrics_put([{**row, "cagr_1y": -4.0}])  # upsert, not a second row
+    got = db.mf_metrics_get(["119544", "999"], date.today() - timedelta(days=1))
+    assert list(got) == ["119544"] and got["119544"]["cagr_1y"] == -4.0
+    assert db.mf_metrics_get(["119544"], date.today() + timedelta(days=1)) == {}  # stale -> recompute
+    assert db.mf_metrics_get([], date.today()) == {}
+
+
 # ── coverage meta-test ────────────────────────────────────────────────────────
 
 # Public functions covered in this file (user-scoped ones are in ISOLATION_COVERED).
@@ -231,6 +259,8 @@ COVERED = {
     "telegram_link_code_resolve": test_link_code_race_links_exactly_once,
     "turn_set_trace_url": test_turn_record_round_trip_and_error_id_lookup,
     "turns_by_error_id": test_turn_record_round_trip_and_error_id_lookup,
+    "mf_metrics_get": test_mf_metrics_cache_round_trip_and_freshness,
+    "mf_metrics_put": test_mf_metrics_cache_round_trip_and_freshness,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 INFRASTRUCTURE = {"get_conn", "release_conn", "ensure_schema"}

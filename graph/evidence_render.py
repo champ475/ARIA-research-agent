@@ -41,14 +41,15 @@ _THIRD_PARTY = {"news_headline", "pdf_extract", "mf_comparison"}
 # falls back to the first six columns.
 _COLUMNS = {
     "mf_category_funds": [
+        "rank",
         "scheme_name",
         "nav",
-        "nav_date",
-        "category",
         "cagr_1y",
         "cagr_3y",
         "cagr_5y",
-        "expense_ratio",
+        "volatility_1y",
+        "max_drawdown_3y",
+        "consistency_1y",
     ],
     "mf_nav": ["scheme_name", "nav", "nav_date"],
     "top_movers": ["symbol", "ltp", "price", "pct", "pchange", "change", "pct_change", "volume"],
@@ -217,7 +218,9 @@ def render_for_prompt(ev: dict, budget_chars: int) -> str:
     if etype in _COLUMNS or etype in ("screener_results",):
         df = _as_frame(payload)
         if df is not None and not df.empty:
-            return _markdown_table(df, _pick_columns(df, etype), budget_chars)
+            # DATA-04: a ranked list says how it was ranked.
+            method = f"Ranking: {df['ranking_method'].iloc[0]}\n" if "ranking_method" in df.columns else ""
+            return method + _markdown_table(df, _pick_columns(df, etype), budget_chars - len(method))
     if etype == "alert_list" and isinstance(payload, list):
         lines = [
             f"- #{a.get('id')} {a.get('symbol')}: {a.get('condition') or a.get('alert_type')}"

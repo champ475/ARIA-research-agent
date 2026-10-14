@@ -16,6 +16,61 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Mutual fund rankings from SEBI categories and computed returns (DATA-04)
+
+**Problem.**
+- **Arbitrary picks.** "Best ELSS funds" returned the first rows of AMFI's
+  NAVAll whose name contained the keyword (alphabetical by AMC), with no
+  performance data, and planning allocations were built from those.
+- **Comparisons said nothing.** They showed NAV levels only.
+- **Live outage.** AMFI moved NAVAll to an 8-field layout, so the old
+  6-field parser kept only NAV-less rows and category lookups returned
+  nothing at all.
+
+**Alternatives considered.**
+- *A paid data vendor* (Value Research or Morningstar APIs). Not for now:
+  cost and licensing (COMP-05).
+- *Store full daily NAV history in Postgres.* Rejected: about 1,500
+  direct-growth schemes × years of daily data would outgrow Neon's free
+  tier, and rankings only need summary metrics.
+- *Rank by AUM or expense ratio.* Rejected: neither is in NAVAll or mfapi,
+  and they need another source (left for later).
+
+**Final decision.**
+- **`tools/data/mf_data.py`:**
+  - parses both NAVAll layouts, the SEBI category header (variants merged
+    into canonical names), plan, option and open/closed-ended status;
+  - takes NAV history from mfapi.in through the guarded session;
+  - computes point-to-point 1-year return, 3/5-year CAGR, 1-year volatility,
+    3-year max drawdown and rolling 1-year consistency;
+  - `rank_funds` ranks open-ended direct-growth plans of the category by the
+    CAGR that matches the horizon, then lower volatility, and carries
+    `ranking_method` so the answer states it.
+- **Caching.** Metrics are cached daily in `mf_metrics` (migration 0006),
+  with a fetch budget of 18 s inside the 25 s tool budget.
+  `scripts/refresh_mf.py` warms the common categories.
+- **Wiring.** AMFI's `get_category_funds`, `get_mf_comparison`, planning
+  (horizon-aware), ConclusionBuilder (method in the claim) and the evidence
+  renderer all use it.
+- **Accuracy.** `scripts/verify_mf_returns.py` compares against AMFI's own
+  published NAVs. On 2026-10-14: 36 returns across 12 schemes in ELSS, Large
+  Cap and Flexi Cap, largest difference 0.006 pp (PRD bar 0.1 pp).
+
+**Trade-offs.**
+- **mfapi.in is a free community API** with no SLA. Its NAVs matched AMFI in
+  the check, and a circuit breaker protects us when it is down.
+- **The first ranking of a category per day** fetches every scheme's history
+  (about 10 s for ELSS) unless warmed.
+- **Missing ranking factors.** Expense ratio and AUM aren't factored in yet.
+
+**Future improvements.**
+- A nightly refresh job.
+- TER and AUM from AMFI's disclosure files.
+- Category-relative consistency (beating the category median rather than
+  being positive).
+
+---
+
 ## 2026-10-14 — Every figure in an answer is checked against what the model was given (LLM-03)
 
 **Problem.** "Never introduce a number not in the conclusions" was only an
