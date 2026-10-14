@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from graph.data_questions import NO_LIVE_DATA_INSTRUCTION
 from graph.nodes.communication_layer import build_communication_layer_node
 
 
@@ -77,7 +78,8 @@ class TestCommunicationLayerNoConclusions:
             }
         )
         assert result["final_report"] == ""
-        assert result["pending_synthesis_prompt"] == "what does PE mean"
+        # LLM-06: the no-research path is told it has no live data.
+        assert result["pending_synthesis_prompt"] == NO_LIVE_DATA_INSTRUCTION + "what does PE mean"
         assert stub.last_prompt is None
 
     def test_non_streamable_trivial_query_answered_directly(self):

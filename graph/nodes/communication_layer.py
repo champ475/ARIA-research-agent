@@ -63,6 +63,7 @@ import pandas as pd
 from agents.llm_client import LLMClient
 from config import TOKENS_SYNTHESIS
 from graph.advice_policy import REFRAME_INSTRUCTION
+from graph.data_questions import NO_LIVE_DATA_INSTRUCTION
 from graph.entity_resolution import blocking_resolutions, clarification_text
 from graph.guardrails import finalize
 from graph.journal import log_decision
@@ -380,7 +381,8 @@ def build_communication_layer_node(
             # evidence to build conclusions from — this isn't a research
             # failure, just a question that doesn't need research. Answer
             # directly instead of reporting a gap that was never a gap.
-            prompt = _render_history(history) + (query or objective) + advice
+            # LLM-06: nothing was fetched, so the model must not state figures.
+            prompt = NO_LIVE_DATA_INSTRUCTION + _render_history(history) + (query or objective) + advice
             if _is_streamable(intent, intents):
                 return {
                     "final_report": "",
