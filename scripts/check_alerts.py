@@ -16,12 +16,16 @@ every user's chat, Telegram's API is chat_id-addressed already) — only the
 per-alert destination changed.
 
 Delivery contract (DATA-08): an alert is marked triggered (one-shot alerts
-deactivated, recurring ones start their cooldown) only once its message has
-been delivered somewhere the user will see it:
-- Telegram linked and the send confirmed (HTTP 200 with "ok": true), or
-- written to the user's in-app inbox (the `notifications` table, shown in the
-  Settings tab) — used when the user hasn't linked Telegram, the bot isn't
-  configured, or Telegram has failed ALERT_MAX_DELIVERY_ATTEMPTS runs in a row.
+deactivated, recurring ones start their cooldown) only once the user has
+actually been told:
+- Telegram linked and the send confirmed (HTTP 200 with "ok": true) — the
+  alert is triggered right away; or
+- the in-app inbox (the `notifications` table, shown in the Settings tab) —
+  used when the user hasn't linked Telegram, the bot isn't configured, or
+  Telegram has failed ALERT_MAX_DELIVERY_ATTEMPTS runs in a row. The alert
+  then STAYS ACTIVE with delivery_status='pending_delivery' and is skipped by
+  later runs (no duplicate inbox entries); it is consumed when the user marks
+  the notification read (utils/db.py::notifications_mark_read).
 A transient Telegram failure leaves the alert untouched apart from a
 delivery_attempts counter, so the next run tries again.
 
@@ -298,7 +302,8 @@ def _mark_triggered(cur, alert: dict, channel: str) -> None:
 
 def deliver(cur, alert: dict, msg: str) -> str:
     """Deliver one fired alert and record the outcome in the same transaction.
-    Returns "telegram", "in_app" or "retry"."""
+    Returns "telegram", "in_app" (queued in the inbox, pending until read)
+    or "retry"."""
     ok, err = send_telegram(msg, alert.get("telegram_chat_id"))
     if ok:
         _mark_triggered(cur, alert, "telegram")
@@ -309,7 +314,12 @@ def deliver(cur, alert: dict, msg: str) -> str:
             "INSERT INTO notifications (user_id, alert_id, message) VALUES (%s, %s, %s)",
             (alert["user_id"], alert["id"], msg),
         )
-        _mark_triggered(cur, alert, "in_app")
+        # Not consumed yet: an unread inbox entry isn't proof the user saw it.
+        cur.execute(
+            "UPDATE alerts SET delivery_status='pending_delivery', delivery_attempts=%s, "
+            "last_delivery_error=%s WHERE id=%s",
+            (attempts, err, alert["id"]),
+        )
         return "in_app"
     cur.execute(
         "UPDATE alerts SET delivery_attempts=%s, last_delivery_error=%s, delivery_status='retrying' WHERE id=%s",
@@ -334,7 +344,10 @@ def run_once(conn) -> dict[str, int]:
     cur.execute(
         "SELECT alerts.*, users.telegram_chat_id FROM alerts "
         "JOIN users ON alerts.user_id = users.id "
-        "WHERE alerts.active=TRUE ORDER BY alerts.symbol, alerts.id"
+        "WHERE alerts.active=TRUE "
+        # Already waiting in the user's inbox — re-firing would only duplicate it.
+        "AND alerts.delivery_status IS DISTINCT FROM 'pending_delivery' "
+        "ORDER BY alerts.symbol, alerts.id"
     )
     alerts = cur.fetchall()
     log.info(f"Evaluating {len(alerts)} active alert(s).")

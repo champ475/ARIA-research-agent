@@ -116,14 +116,23 @@ def _sql(cur, needle):
     return [(s, p) for s, p in cur.executed if needle in s]
 
 
-def test_unlinked_user_gets_inbox_entry_before_alert_is_consumed(bot):
+def test_unlinked_user_alert_stays_active_pending_delivery_in_inbox(bot):
+    """PRD DATA-08 Done-when: an unlinked user's alert stays active with
+    pending_delivery and shows in-app — consumed only when it is read."""
     cur = _Cur()
     assert ca.deliver(cur, _alert(telegram_chat_id=None), "msg") == "in_app"
-    statements = [s for s, _ in cur.executed]
-    insert_at = next(i for i, s in enumerate(statements) if s.startswith("INSERT INTO notifications"))
-    update_at = next(i for i, s in enumerate(statements) if "active=FALSE" in s)
-    assert insert_at < update_at
     assert _sql(cur, "INSERT INTO notifications")[0][1] == (7, 1, "msg")
+    (stmt,) = _sql(cur, "delivery_status='pending_delivery'")
+    assert stmt[1][2] == 1
+    assert not _sql(cur, "active=FALSE")
+    assert not _sql(cur, "triggered_at=now()")
+
+
+def test_pending_delivery_alerts_are_not_re_evaluated(bot):
+    conn = _Conn([])
+    ca.run_once(conn)
+    (select,) = [s for s, _ in conn.cur.executed if s.startswith("SELECT alerts.*")]
+    assert "IS DISTINCT FROM 'pending_delivery'" in select
 
 
 def test_missing_bot_token_falls_back_to_inbox(monkeypatch):
@@ -169,7 +178,8 @@ def test_after_max_attempts_falls_back_to_inbox(bot):
     with patch.object(ca.requests, "post", return_value=_resp(502, {})):
         outcome = ca.deliver(cur, _alert(delivery_attempts=ca.ALERT_MAX_DELIVERY_ATTEMPTS - 1), "msg")
     assert outcome == "in_app"
-    assert _sql(cur, "INSERT INTO notifications") and _sql(cur, "active=FALSE")
+    assert _sql(cur, "INSERT INTO notifications")
+    assert _sql(cur, "delivery_status='pending_delivery'") and not _sql(cur, "active=FALSE")
 
 
 def test_recurring_alert_is_not_deactivated_on_delivery(bot):

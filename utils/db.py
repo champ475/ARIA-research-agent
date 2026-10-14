@@ -87,7 +87,7 @@ def release_conn(conn, discard: bool = False):
             _pool_slots.release()
 
 
-def _query(sql: str, params: tuple = (), fetch: str | None = "all", commit: bool = False):
+def _query(sql: str, params: tuple | dict = (), fetch: str | None = "all", commit: bool = False):
     """fetch: 'all' | 'one' | None. Returns list[dict] | dict|None | None.
 
     A pooled connection Neon has already dropped server-side (idle timeout on
@@ -663,23 +663,37 @@ def notifications_unread_count(user_id: int) -> int:
     return int(row["n"]) if row else 0
 
 
+# DATA-08: reading an inbox entry is what consumes an alert that was queued
+# there (scripts/check_alerts.py leaves it active as 'pending_delivery').
+# One statement, so a notification is never marked read without its alert
+# being consumed. {only_ids} is one of two constant fragments.
+_MARK_READ_SQL = """
+    WITH newly_read AS (
+        UPDATE notifications SET read_at=now()
+        WHERE user_id=%(uid)s AND read_at IS NULL {only_ids}
+        RETURNING alert_id
+    )
+    UPDATE alerts SET
+        active = CASE WHEN recurring THEN active ELSE FALSE END,
+        triggered_at = now(), delivery_status = 'in_app',
+        delivery_attempts = 0, last_delivery_error = NULL
+    WHERE user_id=%(uid)s AND delivery_status='pending_delivery'
+      AND id IN (SELECT alert_id FROM newly_read WHERE alert_id IS NOT NULL)
+"""
+
+
 def notifications_mark_read(user_id: int, ids: list[int] | None = None) -> None:
     """Marks the given notifications (or all unread ones) read — only the
-    caller's own rows, whatever ids are passed."""
+    caller's own rows, whatever ids are passed — and consumes any alert that
+    was waiting on them (see _MARK_READ_SQL)."""
     if ids is None:
-        _query(
-            "UPDATE notifications SET read_at=now() WHERE user_id=%s AND read_at IS NULL",
-            (user_id,),
-            fetch=None,
-            commit=True,
-        )
+        sql, params = _MARK_READ_SQL.format(only_ids=""), {"uid": user_id}
     elif ids:
-        _query(
-            "UPDATE notifications SET read_at=now() WHERE user_id=%s AND id = ANY(%s) AND read_at IS NULL",
-            (user_id, list(ids)),
-            fetch=None,
-            commit=True,
-        )
+        sql = _MARK_READ_SQL.format(only_ids="AND id = ANY(%(ids)s)")
+        params = {"uid": user_id, "ids": list(ids)}
+    else:
+        return
+    _query(sql, params, fetch=None, commit=True)
 
 
 def alert_get_active_all() -> list[dict]:

@@ -16,6 +16,46 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Inbox-delivered alerts stay pending until read (supersedes part of "Alert delivery contract")
+
+**Problem.** The first DATA-08 implementation (entry below) wrote the inbox
+row and immediately marked the alert triggered: a one-shot alert was
+deactivated before anyone had seen it. The PRD's Done-when says an unlinked
+user's alert "stays active with pending_delivery and shows in-app".
+
+**Alternatives considered.**
+- *Keep it triggered on insert.* Rejected: an unread row is not proof of
+  delivery, which is the whole point of DATA-08.
+- *Leave it active and re-evaluate it every run.* Rejected: a condition that
+  stays true would add a duplicate inbox row every 5 minutes.
+
+**Final decision.**
+- **Queuing.** When `scripts/check_alerts.py` queues an alert in the inbox, it
+  sets `delivery_status='pending_delivery'` and leaves `active` and
+  `triggered_at` untouched.
+- **No duplicates.** Each run's SELECT skips alerts that are already pending.
+- **Consuming.** `utils/db.py::notifications_mark_read` consumes them. One
+  statement (a data-modifying CTE) marks the notifications read and, for the
+  same user's pending alerts they point to, does what Telegram delivery does:
+  a one-shot alert is deactivated; a recurring one gets `triggered_at=now()`
+  and starts its cooldown.
+- **Tests.** `tests/integration/test_alert_delivery.py` proves the whole cycle
+  on real Postgres, including that another user's mark-read can't consume
+  them.
+
+**Trade-offs.**
+- **Unread means never consumed.** A user who never opens the inbox keeps a
+  pending alert indefinitely. It is never re-sent, but it never expires
+  either.
+- **Linking later doesn't re-send.** If Telegram is linked while an alert is
+  pending, the alert is not re-sent there; it stays in the inbox.
+
+**Future improvements.**
+- Expire pending alerts after N days.
+- Deliver pending inbox items over Telegram once the user links it.
+
+---
+
 ## 2026-10-14 — A local LLM is the last fallback tier, behind trial and BYO keys
 
 **Problem.** When the shared Groq/Gemini keys are rate-limited, revoked or
