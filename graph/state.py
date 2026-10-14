@@ -144,6 +144,12 @@ class GraphState(TypedDict):
     # "Zomato is now ETERNAL" — graph/entity_resolution.py.
     entity_resolutions: list[dict]
     entity_notes: list[str]
+    # LLM-09: "reframe" when the user asked for a personal buy/sell call or a
+    # tip (answered as analysis, no call); advice_caution adds the
+    # speculative-securities note. Set by GraphOrchestrator from
+    # graph/guardrails.py::check_input.
+    advice_mode: str | None
+    advice_caution: bool
     intent: str
     secondary_intents: list[str]  # Phase 7.4: other domains this message ALSO names, if any
     objective: str

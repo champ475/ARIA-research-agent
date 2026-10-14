@@ -62,7 +62,9 @@ import pandas as pd
 
 from agents.llm_client import LLMClient
 from config import TOKENS_SYNTHESIS
+from graph.advice_policy import REFRAME_INSTRUCTION
 from graph.entity_resolution import blocking_resolutions, clarification_text
+from graph.guardrails import finalize
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
 from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
@@ -369,6 +371,8 @@ def build_communication_layer_node(
 
         intent = state.get("intent") or "equity"
         intents = _intents(state)
+        # LLM-09: a request for a personal call is answered as analysis.
+        advice = REFRAME_INSTRUCTION if state.get("advice_mode") == "reframe" else ""
 
         if not conclusions and state.get("complexity") == "simple":
             # Trivial path: Planner deliberately generated no tasks (RFC's
@@ -376,7 +380,7 @@ def build_communication_layer_node(
             # evidence to build conclusions from — this isn't a research
             # failure, just a question that doesn't need research. Answer
             # directly instead of reporting a gap that was never a gap.
-            prompt = _render_history(history) + (query or objective)
+            prompt = _render_history(history) + (query or objective) + advice
             if _is_streamable(intent, intents):
                 return {
                     "final_report": "",
@@ -429,7 +433,7 @@ def build_communication_layer_node(
             # agents/equity_agent.py's streaming behavior.
             return {
                 "final_report": "",
-                "pending_synthesis_prompt": _build_prompt(objective, conclusions, history),
+                "pending_synthesis_prompt": _build_prompt(objective, conclusions, history) + advice,
                 "pending_fundamental_payload": fundamental_payload or None,
                 "chart_html": chart,
                 "pdf_path": None,
@@ -441,13 +445,18 @@ def build_communication_layer_node(
                 ),
             }
 
-        report = client.ask(_build_prompt(objective, conclusions, history), max_tokens=TOKENS_SYNTHESIS)
+        report = client.ask(
+            _build_prompt(objective, conclusions, history) + advice, max_tokens=TOKENS_SYNTHESIS
+        )
         if fundamental_payload:
             report = report + cited_footnotes(report, fundamental_payload)
 
         pdf_path = md_path = None
         if "report" in intents and primary_entity:
             rtype = detect_report_type((query or objective).lower())
+            # LLM-09: the saved/downloaded report carries the same checks and
+            # footer as the chat answer (finalize() is idempotent).
+            report = finalize(report, state)
             md_path, pdf_path = render_report(primary_entity, rtype, report)
             user_id = state.get("user_id")
             if user_id is not None:

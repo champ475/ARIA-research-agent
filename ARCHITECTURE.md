@@ -16,6 +16,65 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Education-only advice boundary, enforced in code (COMP-01, LLM-09)
+
+**Problem.** Planning named specific funds and percentages for one person,
+reports and "should I buy" answers could carry calls or targets, and the only
+disclaimer was a line the prompt *asked* the model to add. Nothing stopped
+"guaranteed 30% returns", insider-information or pump-scheme requests.
+Personalised advice to the public can fall under SEBI's IA/RA regulations
+whatever a footer says.
+
+**Alternatives considered.**
+- *Regulated posture (RIA/RA partner).* Rejected by the user for now: it
+  needs registration or a partner, records, suitability and grievance
+  handling.
+- *Rely on prompt instructions.* Rejected: they aren't enforceable, and
+  small local models ignore them.
+- *An LLM classifier on every turn.* Not used: it adds an extra call and
+  latency, especially on the local fallback, and deterministic rules are
+  testable.
+
+**Final decision.**
+- **Posture.** Education-only, written up in `docs/ADVICE_POLICY.md`
+  (**DRAFT, pending counsel review**) and linked from LEGAL.md.
+- **`graph/advice_policy.py`** holds the fixed footers, refusal texts and
+  the reframe instruction.
+- **`graph/guardrails.py`:**
+  - `check_input` runs before the graph. It refuses insider, manipulation
+    and guaranteed-return requests with no research, no LLM call and no
+    quota spent. It reframes personal buy/sell calls and tips (the answer
+    prompt gets an explicit no-call instruction) and adds a caution for
+    unlisted, penny and grey-market requests.
+  - Rules separate "asking about" from "wanting to do".
+  - `finalize` runs on every answer, streamed and sync, and inside
+    generated report files. It removes promise and personal-call sentences
+    (except negated warnings) with a note, and appends the footer by answer
+    kind in code.
+- **Planning** is now a model portfolio for the risk band: categories, with
+  named funds only as examples, and no direct-stock picks.
+- **Tests.** A red-team set of 46 prompts is 100% correct; footers are
+  verified for every planning, report and research answer kind.
+
+**Trade-offs.**
+- **Rules miss novel phrasings.** The red-team set must grow with every
+  miss found in traces (OBS-02).
+- **Streamed answers can flicker.** A removed sentence is visible while
+  streaming until the final text replaces it.
+- **"Personal" is approximate.** "Should I buy X" is reframed even when the
+  user only wants analysis. Analysis is still delivered.
+- **Not legal sign-off.** The policy needs counsel review before a public
+  launch.
+
+**Future improvements.**
+- An optional classifier for borderline phrasings, measured against the
+  golden set (LLM-01).
+- Buffer the last sentence of a stream before showing it (LLM-03 does the
+  same for numbers).
+- Versioned consent and terms (COMP-02).
+
+---
+
 ## 2026-10-14 — Alerts are a validated AlertSpec before they're saved (VAL-04)
 
 **Problem.** Alert creation took the last number in the sentence ("below

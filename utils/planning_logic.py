@@ -17,8 +17,6 @@ from config import TOKENS_COMPLEX, TOKENS_FAST
 from tools.data.amfi import format_fund_search_results, get_category_funds
 from tools.data.fetcher import get_macro
 from tools.data.news_fetcher import market_news
-from tools.screener import run as screener_run
-from tools.screener import to_markdown as screener_md
 from utils.financial_profile import REQUIRED_FIELDS as _PROFILE_REQUIRED
 from utils.financial_profile import is_complete, rejected_note, validate_updates
 from utils.helpers import now_ist
@@ -140,14 +138,6 @@ def fetch_fund_data(profile: dict) -> str:
     return "\n\n".join(blocks)
 
 
-def fetch_equity_screen() -> str:
-    try:
-        results = screener_run({"min_roe": 15, "max_de": 1.5, "min_roce": 12}, max_stocks=40)
-        return screener_md(results[:15], {"min_roe": 15, "max_de": 1.5, "min_roce": 12})
-    except Exception as e:
-        return f"Equity quality screen unavailable: {e}"
-
-
 def fetch_macro_news() -> str:
     try:
         macro = get_macro()
@@ -189,63 +179,65 @@ def sanity_note(profile: dict) -> str:
 
 
 def build_strategy_prompt(profile: dict) -> str:
+    """COMP-01 (docs/ADVICE_POLICY.md): education-only. The plan is a MODEL
+    PORTFOLIO for the investor's risk band, adapted to their horizon —
+    asset classes and fund categories, with named funds only as examples of
+    a category, never "buy this fund/stock". No direct-equity picks for a
+    person. The disclaimer footer is appended in code (graph/guardrails.py),
+    not requested from the model."""
     fund_data = fetch_fund_data(profile)
-    equity_screen = fetch_equity_screen()
     from graph.prompt_safety import wrap_untrusted
 
     # Headlines are third-party text: fenced as data (SEC-03).
     macro_news = wrap_untrusted("news", fetch_macro_news())
+    band = profile.get("risk_tolerance", "moderate")
 
-    return f"""Build a complete, personalised long-term investment strategy for this investor.
+    return f"""Write an EDUCATIONAL model-portfolio explanation for this investor's risk band.
+ARIA is not a SEBI-registered adviser: describe what a typical {band} portfolio for this horizon
+looks like and why, so they can make their own decision. Never tell them to buy a specific fund or
+stock; never promise returns.
 
 INVESTOR PROFILE:
 {json.dumps(profile, indent=2)}
 
-=== RESEARCH DATA (ground every fund/stock name and macro claim in this — never invent one) ===
+=== RESEARCH DATA (fund names may only appear as EXAMPLES of a category, taken from this data) ===
 
---- Mutual Fund Options (AMFI) ---
+--- Mutual Fund Categories and Example Funds (AMFI) ---
 {fund_data}
-
---- Quality-Factor Equity Screen (ROE>15, D/E<1.5, ROCE>12 — candidates for direct equity sleeve) ---
-{equity_screen}
 
 --- Macro & Market Context ---
 {macro_news}
 
 === INSTRUCTIONS ===
-Design the allocation yourself based on this specific person — don't apply a
-generic template. Cover:
-
-## Investment Strategy — {now_ist()}
+## Model Portfolio — {band.title()} risk band — {now_ist()}
 
 ### Profile Summary
-(Restate their situation in 2-3 lines, note anything concerning — e.g. missing
-insurance/emergency fund, risk tolerance mismatched with age/horizon — before the plan)
+(Restate their situation in 2-3 lines; note anything concerning — e.g. missing insurance or
+emergency fund, a risk tolerance that doesn't fit their age or horizon — before anything else)
 
-### Asset Allocation
-(Your recommended equity/debt/gold/international/cash split with % — justify
-each number against THIS profile, not a rule of thumb)
+### Model Allocation for a {band} investor
+(The typical equity/debt/gold/cash split for this risk band, as ranges, and how a horizon of
+{profile.get("horizon_years", "N/A")} years shifts it. Explain the reasoning for each asset class.)
 
-### Equity Sleeve
-(Direct stocks and/or equity mutual funds — pick from the data above, explain why)
+### Fund Categories in Each Sleeve
+(For each sleeve, the SEBI fund categories that fit it — e.g. large cap / flexi cap / index for core
+equity, short-duration or corporate-bond funds for debt — what each category does, and what to
+compare when choosing within it: expense ratio, 5-year returns versus the category, consistency,
+fund size. You may name 1-2 funds per category from the data above, explicitly as examples.)
 
-### Debt & Stability Sleeve
-(Funds from the data above appropriate for their horizon and risk tolerance)
+### Deployment Approach
+(Lump sum vs phased/STP vs SIP for capital of {profile.get("capital", "N/A")} — how investors in this
+band commonly phase in a large amount, and why)
 
-### Deployment Plan
-(Lump sum vs phased/STP-in vs SIP — how to actually put the capital {profile.get("capital", "N/A")} to work
-given the horizon of {profile.get("horizon_years", "N/A")} years; a 30-year horizon with a large lump sum
-usually warrants phased deployment over 6-12 months, not investing it all on day one)
-
-### Glide Path / Rebalancing Checkpoints
-(How the allocation should shift as the goal approaches — give 2-3 concrete
-checkpoints across the horizon, not just day-1 numbers)
+### Rebalancing and Glide Path
+(2-3 checkpoints across the horizon showing how the mix typically becomes more conservative as the
+goal approaches)
 
 ### Gaps to Address First
 (Insurance, emergency fund, high-interest debt — only if relevant to this profile)
 
-### Risks & Assumptions
-*This is educational analysis, not SEBI-registered investment advice.*
+### Risks and What to Ask an Adviser
+(The main risks of this model portfolio, and the questions worth taking to a SEBI-registered adviser)
 """
 
 

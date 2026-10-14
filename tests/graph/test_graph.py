@@ -485,7 +485,8 @@ class TestReportDomainEndToEnd:
 
     def test_report_query_final_report_from_stub(self):
         result, _, _ = self._run()
-        assert result["final_report"] == "Full IC report body."
+        assert result["final_report"].startswith("Full IC report body.")
+        assert "not a SEBI-registered research analyst" in result["final_report"]
 
 
 class TestMfDomainEndToEnd:
@@ -740,7 +741,7 @@ class TestMultiIntentEndToEnd:
         assert result["intent"] == "report"
         assert result["secondary_intents"] == ["alert"]
         assert result["md_path"] == "/tmp/r.md"
-        assert result["final_report"] == "Report + alert note."
+        assert result["final_report"].startswith("Report + alert note.")
 
 
 class TestAlertCancelQuery:

@@ -5,6 +5,13 @@ import pandas as pd
 from graph.nodes.communication_layer import build_communication_layer_node
 
 
+def REPORT_FOOTED(body: str) -> str:  # noqa: N802 — reads like a constant at call sites
+    """A generated report as saved and shown: LLM-09 appends the report footer."""
+    from graph.advice_policy import FOOTERS
+
+    return f"{body}\n\n---\n{FOOTERS['report']}"
+
+
 class _StubClient:
     def __init__(self, response: str):
         self._response = response
@@ -454,8 +461,10 @@ class TestCommunicationLayerReportFiles:
                     "user_id": 42,
                 }
             )
-        mock_save.assert_called_once_with("RELIANCE", "IC", "Full IC report body")
-        mock_persist.assert_called_once_with(42, "RELIANCE", "IC", "IC — RELIANCE", "Full IC report body")
+        mock_save.assert_called_once_with("RELIANCE", "IC", REPORT_FOOTED("Full IC report body"))
+        mock_persist.assert_called_once_with(
+            42, "RELIANCE", "IC", "IC — RELIANCE", REPORT_FOOTED("Full IC report body")
+        )
         assert result["md_path"] == "/tmp/x.md"
         assert result["pdf_path"] == "/tmp/x.pdf"
 
@@ -625,7 +634,7 @@ class TestCommunicationLayerReportFiles:
                     "user_id": 1,
                 }
             )
-        assert result["final_report"] == "Report body"
+        assert result["final_report"] == REPORT_FOOTED("Report body")
         assert result["md_path"] == "/tmp/x.md"
 
 
@@ -723,7 +732,7 @@ class TestCommunicationLayerReportManagement:
                     "user_id": 1,
                 }
             )
-        assert result["final_report"] == "Freshly generated report"
+        assert result["final_report"] == REPORT_FOOTED("Freshly generated report")
 
     def test_plain_report_generation_query_is_unaffected(self):
         stub = _StubClient("Full IC report body")
@@ -743,4 +752,4 @@ class TestCommunicationLayerReportManagement:
                     "user_id": 1,
                 }
             )
-        assert result["final_report"] == "Full IC report body"
+        assert result["final_report"] == REPORT_FOOTED("Full IC report body")

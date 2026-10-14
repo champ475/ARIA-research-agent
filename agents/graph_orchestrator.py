@@ -74,6 +74,7 @@ from graph.checkpointer import get_postgres_checkpointer
 from graph.deadline import data_gaps_note, new_deadline
 from graph.entity_resolution import entity_notes_text
 from graph.graph import build_graph
+from graph.guardrails import check_input, finalize
 
 log = logging.getLogger(__name__)
 
@@ -396,6 +397,16 @@ class GraphOrchestrator:
                 # count against the research budget (REL-02).
                 result = self._graph.invoke(Command(resume=approved, update=new_deadline()), config=config)
             else:
+                # LLM-09: refused requests get a fixed reply — no research, no
+                # LLM call, and no trial quota spent.
+                verdict = check_input(message)
+                if verdict.action == "refuse":
+                    rec.status = "refused"
+                    log.info(f"[guardrails] refused ({verdict.category})")
+                    self._memory.add_user(message)
+                    self._memory.add_assistant(verdict.reply or "")
+                    yield verdict.reply, None, None, None, None, "chat"
+                    return
                 if self._trial_quota_exceeded():
                     rec.status = "quota"
                     self._memory.add_user(message)
@@ -417,6 +428,8 @@ class GraphOrchestrator:
                         "user_id": self._user_id,
                         "history": self._memory.context(),
                         "llm_config": self._provider_config,
+                        "advice_mode": "reframe" if verdict.action == "reframe" else None,
+                        "advice_caution": verdict.caution,
                         **new_deadline(),
                     },
                     config=config,
@@ -470,12 +483,12 @@ class GraphOrchestrator:
                 fundamental_payload = result.get("pending_fundamental_payload")
                 if fundamental_payload:
                     text = text + cited_footnotes(text, fundamental_payload)
-                text += gaps_note
+                text = finalize(text, result) + gaps_note
                 self._memory.add_assistant(text)
                 yield text, chart, pdf_path, md_path, csv_path, tab_used
                 return
 
-            text = (result.get("final_report", "") or "") + gaps_note
+            text = finalize(result.get("final_report", "") or "", result) + gaps_note
             self._memory.add_assistant(text)
             yield text, chart, pdf_path, md_path, csv_path, tab_used
         except LLMProvidersExhausted as e:
