@@ -271,7 +271,9 @@ class TestCommunicationLayerPlanning:
         mock_build.assert_not_called()
         assert result["final_report"] == "Tell me more"
 
-    def test_complete_intake_triggers_strategy_build(self):
+    def test_completing_the_profile_shows_it_back_instead_of_building(self):
+        """VAL-05: a profile becoming complete is not a request to build —
+        the saved values are shown back first."""
         stub = _StubClient("unused")
         complete_profile = {
             "age": 30,
@@ -294,6 +296,41 @@ class TestCommunicationLayerPlanning:
             node = build_communication_layer_node(stub)
             result = node(
                 {"intent": "planning", "query": "here's everything", "user_id": 1, "conclusions": []}
+            )
+        mock_build.assert_not_called()
+        report = result["final_report"]
+        assert report.startswith("Great, building now")
+        assert "| Investable amount | ₹10,00,000.00 |" in report and "| Time horizon | 20 years |" in report
+        assert "build my plan" in report
+
+    def test_completing_the_profile_and_asking_to_build_builds(self):
+        stub = _StubClient("unused")
+        complete_profile = {
+            "age": 30,
+            "capital": 1000000,
+            "horizon_years": 20,
+            "goal": "retirement",
+            "risk_tolerance": "moderate",
+        }
+        with (
+            patch("graph.nodes.communication_layer.profile_get", return_value={}),
+            patch(
+                "graph.nodes.communication_layer._planning_intake_turn",
+                return_value=(complete_profile, True, "ok"),
+            ),
+            patch("graph.nodes.communication_layer.profile_upsert", return_value=complete_profile),
+            patch(
+                "graph.nodes.communication_layer._planning_build_strategy", return_value="Full strategy text"
+            ) as mock_build,
+        ):
+            node = build_communication_layer_node(stub)
+            result = node(
+                {
+                    "intent": "planning",
+                    "query": "here's everything, build my plan",
+                    "user_id": 1,
+                    "conclusions": [],
+                }
             )
         mock_build.assert_called_once_with(stub, complete_profile)
         assert result["final_report"] == "Full strategy text"
@@ -318,7 +355,8 @@ class TestCommunicationLayerPlanning:
             node = build_communication_layer_node(stub)
             result = node({"intent": "planning", "query": "ok", "user_id": 1, "conclusions": []})
         mock_build.assert_not_called()
-        assert result["final_report"] == "Anything else?"
+        assert result["final_report"].startswith("Anything else?")
+        assert "build my plan" in result["final_report"]
 
     def test_already_complete_profile_with_explicit_build_request_builds(self):
         stub = _StubClient("unused")

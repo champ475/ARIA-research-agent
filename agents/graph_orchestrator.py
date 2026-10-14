@@ -495,6 +495,11 @@ class GraphOrchestrator:
         never a separate hardcoded client."""
         import json
 
+        # VAL-05: a planning reply waiting for an explicit build gets a real
+        # "Build my plan" button (suggestion chips are buttons) — no LLM call.
+        if "say **build my plan**" in (last_response or ""):
+            return ["Build my plan", "Show my profile", "Start over", "Change my risk tolerance"]
+
         from agents.llm_client import LLMClient
         from config import GROQ_MODEL_FAST, TOKENS_FAST
 

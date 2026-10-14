@@ -19,10 +19,13 @@ from tools.data.fetcher import get_macro
 from tools.data.news_fetcher import market_news
 from tools.screener import run as screener_run
 from tools.screener import to_markdown as screener_md
+from utils.financial_profile import REQUIRED_FIELDS as _PROFILE_REQUIRED
+from utils.financial_profile import is_complete, rejected_note, validate_updates
 from utils.helpers import now_ist
 
-# Minimum fields needed before a first strategy can be generated at all.
-REQUIRED_FIELDS = ["age", "capital", "horizon_years", "goal", "risk_tolerance"]
+# Minimum fields needed before a first strategy can be generated at all
+# (VAL-05: the schema and the build trigger live in utils/financial_profile.py).
+REQUIRED_FIELDS = list(_PROFILE_REQUIRED)
 
 # Full field vocabulary shown to the intake LLM so it knows what's worth
 # asking about — not a rigid checklist, it decides pacing/phrasing itself.
@@ -67,25 +70,6 @@ Return ONLY valid JSON, no markdown fences:
 {{"updates": {{...fields extracted this turn...}}, "minimum_complete": true or false, "reply": "..."}}
 """
 
-BUILD_TRIGGER_KW = [
-    "build my plan",
-    "build the plan",
-    "generate my plan",
-    "generate the plan",
-    "create my plan",
-    "go ahead",
-    "build it",
-    "yes build",
-    "generate strategy",
-    "build my strategy",
-    "create my strategy",
-    "ready",
-    "sounds good",
-    "let's go",
-    "proceed",
-    "make the plan",
-]
-
 # Standard fund categories to ground the strategy in real AMFI data —
 # refined slightly by risk tolerance/horizon inside fetch_fund_data().
 CORE_CATEGORIES = ["large cap", "flexi cap", "mid cap", "small cap", "debt", "elss"]
@@ -110,7 +94,13 @@ def intake_turn(client, msg: str, profile: dict) -> tuple[dict, bool, str]:
     """One combined LLM call: extract any profile fields from `msg`, decide
     whether the minimum viable profile is now complete, and draft a
     conversational reply. `client` is a caller-owned LLMClient (equity_agent/
-    report_agent-style dependency injection, not a new provider instance)."""
+    report_agent-style dependency injection, not a new provider instance).
+
+    VAL-05: the LLM only proposes `updates`; each field is validated on its
+    own (utils/financial_profile.py) and only valid ones are returned for
+    saving. Rejected values are asked about in the reply, never stored, and
+    completeness is judged on validated values only — the LLM's own
+    "minimum_complete" isn't trusted."""
     prompt = _INTAKE_PROMPT.format(
         field_guide=FIELD_GUIDE,
         profile_json=json.dumps(profile) if profile else "{}",
@@ -122,16 +112,16 @@ def intake_turn(client, msg: str, profile: dict) -> tuple[dict, bool, str]:
 
         raw = strip_code_fence(raw)
         data = json.loads(raw)
-        updates = data.get("updates") or {}
-        if not isinstance(updates, dict):
-            updates = {}
-        merged = {**profile, **updates}
-        minimum_complete = all(merged.get(f) not in (None, "") for f in REQUIRED_FIELDS)
-        reply = data.get("reply") or fallback_question(merged)
-        return updates, minimum_complete, reply
+        proposed = data.get("updates") or {}
+        if not isinstance(proposed, dict):
+            proposed = {}
+        clean, rejected = validate_updates(proposed)
+        merged = {**profile, **clean}
+        minimum_complete = is_complete(merged)
+        reply = (data.get("reply") if not rejected else None) or fallback_question(merged)
+        return clean, minimum_complete, reply + rejected_note(rejected, proposed)
     except Exception:
-        minimum_complete = all(profile.get(f) not in (None, "") for f in REQUIRED_FIELDS)
-        return {}, minimum_complete, fallback_question(profile)
+        return {}, is_complete(profile), fallback_question(profile)
 
 
 def fetch_fund_data(profile: dict) -> str:

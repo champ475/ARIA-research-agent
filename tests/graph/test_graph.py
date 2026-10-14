@@ -689,7 +689,9 @@ class TestPlanningDomainEndToEnd:
                 verification_client=verification,
                 communication_client=communication,
             )
-            result = graph.invoke({"query": "here's everything you need", "max_loops": 2, "user_id": 5})
+            result = graph.invoke(
+                {"query": "here's everything you need, build my plan", "max_loops": 2, "user_id": 5}
+            )
         assert result["final_report"] == "Full strategy"
 
 

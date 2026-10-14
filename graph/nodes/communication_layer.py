@@ -70,13 +70,11 @@ from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
 from utils.db import profile_clear, profile_get, profile_upsert, report_get, report_list, report_save
+from utils.financial_profile import is_complete as _profile_complete
+from utils.financial_profile import profile_summary as _profile_summary
+from utils.financial_profile import sanitize_profile as _sanitize_profile
+from utils.financial_profile import wants_build as _wants_build
 from utils.helpers import detect_report_type
-from utils.planning_logic import (
-    BUILD_TRIGGER_KW as _PLANNING_BUILD_TRIGGER_KW,
-)
-from utils.planning_logic import (
-    REQUIRED_FIELDS as _PLANNING_REQUIRED,
-)
 from utils.planning_logic import (
     build_strategy as _planning_build_strategy,
 )
@@ -306,23 +304,30 @@ def _handle_planning(client: LLMClient, state: GraphState) -> dict:
             f"user_id={user_id}",
         )
 
-    profile = profile_get(user_id)
+    # VAL-05: stored rows from before validation may hold invalid values —
+    # never plan on them; they're simply asked for again.
+    profile = _sanitize_profile(profile_get(user_id))
     updates, minimum_complete, reply = _planning_intake_turn(client, query, profile)
     if updates:
-        profile = profile_upsert(user_id, updates)
-
-    was_already_complete = all(profile.get(f) not in (None, "") for f in _PLANNING_REQUIRED) and not updates
-    wants_build = any(k in lower for k in _PLANNING_BUILD_TRIGGER_KW)
+        profile = _sanitize_profile(profile_upsert(user_id, updates))
+    minimum_complete = _profile_complete(profile)
 
     if not minimum_complete:
         return _empty_result(
             reply, "planning: intake incomplete", f"user_id={user_id}, updates={list(updates)}"
         )
 
-    if updates or wants_build or not was_already_complete:
+    if _wants_build(query):
         strategy = _planning_build_strategy(client, profile)
         return _empty_result(strategy, "planning: built strategy", f"user_id={user_id}")
-    return _empty_result(reply, "planning: intake reply, no build triggered", f"user_id={user_id}")
+
+    # Complete but not asked for: show exactly what was saved first (the
+    # capital-allocation check), and build only on an explicit request.
+    text = (
+        f"{reply}\n\n**Here's what I've saved — please check it:**\n\n{_profile_summary(profile)}\n\n"
+        "When this looks right, say **build my plan** (or correct anything above)."
+    )
+    return _empty_result(text, "planning: profile complete, awaiting explicit build", f"user_id={user_id}")
 
 
 def build_communication_layer_node(
