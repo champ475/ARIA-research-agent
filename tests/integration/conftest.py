@@ -8,10 +8,10 @@ Database source, in order:
 Safety: the app's own DATABASE_URL (from .env — possibly production) is never
 used; the fixture refuses to run if TEST_DATABASE_URL points at it.
 """
+
 import os
 
 import pytest
-
 
 
 @pytest.fixture(scope="session")
@@ -29,7 +29,9 @@ def pg_url():
 
             docker.from_env().ping()
         except Exception as e:
-            pytest.skip(f"no TEST_DATABASE_URL and Docker isn't reachable ({type(e).__name__}) — skipping integration tests")
+            pytest.skip(
+                f"no TEST_DATABASE_URL and Docker isn't reachable ({type(e).__name__}) — skipping integration tests"
+            )
         container = PostgresContainer("postgres:16-alpine", driver=None)
         container.start()
         url = container.get_connection_url()
@@ -75,6 +77,14 @@ def db(pg_db):
 
 @pytest.fixture
 def two_users(db):
-    a = db._query("INSERT INTO users (email, password_hash) VALUES ('a@example.com','x') RETURNING id", fetch="one", commit=True)["id"]
-    b = db._query("INSERT INTO users (email, password_hash) VALUES ('b@example.com','x') RETURNING id", fetch="one", commit=True)["id"]
+    a = db._query(
+        "INSERT INTO users (email, password_hash) VALUES ('a@example.com','x') RETURNING id",
+        fetch="one",
+        commit=True,
+    )["id"]
+    b = db._query(
+        "INSERT INTO users (email, password_hash) VALUES ('b@example.com','x') RETURNING id",
+        fetch="one",
+        commit=True,
+    )["id"]
     return a, b

@@ -6,6 +6,7 @@ module is a direct implementation of those two sections. Evidence is the
 universal currency: every node downstream of ResearchExecutor consumes
 `evidence`/`evidence_summary`/`conclusions`, never a raw tool result.
 """
+
 from __future__ import annotations
 
 import operator
@@ -16,18 +17,18 @@ from langgraph.graph.message import add_messages
 
 
 class Evidence(TypedDict):
-    id: str                     # hash(source, entity, evidence_type, args)
-    source: str                  # "yfinance" | "nse_bhavcopy" | "pdf_scraper" | "news_rss" | "amfi" | "alerts_table"
-    tool: str                    # fully-qualified tool function name that produced it
-    entity: str                  # ticker / fund code / sector
-    evidence_type: str           # "price_ohlcv" | "fundamental_ratio" | "technical_indicator"
-                                  # | "news_headline" | "pdf_extract" | "macro" | "risk_flag"
-                                  # | "mf_nav" | "mf_category_funds" | "mf_comparison"
-                                  # | "alert_list" | "alert_action"
+    id: str  # hash(source, entity, evidence_type, args)
+    source: str  # "yfinance" | "nse_bhavcopy" | "pdf_scraper" | "news_rss" | "amfi" | "alerts_table"
+    tool: str  # fully-qualified tool function name that produced it
+    entity: str  # ticker / fund code / sector
+    evidence_type: str  # "price_ohlcv" | "fundamental_ratio" | "technical_indicator"
+    # | "news_headline" | "pdf_extract" | "macro" | "risk_flag"
+    # | "mf_nav" | "mf_category_funds" | "mf_comparison"
+    # | "alert_list" | "alert_action"
     payload: dict
     timestamp: datetime
-    confidence: float            # source reliability x freshness
-    citation_key: str            # matches tools/analysis/fundamental.py's cited_footnotes() convention
+    confidence: float  # source reliability x freshness
+    citation_key: str  # matches tools/analysis/fundamental.py's cited_footnotes() convention
 
 
 class Task(TypedDict):
@@ -122,17 +123,17 @@ def upsert_by_id(existing: list[Task], new: list[Task]) -> list[Task]:
 
 class GraphState(TypedDict):
     messages: Annotated[list, add_messages]
-    history: list[dict]       # prior turns as [{"role": "user"|"assistant", "content": str}, ...] —
-                               # owned by GraphOrchestrator (agents/graph_orchestrator.py), not the
-                               # checkpointer, since each turn mints a fresh thread_id (see that
-                               # module's "Thread-id scoping" note) and so can't rely on `messages`'
-                               # add_messages reducer persisting across turns on its own.
+    history: list[dict]  # prior turns as [{"role": "user"|"assistant", "content": str}, ...] —
+    # owned by GraphOrchestrator (agents/graph_orchestrator.py), not the
+    # checkpointer, since each turn mints a fresh thread_id (see that
+    # module's "Thread-id scoping" note) and so can't rely on `messages`'
+    # add_messages reducer persisting across turns on its own.
     query: str
-    user_id: int              # needed by any domain that persists (reports, screeners, alerts, profiles)
-    llm_config: dict | None   # resolved BYO-key config ({"api_key","model","base_url"}) or None for the
-                               # trial path — carried so tool fns needing their own LLM call (e.g.
-                               # alert_create's condition extraction) use the SAME provider as everything
-                               # else this turn, not the app's shared trial keys behind a BYO user's back.
+    user_id: int  # needed by any domain that persists (reports, screeners, alerts, profiles)
+    llm_config: dict | None  # resolved BYO-key config ({"api_key","model","base_url"}) or None for the
+    # trial path — carried so tool fns needing their own LLM call (e.g.
+    # alert_create's condition extraction) use the SAME provider as everything
+    # else this turn, not the app's shared trial keys behind a BYO user's back.
     entities: list[str]
     intent: str
     secondary_intents: list[str]  # Phase 7.4: other domains this message ALSO names, if any
@@ -141,21 +142,21 @@ class GraphState(TypedDict):
     plan: ResearchPlan
     tasks: Annotated[list[Task], upsert_by_id]
     evidence: Annotated[list[Evidence], append_dedup]
-    evidence_summary: dict            # EvidenceSummarizer output — what Reflection reads
+    evidence_summary: dict  # EvidenceSummarizer output — what Reflection reads
     missing_info: list[MissingInfoItem]
     verification_issues: list[VerificationIssue]
-    conclusions: list[Conclusion]     # ConclusionBuilder output — what CommunicationLayer reads
+    conclusions: list[Conclusion]  # ConclusionBuilder output — what CommunicationLayer reads
     loop_count: Annotated[int, operator.add]
     max_loops: int
     confidence_summary: dict
     research_journal: Annotated[list[JournalEntry], operator.add]
     final_report: str
     pending_synthesis_prompt: str | None  # set instead of final_report when CommunicationLayer defers
-                                           # the LLM call to GraphOrchestrator for token streaming
-                                           # (equity/chat intents with no file output to write synchronously)
+    # the LLM call to GraphOrchestrator for token streaming
+    # (equity/chat intents with no file output to write synchronously)
     pending_fundamental_payload: dict | None  # footnote source for the deferred call above, applied
-                                               # by GraphOrchestrator once the full text is streamed
+    # by GraphOrchestrator once the full text is streamed
     chart_html: str
-    pdf_path: str | None       # report-domain file output (Phase 7.1), None for other intents
-    md_path: str | None        # report-domain file output (Phase 7.1), None for other intents
-    csv_path: str | None       # screener-domain file output (Phase 7.3), None for other intents
+    pdf_path: str | None  # report-domain file output (Phase 7.1), None for other intents
+    md_path: str | None  # report-domain file output (Phase 7.1), None for other intents
+    csv_path: str | None  # screener-domain file output (Phase 7.3), None for other intents

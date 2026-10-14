@@ -8,15 +8,17 @@ DB row — see ARCHITECTURE.md's 2026-07-24 "Planning domain on the graph"
 entry for why this lives in CommunicationLayer rather than the Task/Evidence
 pipeline the rest of the graph uses.
 """
+
 from __future__ import annotations
 
 import json
 
 from config import TOKENS_COMPLEX, TOKENS_FAST
+from tools.data.amfi import format_fund_search_results, get_category_funds
 from tools.data.fetcher import get_macro
 from tools.data.news_fetcher import market_news
-from tools.data.amfi import get_category_funds, format_fund_search_results
-from tools.screener import run as screener_run, to_markdown as screener_md
+from tools.screener import run as screener_run
+from tools.screener import to_markdown as screener_md
 from utils.helpers import now_ist
 
 # Minimum fields needed before a first strategy can be generated at all.
@@ -66,10 +68,22 @@ Return ONLY valid JSON, no markdown fences:
 """
 
 BUILD_TRIGGER_KW = [
-    "build my plan", "build the plan", "generate my plan", "generate the plan",
-    "create my plan", "go ahead", "build it", "yes build", "generate strategy",
-    "build my strategy", "create my strategy", "ready", "sounds good", "let's go",
-    "proceed", "make the plan",
+    "build my plan",
+    "build the plan",
+    "generate my plan",
+    "generate the plan",
+    "create my plan",
+    "go ahead",
+    "build it",
+    "yes build",
+    "generate strategy",
+    "build my strategy",
+    "create my strategy",
+    "ready",
+    "sounds good",
+    "let's go",
+    "proceed",
+    "make the plan",
 ]
 
 # Standard fund categories to ground the strategy in real AMFI data —
@@ -82,8 +96,10 @@ def fallback_question(profile: dict) -> str:
     if not missing:
         return "I have enough to build an initial plan — want me to go ahead?"
     labels = {
-        "age": "your age", "capital": "how much you're investing (lump sum)",
-        "horizon_years": "your time horizon in years", "goal": "what this money is for",
+        "age": "your age",
+        "capital": "how much you're investing (lump sum)",
+        "horizon_years": "your time horizon in years",
+        "goal": "what this money is for",
         "risk_tolerance": "your risk comfort (conservative/moderate/aggressive)",
     }
     asks = ", ".join(labels[f] for f in missing)
@@ -225,8 +241,8 @@ each number against THIS profile, not a rule of thumb)
 (Funds from the data above appropriate for their horizon and risk tolerance)
 
 ### Deployment Plan
-(Lump sum vs phased/STP-in vs SIP — how to actually put the capital {profile.get('capital', 'N/A')} to work
-given the horizon of {profile.get('horizon_years', 'N/A')} years; a 30-year horizon with a large lump sum
+(Lump sum vs phased/STP-in vs SIP — how to actually put the capital {profile.get("capital", "N/A")} to work
+given the horizon of {profile.get("horizon_years", "N/A")} years; a 30-year horizon with a large lump sum
 usually warrants phased deployment over 6-12 months, not investing it all on day one)
 
 ### Glide Path / Rebalancing Checkpoints

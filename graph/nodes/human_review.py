@@ -19,6 +19,7 @@ straight to END, skipping the rest of the pipeline rather than letting a
 later node (ConclusionBuilder/CommunicationLayer) silently overwrite the
 decline with its own output.
 """
+
 from __future__ import annotations
 
 from langgraph.types import interrupt
@@ -33,15 +34,18 @@ def research_confirmation(state: GraphState) -> dict:
     tasks = state.get("tasks", [])
     if state.get("complexity") != "complex" or len(tasks) <= _COMPLEX_TASK_THRESHOLD:
         return log_decision(
-            "ResearchConfirmation", "proceeding without confirmation",
+            "ResearchConfirmation",
+            "proceeding without confirmation",
             f"{len(tasks)} task(s), complexity={state.get('complexity')} — below threshold",
         )
 
-    approved = interrupt({
-        "type": "research_confirmation",
-        "message": f"This plan involves {len(tasks)} research tasks. Proceed?",
-        "task_count": len(tasks),
-    })
+    approved = interrupt(
+        {
+            "type": "research_confirmation",
+            "message": f"This plan involves {len(tasks)} research tasks. Proceed?",
+            "task_count": len(tasks),
+        }
+    )
 
     if not approved:
         skipped = [{**t, "status": "skipped"} for t in tasks if t["status"] == "pending"]
@@ -55,9 +59,7 @@ def research_confirmation(state: GraphState) -> dict:
             ),
         }
 
-    return log_decision(
-        "ResearchConfirmation", "user approved", f"{len(tasks)} task(s), complexity=complex"
-    )
+    return log_decision("ResearchConfirmation", "user approved", f"{len(tasks)} task(s), complexity=complex")
 
 
 def verification_gate(state: GraphState) -> dict:
@@ -65,11 +67,13 @@ def verification_gate(state: GraphState) -> dict:
     if not issues:
         return log_decision("VerificationGate", "no unresolved issues, pass through", "clean")
 
-    approved = interrupt({
-        "type": "verification_gate",
-        "message": f"{len(issues)} issue(s) could not be fully verified. Show the report anyway?",
-        "issues": issues,
-    })
+    approved = interrupt(
+        {
+            "type": "verification_gate",
+            "message": f"{len(issues)} issue(s) could not be fully verified. Show the report anyway?",
+            "issues": issues,
+        }
+    )
 
     if not approved:
         return {

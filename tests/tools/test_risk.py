@@ -1,4 +1,5 @@
 """Tests for tools/analysis/risk.py — multi-factor risk scoring."""
+
 from tools.analysis import risk
 
 
@@ -40,7 +41,9 @@ class TestAssess:
         assert out["factors"]["Liquidity"] == 80
 
     def test_negative_net_margin_dominates_profitability(self):
-        out = risk.assess(_base_fund(roce=20, roe=20, net_margin=-0.1), _base_ta(), sentiment_score=0.0, macro={})
+        out = risk.assess(
+            _base_fund(roce=20, roe=20, net_margin=-0.1), _base_ta(), sentiment_score=0.0, macro={}
+        )
         assert out["factors"]["Profitability"] == 85
 
     def test_high_atr_flagged_as_volatile(self):
@@ -58,8 +61,15 @@ class TestAssess:
 
     def test_overall_score_is_weighted_sum(self):
         out = risk.assess(_base_fund(), _base_ta(), sentiment_score=0.0, macro={})
-        weights = {"Valuation": 0.15, "Leverage": 0.20, "Liquidity": 0.15,
-                   "Profitability": 0.15, "Volatility": 0.15, "Sentiment": 0.10, "Macro": 0.10}
+        weights = {
+            "Valuation": 0.15,
+            "Leverage": 0.20,
+            "Liquidity": 0.15,
+            "Profitability": 0.15,
+            "Volatility": 0.15,
+            "Sentiment": 0.10,
+            "Macro": 0.10,
+        }
         expected = round(sum(out["factors"].get(k, 0) * w for k, w in weights.items()), 1)
         assert out["score"] == expected
 
@@ -69,8 +79,11 @@ class TestAssess:
         assert out["level"] in {"🟢 Low", "🟡 Medium", "🟠 High", "🔴 Very High"}
 
     def test_score_bounds(self):
-        out = risk.assess(_base_fund(pe=200, de=10, current_ratio=0.2, roce=1, roe=1, net_margin=-0.5),
-                           _base_ta(ATR=20, current_price=100), sentiment_score=-0.9,
-                           macro={"USD/INR": {"change": 2.0}, "Crude Oil": {"change": 5.0}})
+        out = risk.assess(
+            _base_fund(pe=200, de=10, current_ratio=0.2, roce=1, roe=1, net_margin=-0.5),
+            _base_ta(ATR=20, current_price=100),
+            sentiment_score=-0.9,
+            macro={"USD/INR": {"change": 2.0}, "Crude Oil": {"change": 5.0}},
+        )
         assert 0 <= out["score"] <= 100
         assert out["level"] == "🔴 Very High"

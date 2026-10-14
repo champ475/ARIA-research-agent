@@ -1,8 +1,8 @@
 """Unit tests for utils/planning_logic.py — extracted from agents/planning_agent.py
 in Phase 7.3 of the graph-expansion plan so both the legacy agent and
 graph/nodes/communication_layer.py's planning branch share identical logic."""
+
 import json
-from unittest.mock import patch
 
 from utils.planning_logic import (
     REQUIRED_FIELDS,
@@ -27,7 +27,7 @@ class TestFallbackQuestion:
     def test_lists_every_missing_required_field(self):
         q = fallback_question({})
         for field in REQUIRED_FIELDS:
-            assert field != "" # sanity: REQUIRED_FIELDS non-empty
+            assert field != ""  # sanity: REQUIRED_FIELDS non-empty
         assert "age" in q
         assert "time horizon" in q
 
@@ -38,14 +38,21 @@ class TestFallbackQuestion:
 
 class TestIntakeTurn:
     def test_extracts_updates_and_reply_from_valid_json(self):
-        stub = _StubClient(json.dumps({"updates": {"age": 30}, "minimum_complete": False, "reply": "Tell me more"}))
+        stub = _StubClient(
+            json.dumps({"updates": {"age": 30}, "minimum_complete": False, "reply": "Tell me more"})
+        )
         updates, complete, reply = intake_turn(stub, "I'm 30", {})
         assert updates == {"age": 30}
         assert complete is False
         assert reply == "Tell me more"
 
     def test_minimum_complete_computed_from_merged_profile_not_just_updates(self):
-        existing = {"capital": 1000000, "horizon_years": 20, "goal": "retirement", "risk_tolerance": "moderate"}
+        existing = {
+            "capital": 1000000,
+            "horizon_years": 20,
+            "goal": "retirement",
+            "risk_tolerance": "moderate",
+        }
         stub = _StubClient(json.dumps({"updates": {"age": 30}, "minimum_complete": False, "reply": "x"}))
         updates, complete, reply = intake_turn(stub, "I'm 30", existing)
         assert complete is True  # merged profile now has all 5 required fields

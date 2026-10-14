@@ -141,9 +141,7 @@ def _prints_outside_main(path: pathlib.Path) -> list[int]:
     return [
         n.lineno
         for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and getattr(n.func, "id", None) == "print"
-        and n.lineno not in main_lines
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "print" and n.lineno not in main_lines
     ]
 
 

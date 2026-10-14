@@ -5,6 +5,7 @@ string, set once, never rotated without losing access to stored keys) is
 stretched into a valid Fernet key via SHA-256 so users don't have to
 generate/paste a base64 Fernet key themselves.
 """
+
 from __future__ import annotations
 
 import base64

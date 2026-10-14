@@ -7,13 +7,30 @@ class TestCatalogueRegistry:
     def test_expected_tools_registered(self):
         names = {spec.name for spec in list_tools()}
         assert names == {
-            "fetch_info", "fetch_financials", "fetch_ohlcv", "fetch_news",
-            "compute_fundamentals", "compute_technicals",
-            "fetch_quarterly_results", "fetch_annual_report_text",
-            "fetch_nav", "fetch_category_funds", "fetch_mf_comparison", "fetch_mf_news",
-            "alert_create", "alert_list", "alert_cancel", "alert_pause", "alert_resume",
-            "screener_parse_query", "screener_run", "screener_to_markdown", "screener_save",
-            "fetch_top_movers", "fetch_bulk_deals", "fetch_block_deals",
+            "fetch_info",
+            "fetch_financials",
+            "fetch_ohlcv",
+            "fetch_news",
+            "compute_fundamentals",
+            "compute_technicals",
+            "fetch_quarterly_results",
+            "fetch_annual_report_text",
+            "fetch_nav",
+            "fetch_category_funds",
+            "fetch_mf_comparison",
+            "fetch_mf_news",
+            "alert_create",
+            "alert_list",
+            "alert_cancel",
+            "alert_pause",
+            "alert_resume",
+            "screener_parse_query",
+            "screener_run",
+            "screener_to_markdown",
+            "screener_save",
+            "fetch_top_movers",
+            "fetch_bulk_deals",
+            "fetch_block_deals",
         }
 
     def test_get_tool_returns_matching_spec(self):
@@ -41,7 +58,9 @@ class TestToolAdapters:
 
     def test_compute_fundamentals_reads_from_context(self):
         context = {"fetch_info": {"a": 1}, "fetch_financials": {"b": 2}}
-        with patch("graph.tool_catalogue.compute_fundamental_ratios", return_value={"pe": 24.3}) as mock_compute:
+        with patch(
+            "graph.tool_catalogue.compute_fundamental_ratios", return_value={"pe": 24.3}
+        ) as mock_compute:
             result = get_tool("compute_fundamentals").fn("RELIANCE", context)
         mock_compute.assert_called_once_with({"a": 1}, {"b": 2})
         assert result == {"pe": 24.3}
@@ -49,8 +68,10 @@ class TestToolAdapters:
     def test_compute_technicals_reads_ohlcv_from_context(self):
         fake_df = object()
         context = {"fetch_ohlcv": fake_df}
-        with patch("graph.tool_catalogue.compute_technical_indicators", return_value="indicators") as mock_all, \
-             patch("graph.tool_catalogue.technical_snapshot", return_value={"rsi": 55}) as mock_snap:
+        with (
+            patch("graph.tool_catalogue.compute_technical_indicators", return_value="indicators") as mock_all,
+            patch("graph.tool_catalogue.technical_snapshot", return_value={"rsi": 55}) as mock_snap,
+        ):
             result = get_tool("compute_technicals").fn("RELIANCE", context)
         mock_all.assert_called_once_with(fake_df)
         mock_snap.assert_called_once_with("indicators")
@@ -73,8 +94,10 @@ class TestToolAdapters:
         assert get_tool("fetch_annual_report_text").depends_on == ()
 
     def test_fetch_nav_searches_full_nav_table(self):
-        with patch("graph.tool_catalogue.get_all_nav", return_value="nav_df") as mock_all_nav, \
-             patch("graph.tool_catalogue.search_fund", return_value="results") as mock_search:
+        with (
+            patch("graph.tool_catalogue.get_all_nav", return_value="nav_df") as mock_all_nav,
+            patch("graph.tool_catalogue.search_fund", return_value="results") as mock_search,
+        ):
             result = get_tool("fetch_nav").fn("HDFC Flexicap", {})
         mock_all_nav.assert_called_once()
         mock_search.assert_called_once_with("HDFC Flexicap", "nav_df")
@@ -163,9 +186,11 @@ class TestAlertToolAdapters:
         alert row with a real threshold. NO_ENTITY_SENTINEL must never
         reach db_alert_add."""
         from graph.tool_catalogue import NO_ENTITY_SENTINEL
+
         with patch("graph.tool_catalogue.db_alert_add") as mock_add:
             result = get_tool("alert_create").fn(
-                NO_ENTITY_SENTINEL, {"_query": "set an alert if it drops below 1400", "_user_id": 1},
+                NO_ENTITY_SENTINEL,
+                {"_query": "set an alert if it drops below 1400", "_user_id": 1},
             )
         mock_add.assert_not_called()
         assert result == {"action": "create", "symbol": NO_ENTITY_SENTINEL, "result": "invalid_symbol"}
@@ -173,7 +198,8 @@ class TestAlertToolAdapters:
     def test_alert_create_still_writes_for_a_real_entity(self):
         with patch("graph.tool_catalogue.db_alert_add", return_value=99) as mock_add:
             result = get_tool("alert_create").fn(
-                "INFY", {"_query": "alert me if INFY drops below 1400", "_user_id": 1},
+                "INFY",
+                {"_query": "alert me if INFY drops below 1400", "_user_id": 1},
             )
         mock_add.assert_called_once()
         assert result["symbol"] == "INFY"
@@ -202,18 +228,26 @@ class TestScreenerToolAdapters:
 
     def test_screener_to_markdown_reads_results_and_filters(self):
         with patch("graph.tool_catalogue.screener_to_markdown", return_value="| table |") as mock_fn:
-            result = get_tool("screener_to_markdown").fn("market", {
-                "screener_run": [{"symbol": "TCS"}], "screener_parse_query": {"max_pe": 20},
-            })
+            result = get_tool("screener_to_markdown").fn(
+                "market",
+                {
+                    "screener_run": [{"symbol": "TCS"}],
+                    "screener_parse_query": {"max_pe": 20},
+                },
+            )
         mock_fn.assert_called_once_with([{"symbol": "TCS"}], {"max_pe": 20})
         assert result == "| table |"
 
     def test_screener_save_parses_quoted_name_and_persists(self):
         with patch("graph.tool_catalogue.db_screener_save") as mock_save:
-            result = get_tool("screener_save").fn("market", {
-                "_query": 'save this screener as "My Value Picks"',
-                "_user_id": 9, "screener_parse_query": {"max_pe": 20},
-            })
+            result = get_tool("screener_save").fn(
+                "market",
+                {
+                    "_query": 'save this screener as "My Value Picks"',
+                    "_user_id": 9,
+                    "screener_parse_query": {"max_pe": 20},
+                },
+            )
         mock_save.assert_called_once_with(9, "My Value Picks", {"max_pe": 20})
         assert result["name"] == "My Value Picks"
 

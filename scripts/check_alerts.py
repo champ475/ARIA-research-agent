@@ -31,11 +31,12 @@ Usage: python scripts/check_alerts.py
 Requires env vars: DATABASE_URL, TELEGRAM_BOT_TOKEN.
 """
 
-import sys
-import os
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+import os
+import sys
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -44,11 +45,11 @@ import requests
 from psycopg2.extras import RealDictCursor
 
 from config import DATABASE_URL, TELEGRAM_BOT_TOKEN
-from utils.helpers import IST
-from tools.data.fetcher import get_info, get_ohlcv
 from tools.analysis.technical import compute_all
+from tools.data.fetcher import get_info, get_ohlcv
 from tools.data.nse_scraper import get_bulk_deals
 from utils.db import ALERT_DELIVERY_SCHEMA_SQL
+from utils.helpers import IST
 from utils.logging_setup import configure_logging
 
 log = logging.getLogger("check_alerts")
@@ -121,7 +122,9 @@ class RunCache:
         return self._get(("info", symbol), lambda: get_info(symbol))
 
     def ohlcv(self, symbol: str, period: str, interval: str):
-        return self._get(("ohlcv", symbol, period, interval), lambda: get_ohlcv(symbol, period=period, interval=interval))
+        return self._get(
+            ("ohlcv", symbol, period, interval), lambda: get_ohlcv(symbol, period=period, interval=interval)
+        )
 
     def indicators(self, symbol: str):
         def build():
@@ -129,6 +132,7 @@ class RunCache:
             if df is None or len(df) < 30:
                 return None
             return compute_all(df.copy())
+
         return self._get(("indicators", symbol), build)
 
     def bulk_deals(self, symbol: str):
@@ -216,7 +220,9 @@ def _bulk_deal_alert(cache: RunCache, symbol: str) -> str | None:
     return None
 
 
-def _portfolio_pnl_alert(conn, cache: RunCache, user_id: int, symbol: str, threshold: float | None) -> str | None:
+def _portfolio_pnl_alert(
+    conn, cache: RunCache, user_id: int, symbol: str, threshold: float | None
+) -> str | None:
     if threshold is None:
         return None
     cur = conn.cursor()
@@ -239,8 +245,15 @@ def _portfolio_pnl_alert(conn, cache: RunCache, user_id: int, symbol: str, thres
 
 
 _INDICATOR_TYPES = {
-    "rsi_cross_above", "rsi_cross_below", "macd_bullish_cross", "macd_bearish_cross",
-    "ma_cross", "bb_breakout", "volume_spike", "week52_high", "week52_low",
+    "rsi_cross_above",
+    "rsi_cross_below",
+    "macd_bullish_cross",
+    "macd_bearish_cross",
+    "ma_cross",
+    "bb_breakout",
+    "volume_spike",
+    "week52_high",
+    "week52_low",
 }
 
 
@@ -253,8 +266,8 @@ def in_cooldown(alert: dict) -> bool:
     cooldown = alert.get("cooldown_hours") or 24
     triggered_at = alert["triggered_at"]
     if triggered_at.tzinfo is None:
-        triggered_at = triggered_at.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - triggered_at < timedelta(hours=cooldown)
+        triggered_at = triggered_at.replace(tzinfo=UTC)
+    return datetime.now(UTC) - triggered_at < timedelta(hours=cooldown)
 
 
 def evaluate(conn, alert: dict, cache: RunCache | None = None) -> str | None:

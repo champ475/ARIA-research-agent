@@ -21,11 +21,12 @@ ping-pong (Verification flags something Reflection's own lens never
 independently reports as "missing") would never terminate, since Reflection
 alone only advances the counter when it decides to add work.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from agents.llm_client import LLMClient, LLMProvidersExhausted
 from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
@@ -37,8 +38,15 @@ from graph.state import Evidence, GraphState, VerificationIssue
 log = logging.getLogger(__name__)
 
 _REQUIRED_EVIDENCE_FIELDS = (
-    "id", "source", "tool", "entity", "evidence_type",
-    "payload", "timestamp", "confidence", "citation_key",
+    "id",
+    "source",
+    "tool",
+    "entity",
+    "evidence_type",
+    "payload",
+    "timestamp",
+    "confidence",
+    "citation_key",
 )
 _CONFIDENCE_FLOOR = 0.5
 _CONTRADICTION_TOLERANCE = 0.05  # 5% relative difference
@@ -51,8 +59,7 @@ _SYSTEM = (
     '"issue_type": "unsupported|contradiction|low_confidence|missing_citation", '
     '"evidence_ids": ["..."]}]}. An empty issues list means the evidence is '
     "sufficient and consistent. Be conservative — only flag a genuine "
-    "problem, not a stylistic preference."
-    + UNTRUSTED_NOTICE
+    "problem, not a stylistic preference." + UNTRUSTED_NOTICE
 )
 
 
@@ -60,8 +67,7 @@ def _numeric_fields(payload) -> dict[str, float]:
     if not isinstance(payload, dict):
         return {}
     return {
-        k: float(v) for k, v in payload.items()
-        if isinstance(v, (int, float)) and not isinstance(v, bool)
+        k: float(v) for k, v in payload.items() if isinstance(v, (int, float)) and not isinstance(v, bool)
     }
 
 
@@ -83,12 +89,14 @@ def _stage1_deterministic(evidence: list[Evidence], tasks: list[dict]) -> list[V
     for ev in evidence:
         missing = [f for f in _REQUIRED_EVIDENCE_FIELDS if _is_missing(ev.get(f))]
         if missing:
-            issues.append({
-                "claim": f"evidence {ev.get('id', '?')} missing fields: {missing}",
-                "issue_type": "missing_citation",
-                "stage": "deterministic",
-                "evidence_ids": [ev.get("id", "?")],
-            })
+            issues.append(
+                {
+                    "claim": f"evidence {ev.get('id', '?')} missing fields: {missing}",
+                    "issue_type": "missing_citation",
+                    "stage": "deterministic",
+                    "evidence_ids": [ev.get("id", "?")],
+                }
+            )
 
     evidence_ids = {ev["id"] for ev in evidence}
     for task in tasks:
@@ -96,31 +104,37 @@ def _stage1_deterministic(evidence: list[Evidence], tasks: list[dict]) -> list[V
             continue
         for eid in task.get("result_evidence_ids", []):
             if eid not in evidence_ids:
-                issues.append({
-                    "claim": f"task {task['id']} references missing evidence {eid}",
-                    "issue_type": "unsupported",
-                    "stage": "deterministic",
-                    "evidence_ids": [eid],
-                })
+                issues.append(
+                    {
+                        "claim": f"task {task['id']} references missing evidence {eid}",
+                        "issue_type": "unsupported",
+                        "stage": "deterministic",
+                        "evidence_ids": [eid],
+                    }
+                )
 
     for ev in evidence:
         if ev.get("evidence_type") != "fundamental_ratio":
             continue
         for field, value in _numeric_fields(ev["payload"]).items():
             if value != value:  # NaN
-                issues.append({
-                    "claim": f"{ev['entity']} {field} is NaN",
-                    "issue_type": "unsupported",
-                    "stage": "deterministic",
-                    "evidence_ids": [ev["id"]],
-                })
+                issues.append(
+                    {
+                        "claim": f"{ev['entity']} {field} is NaN",
+                        "issue_type": "unsupported",
+                        "stage": "deterministic",
+                        "evidence_ids": [ev["id"]],
+                    }
+                )
             elif abs(value) > 1e6:
-                issues.append({
-                    "claim": f"{ev['entity']} {field}={value} is out of a sane range",
-                    "issue_type": "unsupported",
-                    "stage": "deterministic",
-                    "evidence_ids": [ev["id"]],
-                })
+                issues.append(
+                    {
+                        "claim": f"{ev['entity']} {field}={value} is out of a sane range",
+                        "issue_type": "unsupported",
+                        "stage": "deterministic",
+                        "evidence_ids": [ev["id"]],
+                    }
+                )
     return issues
 
 
@@ -129,12 +143,14 @@ def _stage2_semantic(evidence: list[Evidence]) -> list[VerificationIssue]:
 
     for ev in evidence:
         if ev["confidence"] < _CONFIDENCE_FLOOR:
-            issues.append({
-                "claim": f"{ev['entity']} {ev['evidence_type']} has low confidence ({ev['confidence']})",
-                "issue_type": "low_confidence",
-                "stage": "semantic",
-                "evidence_ids": [ev["id"]],
-            })
+            issues.append(
+                {
+                    "claim": f"{ev['entity']} {ev['evidence_type']} has low confidence ({ev['confidence']})",
+                    "issue_type": "low_confidence",
+                    "stage": "semantic",
+                    "evidence_ids": [ev["id"]],
+                }
+            )
 
     groups: dict[tuple[str, str], list[Evidence]] = {}
     for ev in evidence:
@@ -150,12 +166,14 @@ def _stage2_semantic(evidence: list[Evidence]) -> list[VerificationIssue]:
                     va, vb = a[field], b[field]
                     denom = max(abs(va), abs(vb), 1e-9)
                     if abs(va - vb) / denom > _CONTRADICTION_TOLERANCE:
-                        issues.append({
-                            "claim": f"{entity} {evidence_type}.{field} disagrees: {va} vs {vb}",
-                            "issue_type": "contradiction",
-                            "stage": "semantic",
-                            "evidence_ids": [group[i]["id"], group[j]["id"]],
-                        })
+                        issues.append(
+                            {
+                                "claim": f"{entity} {evidence_type}.{field} disagrees: {va} vs {vb}",
+                                "issue_type": "contradiction",
+                                "stage": "semantic",
+                                "evidence_ids": [group[i]["id"], group[j]["id"]],
+                            }
+                        )
     return issues
 
 
@@ -184,12 +202,14 @@ def _parse_llm_issues(raw: str) -> list[VerificationIssue]:
         issue_type = entry.get("issue_type", "unsupported")
         if issue_type not in _VALID_ISSUE_TYPES:
             issue_type = "unsupported"
-        issues.append({
-            "claim": entry["claim"],
-            "issue_type": issue_type,
-            "stage": "llm_judge",
-            "evidence_ids": entry.get("evidence_ids", []),
-        })
+        issues.append(
+            {
+                "claim": entry["claim"],
+                "issue_type": issue_type,
+                "stage": "llm_judge",
+                "evidence_ids": entry.get("evidence_ids", []),
+            }
+        )
     return issues
 
 
@@ -200,7 +220,8 @@ def _build_judge_prompt(objective: str, evidence_summary: dict) -> str:
 
 
 def build_verification_node(
-    client: LLMClient | None = None, provider_config: dict | None = None,
+    client: LLMClient | None = None,
+    provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
     client = client or LLMClient(_SYSTEM, provider_config)
 
@@ -248,10 +269,14 @@ def build_verification_node(
             # graph/state.py) so this doesn't trigger another retry cycle.
             log.warning(f"Verification: all LLM providers exhausted, treating as terminal — {e}")
             return {
-                "verification_issues": [{
-                    "claim": "Could not verify — all LLM providers were unavailable",
-                    "issue_type": "unsupported", "stage": "llm_judge", "evidence_ids": [],
-                }],
+                "verification_issues": [
+                    {
+                        "claim": "Could not verify — all LLM providers were unavailable",
+                        "issue_type": "unsupported",
+                        "stage": "llm_judge",
+                        "evidence_ids": [],
+                    }
+                ],
                 "loop_count": max_loops,
                 **log_decision("Verification", "llm_judge skipped — all providers exhausted", str(e)),
             }
@@ -268,7 +293,9 @@ def build_verification_node(
             **extra,
             **log_decision(
                 "Verification",
-                f"{len(stage3_issues)} issue(s) at llm_judge stage" if stage3_issues else "clean, all stages passed",
+                f"{len(stage3_issues)} issue(s) at llm_judge stage"
+                if stage3_issues
+                else "clean, all stages passed",
                 "deterministic and semantic stages passed, escalated to LLM judgment",
             ),
         }

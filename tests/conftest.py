@@ -1,7 +1,8 @@
 """Shared fixtures for the graph test suite."""
+
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -46,7 +47,7 @@ def sample_evidence() -> dict:
         "entity": "RELIANCE",
         "evidence_type": "fundamental_ratio",
         "payload": {"pe": 24.3},
-        "timestamp": datetime.now(timezone.utc),
+        "timestamp": datetime.now(UTC),
         "confidence": 0.9,
         "citation_key": "pe",
     }

@@ -27,7 +27,7 @@ import sys
 import uuid
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, TypeVar
 
 import pytz
@@ -77,7 +77,7 @@ class JsonFormatter(logging.Formatter):
     """One JSON object per record, with turn context and secrets redacted."""
 
     def format(self, record: logging.LogRecord) -> str:
-        now_utc = datetime.fromtimestamp(record.created, tz=timezone.utc)
+        now_utc = datetime.fromtimestamp(record.created, tz=UTC)
         payload: dict[str, Any] = {
             "ts_utc": now_utc.isoformat(timespec="milliseconds"),
             "ts_ist": now_utc.astimezone(_IST).isoformat(timespec="milliseconds"),
@@ -144,7 +144,9 @@ def turn_context(user_id: Any, session_id: Any = None) -> Iterator[str]:
 T = TypeVar("T")
 
 
-def run_in_turn(gen: Generator[T, None, None], user_id: Any, session_id: Any = None) -> Generator[T, None, None]:
+def run_in_turn(
+    gen: Generator[T, None, None], user_id: Any, session_id: Any = None
+) -> Generator[T, None, None]:
     """Drive `gen` with every step running in one Context that carries this
     turn's ids, so log lines emitted after a `yield` keep the same turn_id."""
     ctx = contextvars.copy_context()

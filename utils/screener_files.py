@@ -5,6 +5,7 @@ agents/screener_agent.py::export_csv() (Phase 7.3 of the graph-expansion
 plan) so both the legacy ScreenerAgent and the LangGraph CommunicationLayer
 node produce identical output from the same code path.
 """
+
 from __future__ import annotations
 
 import csv

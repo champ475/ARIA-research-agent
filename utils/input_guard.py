@@ -9,6 +9,7 @@ invisible formatting characters (zero-width spaces would otherwise split
 "TCS" into an unmatchable "T​CS"), whitespace collapsing, and an upper
 length bound. It never raises; it returns a typed result.
 """
+
 from __future__ import annotations
 
 import re

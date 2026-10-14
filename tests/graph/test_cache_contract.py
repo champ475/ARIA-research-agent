@@ -52,7 +52,14 @@ _ALLOWED_CTX = {
 @pytest.mark.parametrize("tool", list(_ALLOWED_CTX))
 def test_write_and_user_scoped_tools_never_touch_the_cache(tool):
     spec = dataclasses.replace(get_tool(tool), fn=MagicMock(return_value={"result": "ok"}))
-    task = {"id": f"{tool}:TCS", "tool": tool, "entity": "TCS", "description": "", "depends_on": [], "status": "pending"}
+    task = {
+        "id": f"{tool}:TCS",
+        "tool": tool,
+        "entity": "TCS",
+        "description": "",
+        "depends_on": [],
+        "status": "pending",
+    }
     with (
         patch("graph.nodes.execute_task.get_tool", return_value=spec),
         patch("graph.nodes.execute_task.evidence_cache.get") as get,
@@ -81,7 +88,9 @@ def test_movers_key_matches_the_direction_the_tool_actually_fetches():
     with patch("graph.tool_catalogue.get_top_movers") as gtm:
         get_tool("fetch_top_movers").fn("market", {"_query": "Top LOSERS"})
     gtm.assert_called_once_with("losers")
-    assert get_tool("fetch_top_movers").cache_key("market", {"_query": "Top LOSERS"}) == {"direction": "losers"}
+    assert get_tool("fetch_top_movers").cache_key("market", {"_query": "Top LOSERS"}) == {
+        "direction": "losers"
+    }
 
 
 def test_different_screens_get_different_keys_and_phrasing_noise_does_not():
@@ -100,7 +109,14 @@ def test_screener_run_keys_on_parsed_filters():
 
 def test_cacheable_tool_passes_its_key_parts_to_get_and_put():
     spec = dataclasses.replace(get_tool("fetch_top_movers"), fn=MagicMock(return_value=[{"symbol": "X"}]))
-    task = {"id": "m", "tool": "fetch_top_movers", "entity": "market", "description": "", "depends_on": [], "status": "pending"}
+    task = {
+        "id": "m",
+        "tool": "fetch_top_movers",
+        "entity": "market",
+        "description": "",
+        "depends_on": [],
+        "status": "pending",
+    }
     with (
         patch("graph.nodes.execute_task.get_tool", return_value=spec),
         patch("graph.nodes.execute_task.evidence_cache.get", return_value=None) as get,
@@ -119,7 +135,14 @@ def test_key_version_is_part_of_the_hash():
 
 def test_failed_cache_write_does_not_fail_a_successful_task():
     spec = dataclasses.replace(get_tool("fetch_info"), fn=MagicMock(return_value={"price": 1}))
-    task = {"id": "fetch_info:TCS", "tool": "fetch_info", "entity": "TCS", "description": "", "depends_on": [], "status": "pending"}
+    task = {
+        "id": "fetch_info:TCS",
+        "tool": "fetch_info",
+        "entity": "TCS",
+        "description": "",
+        "depends_on": [],
+        "status": "pending",
+    }
     with (
         patch("graph.nodes.execute_task.get_tool", return_value=spec),
         patch("tools.data.evidence_cache.evidence_cache_get", return_value=None),

@@ -40,7 +40,10 @@ def test_chat_events_share_one_concurrent_pool(app_module):
 def test_second_turn_from_same_user_gets_busy_reply(app_module):
     started, release = threading.Event(), threading.Event()
     orch = _fake_orch(on_stream=lambda: (started.set(), release.wait(5)))
-    with patch.object(app_module, "get_orchestrator", return_value=orch), patch.object(app_module, "_persist_turn"):
+    with (
+        patch.object(app_module, "get_orchestrator", return_value=orch),
+        patch.object(app_module, "_persist_turn"),
+    ):
         first = app_module.respond_exclusive(101, "TCS price", [], [], 1, "1M")
         runner = threading.Thread(target=lambda: list(first))
         runner.start()
@@ -54,7 +57,10 @@ def test_second_turn_from_same_user_gets_busy_reply(app_module):
 
 
 def test_lock_is_released_after_turn_and_after_cancel(app_module):
-    with patch.object(app_module, "get_orchestrator", return_value=_fake_orch()), patch.object(app_module, "_persist_turn"):
+    with (
+        patch.object(app_module, "get_orchestrator", return_value=_fake_orch()),
+        patch.object(app_module, "_persist_turn"),
+    ):
         list(app_module.respond_exclusive(102, "a", [], [], 1, "1M"))
         assert not app_module._user_turn_lock(102).locked()
         gen = app_module.respond_exclusive(102, "b", [], [], 1, "1M")
@@ -75,7 +81,10 @@ def test_different_users_run_in_parallel(app_module):
         except Exception as e:  # BrokenBarrierError if turns were serialised
             errors.append(e)
 
-    with patch.object(app_module, "get_orchestrator", return_value=orch), patch.object(app_module, "_persist_turn"):
+    with (
+        patch.object(app_module, "get_orchestrator", return_value=orch),
+        patch.object(app_module, "_persist_turn"),
+    ):
         threads = [threading.Thread(target=run, args=(uid,)) for uid in (201, 202)]
         for t in threads:
             t.start()

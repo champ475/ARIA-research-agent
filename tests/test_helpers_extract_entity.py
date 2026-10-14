@@ -1,8 +1,9 @@
 """Regression tests for utils/helpers.py::extract_entity — alert-phrasing vocabulary
 must never win over the actual ticker mentioned in the same message."""
+
 from unittest.mock import patch
 
-from utils.helpers import extract_entity, extract_all_entities, filter_valid_entities
+from utils.helpers import extract_all_entities, extract_entity, filter_valid_entities
 
 
 def test_every_time_phrasing_does_not_shadow_ticker():
@@ -40,8 +41,7 @@ class TestFilterValidEntities:
         # CORPUS, OF, CRORE, RUPEES, SIP, SUGGEST). None are real tickers,
         # so the bounded network fallback must also reject the first one.
         raw = extract_all_entities(
-            "I want to retire in 20 years with a corpus of 5 crore rupees, "
-            "suggest a monthly SIP plan"
+            "I want to retire in 20 years with a corpus of 5 crore rupees, suggest a monthly SIP plan"
         )
         assert raw, "sanity check: extract_all_entities still finds raw candidates"
         with patch("utils.helpers.ticker_has_market_data", return_value=False):
@@ -70,8 +70,7 @@ class TestFilterValidEntities:
         # 2023) — without that, "HDFC Flexicap" (a mutual fund name) would
         # validate "HDFC" as a real curated ticker and misroute the query.
         raw = extract_all_entities(
-            "Compare HDFC Flexicap and Parag Parikh Flexicap on 5 year "
-            "returns and expense ratio"
+            "Compare HDFC Flexicap and Parag Parikh Flexicap on 5 year returns and expense ratio"
         )
         with patch("utils.helpers.ticker_has_market_data", return_value=False):
             assert filter_valid_entities(raw) == []

@@ -1,6 +1,6 @@
 """Tests for tools/analysis/backtester.py."""
+
 import pandas as pd
-import pytest
 
 from tools.analysis import backtester
 
@@ -19,7 +19,7 @@ class TestMetrics:
         assert m["cagr_pct"] == 0.0
 
     def test_growth_equity_positive_return(self):
-        equity = pd.Series([100_000 * (1.001 ** i) for i in range(252)])
+        equity = pd.Series([100_000 * (1.001**i) for i in range(252)])
         m = backtester._metrics(equity)
         assert m["total_return_pct"] > 0
         assert m["cagr_pct"] > 0

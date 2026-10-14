@@ -8,6 +8,7 @@ reduces the chance an instruction hidden in that text is followed. It is a
 mitigation, not a guarantee — the deterministic write gate in
 graph/write_policy.py is what actually prevents unwanted writes.
 """
+
 from __future__ import annotations
 
 import re

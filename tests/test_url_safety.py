@@ -115,7 +115,9 @@ def test_transport_blocks_host_that_rebinds_to_private_after_validation(monkeypa
         patch.object(httpx.HTTPTransport, "handle_request", side_effect=lambda req: sent.append(req)),
         pytest.raises(UnsafeURLError),
     ):
-        SafeEgressTransport().handle_request(httpx.Request("POST", "https://rebind.example/v1/chat/completions"))
+        SafeEgressTransport().handle_request(
+            httpx.Request("POST", "https://rebind.example/v1/chat/completions")
+        )
     assert sent == []  # nothing left the process
 
 
@@ -154,5 +156,7 @@ def test_exhausted_message_never_echoes_raw_upstream_error(is_byo):
 
 
 def test_exhausted_message_names_the_error_class_for_byo():
-    msg = format_exhausted_message(LLMProvidersExhausted(RuntimeError("Error code: 401 - invalid api key"), is_byo=True))
+    msg = format_exhausted_message(
+        LLMProvidersExhausted(RuntimeError("Error code: 401 - invalid api key"), is_byo=True)
+    )
     assert "authentication failed" in msg

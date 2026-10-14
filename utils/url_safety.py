@@ -15,6 +15,7 @@ rebinding — is still refused).
 Self-hosters who run a local model server (e.g. Ollama on localhost) can set
 `BYO_ALLOW_PRIVATE_HOSTS=true`, which permits plain http and private hosts.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -39,8 +40,12 @@ def _is_public(ip_text: str) -> bool:
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
     if (
-        ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
-        or ip.is_reserved or ip.is_unspecified
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
     ):
         return False
     # is_global also excludes shared address space (100.64.0.0/10, CGNAT),

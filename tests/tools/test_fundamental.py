@@ -1,4 +1,5 @@
 """Tests for tools/analysis/fundamental.py — ratio recomputation and DCF."""
+
 import pandas as pd
 import pytest
 
@@ -8,8 +9,14 @@ from tools.analysis import fundamental
 def _bs():
     return pd.DataFrame(
         {"2024": [1000.0, 400.0, 200.0, 600.0, 300.0, 50.0]},
-        index=["Total Assets", "Total Current Assets", "Total Current Liabilities",
-               "Total Stockholder Equity", "Total Debt", "Cash And Cash Equivalents"],
+        index=[
+            "Total Assets",
+            "Total Current Assets",
+            "Total Current Liabilities",
+            "Total Stockholder Equity",
+            "Total Debt",
+            "Cash And Cash Equivalents",
+        ],
     )
 
 
@@ -29,9 +36,15 @@ def _cf():
 
 def _info(**overrides):
     d = {
-        "currentPrice": 150.0, "marketCap": 30000.0, "beta": 1.1,
-        "trailingEps": 10.0, "bookValue": 20.0, "debtToEquity": 50.0,
-        "longName": "Test Co", "sector": "IT", "industry": "Software",
+        "currentPrice": 150.0,
+        "marketCap": 30000.0,
+        "beta": 1.1,
+        "trailingEps": 10.0,
+        "bookValue": 20.0,
+        "debtToEquity": 50.0,
+        "longName": "Test Co",
+        "sector": "IT",
+        "industry": "Software",
     }
     d.update(overrides)
     return d

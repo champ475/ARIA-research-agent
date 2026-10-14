@@ -15,6 +15,7 @@ The check is deterministic and runs in three places: Planner hides disallowed
 write tools from its catalogue and drops them from its output, Reflection can
 never add a write tool, and execute_task re-checks right before the call.
 """
+
 from __future__ import annotations
 
 import re

@@ -1,11 +1,12 @@
 """Tests for scripts/check_alerts.py — recurring-alert cooldown gating."""
-from datetime import datetime, timedelta, timezone
+
+from datetime import UTC, datetime, timedelta
 
 from scripts.check_alerts import in_cooldown
 
 
 def test_one_shot_alert_never_in_cooldown():
-    alert = {"recurring": False, "triggered_at": datetime.now(timezone.utc)}
+    alert = {"recurring": False, "triggered_at": datetime.now(UTC)}
     assert in_cooldown(alert) is False
 
 
@@ -17,7 +18,7 @@ def test_recurring_never_triggered_not_in_cooldown():
 def test_recurring_recently_triggered_is_in_cooldown():
     alert = {
         "recurring": True,
-        "triggered_at": datetime.now(timezone.utc) - timedelta(hours=1),
+        "triggered_at": datetime.now(UTC) - timedelta(hours=1),
         "cooldown_hours": 24,
     }
     assert in_cooldown(alert) is True
@@ -26,7 +27,7 @@ def test_recurring_recently_triggered_is_in_cooldown():
 def test_recurring_past_cooldown_window_fires_again():
     alert = {
         "recurring": True,
-        "triggered_at": datetime.now(timezone.utc) - timedelta(hours=25),
+        "triggered_at": datetime.now(UTC) - timedelta(hours=25),
         "cooldown_hours": 24,
     }
     assert in_cooldown(alert) is False
@@ -43,7 +44,7 @@ def test_naive_datetime_triggered_at_handled():
 
 
 def test_default_cooldown_used_when_missing():
-    alert = {"recurring": True, "triggered_at": datetime.now(timezone.utc) - timedelta(hours=1)}
+    alert = {"recurring": True, "triggered_at": datetime.now(UTC) - timedelta(hours=1)}
     assert in_cooldown(alert) is True
 
 
@@ -83,8 +84,17 @@ class _Conn:
 
 
 def _alert(**kw):
-    base = {"id": 1, "user_id": 7, "symbol": "TCS", "alert_type": "price_above", "threshold": 100.0,
-            "recurring": False, "triggered_at": None, "telegram_chat_id": "555", "delivery_attempts": 0}
+    base = {
+        "id": 1,
+        "user_id": 7,
+        "symbol": "TCS",
+        "alert_type": "price_above",
+        "threshold": 100.0,
+        "recurring": False,
+        "triggered_at": None,
+        "telegram_chat_id": "555",
+        "delivery_attempts": 0,
+    }
     base.update(kw)
     return base
 
@@ -142,7 +152,9 @@ def test_retry_then_success_on_next_run(bot):
 
 def test_ok_false_in_a_200_body_is_a_failure(bot):
     cur = _Cur()
-    with patch.object(ca.requests, "post", return_value=_resp(200, {"ok": False, "description": "chat not found"})):
+    with patch.object(
+        ca.requests, "post", return_value=_resp(200, {"ok": False, "description": "chat not found"})
+    ):
         assert ca.deliver(cur, _alert(), "msg") == "retry"
 
 
@@ -193,11 +205,21 @@ def test_indicator_alerts_share_one_ohlcv_fetch(bot):
     import pandas as pd
 
     idx = pd.date_range("2025-01-01", periods=60, freq="D")
-    df = pd.DataFrame({"Open": np.linspace(1, 2, 60), "High": np.linspace(1, 2, 60), "Low": np.linspace(1, 2, 60),
-                       "Close": np.linspace(1, 2, 60), "Volume": np.full(60, 1000.0)}, index=idx)
-    rows = [_alert(id=1, alert_type="rsi_cross_above", threshold=50.0),
-            _alert(id=2, alert_type="macd_bullish_cross", threshold=None),
-            _alert(id=3, alert_type="bb_breakout", threshold=None)]
+    df = pd.DataFrame(
+        {
+            "Open": np.linspace(1, 2, 60),
+            "High": np.linspace(1, 2, 60),
+            "Low": np.linspace(1, 2, 60),
+            "Close": np.linspace(1, 2, 60),
+            "Volume": np.full(60, 1000.0),
+        },
+        index=idx,
+    )
+    rows = [
+        _alert(id=1, alert_type="rsi_cross_above", threshold=50.0),
+        _alert(id=2, alert_type="macd_bullish_cross", threshold=None),
+        _alert(id=3, alert_type="bb_breakout", threshold=None),
+    ]
     with patch.object(ca, "get_ohlcv", return_value=df) as go:
         ca.run_once(_Conn(rows))
     assert go.call_count == 1
@@ -210,11 +232,19 @@ def test_run_applies_delivery_schema_first(bot):
 
 
 def test_inbox_markdown_escapes_and_marks_unread(app_module):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     rows = [
-        {"message": "<b>TCS</b> above ₹100", "created_at": datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc), "read_at": None},
-        {"message": "INFY", "created_at": datetime(2026, 10, 13, 5, 0, tzinfo=timezone.utc), "read_at": datetime.now(timezone.utc)},
+        {
+            "message": "<b>TCS</b> above ₹100",
+            "created_at": datetime(2026, 10, 14, 5, 0, tzinfo=UTC),
+            "read_at": None,
+        },
+        {
+            "message": "INFY",
+            "created_at": datetime(2026, 10, 13, 5, 0, tzinfo=UTC),
+            "read_at": datetime.now(UTC),
+        },
     ]
     md = app_module._inbox_md(rows)
     assert "&lt;b&gt;TCS" in md and "<b>" not in md

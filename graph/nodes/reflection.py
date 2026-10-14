@@ -15,11 +15,12 @@ the loop budget is already exhausted, gaps are still reported (so
 CommunicationLayer/ConclusionBuilder can disclose them) but no new tasks are
 queued, since Planner/ResearchExecutor won't be revisited anyway.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from agents.llm_client import LLMClient, LLMProvidersExhausted
 from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
@@ -41,8 +42,7 @@ _SYSTEM = (
     "genuinely can't be answered without it — an empty list means the "
     'evidence already covers everything asked. "action" must be one of the '
     "available tool names below; if no available tool would fill the gap, "
-    "omit that item entirely rather than inventing a tool name."
-    + UNTRUSTED_NOTICE
+    "omit that item entirely rather than inventing a tool name." + UNTRUSTED_NOTICE
 )
 
 # SEC-03: Reflection fills research gaps; it may never add a tool that writes.
@@ -87,17 +87,20 @@ def _parse(raw: str) -> list[MissingInfoItem]:
         priority = entry.get("priority", _DEFAULT_PRIORITY)
         if priority not in _VALID_PRIORITIES:
             priority = _DEFAULT_PRIORITY
-        items.append({
-            "missing": entry["missing"],
-            "reason": entry.get("reason", ""),
-            "priority": priority,
-            "action": entry["action"],
-        })
+        items.append(
+            {
+                "missing": entry["missing"],
+                "reason": entry.get("reason", ""),
+                "priority": priority,
+                "action": entry["action"],
+            }
+        )
     return items
 
 
 def build_reflection_node(
-    client: LLMClient | None = None, provider_config: dict | None = None,
+    client: LLMClient | None = None,
+    provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
     client = client or LLMClient(_SYSTEM, provider_config)
 
@@ -107,7 +110,9 @@ def build_reflection_node(
 
         try:
             raw = client.ask(
-                _build_prompt(state.get("query", ""), state.get("objective", ""), state.get("evidence_summary", {})),
+                _build_prompt(
+                    state.get("query", ""), state.get("objective", ""), state.get("evidence_summary", {})
+                ),
                 model=GROQ_MODEL_FAST,
                 max_tokens=TOKENS_AGENT,
                 temperature=0.0,

@@ -27,11 +27,12 @@ both waste yfinance calls on non-tickers and write garbage alert rows for
 words like "AN"/"SET"/"ALSO". Filtering happens once, here, since every
 downstream consumer reads `entities` from `GraphState`.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from agents.llm_client import LLMClient
 from config import GROQ_MODEL_FAST, TOKENS_FAST
@@ -48,7 +49,7 @@ _SYSTEM = (
     "research engine. Respond with ONLY a JSON object, no prose, no markdown fences:\n"
     '{"intent": one of ["equity","report","mf","screener","alert","planning","chat"], '
     '"secondary_intents": a list of any OTHER domains (same allowed values) this message '
-    "ALSO names — e.g. \"generate a report on TCS and alert me if it drops 5%\" is "
+    'ALSO names — e.g. "generate a report on TCS and alert me if it drops 5%" is '
     'intent="report", secondary_intents=["alert"]; empty list if only one domain applies, '
     '"objective": a one-sentence statement of what the user actually wants answered, '
     '"complexity": one of ["simple","moderate","complex"]}\n'
@@ -130,7 +131,8 @@ def _parse(raw: str) -> dict:
 
 
 def build_query_analyzer_node(
-    client: LLMClient | None = None, provider_config: dict | None = None,
+    client: LLMClient | None = None,
+    provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
     """Factory so the graph wiring builds one LLMClient per node type (with the
     right system prompt) and tests can inject a stub without touching a real
@@ -158,7 +160,11 @@ def build_query_analyzer_node(
                 "QueryAnalyzer",
                 f"intent={classification['intent']}, complexity={classification['complexity']}",
                 f"entities={entities or 'none'}"
-                + (f", secondary_intents={classification['secondary_intents']}" if classification["secondary_intents"] else ""),
+                + (
+                    f", secondary_intents={classification['secondary_intents']}"
+                    if classification["secondary_intents"]
+                    else ""
+                ),
             ),
         }
 

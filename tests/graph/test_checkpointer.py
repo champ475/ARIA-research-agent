@@ -17,15 +17,19 @@ class TestGetPostgresCheckpointer:
 
     def test_calls_setup_exactly_once(self):
         fake_saver = MagicMock()
-        with patch("psycopg_pool.ConnectionPool"), \
-             patch("langgraph.checkpoint.postgres.PostgresSaver", return_value=fake_saver):
+        with (
+            patch("psycopg_pool.ConnectionPool"),
+            patch("langgraph.checkpoint.postgres.PostgresSaver", return_value=fake_saver),
+        ):
             checkpointer_module.get_postgres_checkpointer()
         fake_saver.setup.assert_called_once()
 
     def test_returns_singleton_on_repeated_calls(self):
         fake_saver = MagicMock()
-        with patch("psycopg_pool.ConnectionPool"), \
-             patch("langgraph.checkpoint.postgres.PostgresSaver", return_value=fake_saver):
+        with (
+            patch("psycopg_pool.ConnectionPool"),
+            patch("langgraph.checkpoint.postgres.PostgresSaver", return_value=fake_saver),
+        ):
             first = checkpointer_module.get_postgres_checkpointer()
             second = checkpointer_module.get_postgres_checkpointer()
         assert first is second

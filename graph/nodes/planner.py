@@ -21,11 +21,12 @@ selection step is what keeps ticker-only tools from being wrongly selected
 for a "market"-entity task in the first place (Planner's own instruction:
 "pick only tools whose data the objective actually needs").
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from agents.llm_client import LLMClient
 from config import GROQ_MODEL_FAST, TOKENS_AGENT
@@ -95,7 +96,7 @@ def _with_transitive_deps(selected: list[str]) -> list[str]:
 
 def _build_tasks(tool_names: list[str], entities: list[str]) -> list[Task]:
     tasks: list[Task] = []
-    for entity in (entities or [NO_ENTITY_SENTINEL]):
+    for entity in entities or [NO_ENTITY_SENTINEL]:
         for tool_name in tool_names:
             spec = get_tool(tool_name)
             task: Task = {
@@ -112,7 +113,8 @@ def _build_tasks(tool_names: list[str], entities: list[str]) -> list[Task]:
 
 
 def build_planner_node(
-    client: LLMClient | None = None, provider_config: dict | None = None,
+    client: LLMClient | None = None,
+    provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
     client = client or LLMClient(_SYSTEM, provider_config)
 

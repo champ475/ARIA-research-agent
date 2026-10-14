@@ -2,7 +2,8 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from graph.nodes.execute_task import execute_task, _to_cacheable, from_cacheable as _from_cacheable
+from graph.nodes.execute_task import _to_cacheable, execute_task
+from graph.nodes.execute_task import from_cacheable as _from_cacheable
 from graph.tool_catalogue import ToolSpec
 
 
@@ -38,12 +39,21 @@ class TestExecuteTask:
     def test_cache_hit_skips_tool_call(self):
         fake_fn = MagicMock()
         fake_spec = ToolSpec(
-            name="fetch_info", evidence_type="quote_info", depends_on=(),
-            cost="low", fn=fake_fn, description="x",
+            name="fetch_info",
+            evidence_type="quote_info",
+            depends_on=(),
+            cost="low",
+            fn=fake_fn,
+            description="x",
         )
-        with patch("graph.nodes.execute_task.get_tool", return_value=fake_spec), \
-             patch("graph.nodes.execute_task.evidence_cache.get", return_value={"payload": {"pe": 24.3}, "confidence": 0.8}), \
-             patch("graph.nodes.execute_task.evidence_cache.put") as mock_put:
+        with (
+            patch("graph.nodes.execute_task.get_tool", return_value=fake_spec),
+            patch(
+                "graph.nodes.execute_task.evidence_cache.get",
+                return_value={"payload": {"pe": 24.3}, "confidence": 0.8},
+            ),
+            patch("graph.nodes.execute_task.evidence_cache.put") as mock_put,
+        ):
             evidence = execute_task(_task(), context={})
 
         fake_fn.assert_not_called()
@@ -54,12 +64,18 @@ class TestExecuteTask:
     def test_cache_miss_calls_tool_and_populates_cache(self):
         fake_fn = MagicMock(return_value={"pe": 30.0})
         fake_spec = ToolSpec(
-            name="fetch_info", evidence_type="quote_info", depends_on=(),
-            cost="low", fn=fake_fn, description="x",
+            name="fetch_info",
+            evidence_type="quote_info",
+            depends_on=(),
+            cost="low",
+            fn=fake_fn,
+            description="x",
         )
-        with patch("graph.nodes.execute_task.get_tool", return_value=fake_spec), \
-             patch("graph.nodes.execute_task.evidence_cache.get", return_value=None), \
-             patch("graph.nodes.execute_task.evidence_cache.put") as mock_put:
+        with (
+            patch("graph.nodes.execute_task.get_tool", return_value=fake_spec),
+            patch("graph.nodes.execute_task.evidence_cache.get", return_value=None),
+            patch("graph.nodes.execute_task.evidence_cache.put") as mock_put,
+        ):
             evidence = execute_task(_task(), context={"some": "context"})
 
         fake_fn.assert_called_once_with("RELIANCE", {"some": "context"})
@@ -69,12 +85,18 @@ class TestExecuteTask:
 
     def test_evidence_fields_match_task_and_spec(self):
         fake_spec = ToolSpec(
-            name="fetch_info", evidence_type="quote_info", depends_on=(),
-            cost="low", fn=lambda entity, ctx: {"x": 1}, description="x",
+            name="fetch_info",
+            evidence_type="quote_info",
+            depends_on=(),
+            cost="low",
+            fn=lambda entity, ctx: {"x": 1},
+            description="x",
         )
-        with patch("graph.nodes.execute_task.get_tool", return_value=fake_spec), \
-             patch("graph.nodes.execute_task.evidence_cache.get", return_value=None), \
-             patch("graph.nodes.execute_task.evidence_cache.put"):
+        with (
+            patch("graph.nodes.execute_task.get_tool", return_value=fake_spec),
+            patch("graph.nodes.execute_task.evidence_cache.get", return_value=None),
+            patch("graph.nodes.execute_task.evidence_cache.put"),
+        ):
             evidence = execute_task(_task(), context={})
 
         assert evidence["tool"] == "fetch_info"
@@ -88,11 +110,17 @@ class TestExecuteTask:
             raise ValueError("yfinance down")
 
         fake_spec = ToolSpec(
-            name="fetch_info", evidence_type="quote_info", depends_on=(),
-            cost="low", fn=_raise, description="x",
+            name="fetch_info",
+            evidence_type="quote_info",
+            depends_on=(),
+            cost="low",
+            fn=_raise,
+            description="x",
         )
-        with patch("graph.nodes.execute_task.get_tool", return_value=fake_spec), \
-             patch("graph.nodes.execute_task.evidence_cache.get", return_value=None):
+        with (
+            patch("graph.nodes.execute_task.get_tool", return_value=fake_spec),
+            patch("graph.nodes.execute_task.evidence_cache.get", return_value=None),
+        ):
             try:
                 execute_task(_task(), context={})
                 assert False, "expected ValueError to propagate"

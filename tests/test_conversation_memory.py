@@ -1,4 +1,5 @@
 """Tests for agents/conversation_memory.py — history windowing + overflow summarization."""
+
 from agents.conversation_memory import ConversationMemory
 
 
@@ -61,9 +62,9 @@ class TestWithSummarizer:
             return (old + " | " if old else "") + "S"
 
         mem = ConversationMemory(cap=20, summarizer=fake_summarizer)
-        _fill(mem, 15)   # 30 msgs -> 10 overflow, 1st summarization
+        _fill(mem, 15)  # 30 msgs -> 10 overflow, 1st summarization
         mem.context()
-        _fill(mem, 5)    # +10 msgs -> 40 total, 20 overflow, 10 new to fold
+        _fill(mem, 5)  # +10 msgs -> 40 total, 20 overflow, 10 new to fold
         mem.context()
         assert len(seen_chunks) == 2
         # second call should only include the newly-overflowed chunk, not re-include the first

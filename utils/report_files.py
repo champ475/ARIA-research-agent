@@ -17,6 +17,7 @@ refuses every URL — rendering never touches the
 network or the local filesystem (no <img src="file:///etc/passwd">, no
 <link href="http://internal/">, no CSS @import/url()).
 """
+
 from __future__ import annotations
 
 import logging
@@ -33,9 +34,35 @@ _TRUNCATION_NOTE = "\n\n---\n*Report truncated: it exceeded the maximum length f
 # Formatting-only allowlist: what the Markdown converter legitimately emits for
 # reports (headings, paragraphs, lists, tables, code, emphasis, links).
 _ALLOWED_TAGS = {
-    "h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr", "ul", "ol", "li",
-    "table", "thead", "tbody", "tr", "th", "td", "code", "pre", "em", "strong",
-    "b", "i", "blockquote", "a", "sup", "sub", "del",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "p",
+    "br",
+    "hr",
+    "ul",
+    "ol",
+    "li",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
+    "code",
+    "pre",
+    "em",
+    "strong",
+    "b",
+    "i",
+    "blockquote",
+    "a",
+    "sup",
+    "sub",
+    "del",
 }
 _ALLOWED_ATTRIBUTES = {"a": {"href"}, "th": {"align"}, "td": {"align"}}
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
@@ -72,6 +99,7 @@ def sanitise_html(html_body: str) -> str:
     """Strip every tag/attribute outside the formatting allowlist; drop the
     contents of script/style entirely; links keep only http(s)/mailto hrefs."""
     import nh3
+
     return nh3.clean(
         html_body,
         tags=_ALLOWED_TAGS,
@@ -101,6 +129,7 @@ def render_report(sym: str, rtype: str, content: str) -> tuple[str | None, str |
     try:
         import markdown as _md
         from weasyprint import HTML as _HTML
+
         html_body = sanitise_html(_md.markdown(content, extensions=["tables", "fenced_code"]))
         html_full = (
             "<!DOCTYPE html><html><head><meta charset='utf-8'><style>"

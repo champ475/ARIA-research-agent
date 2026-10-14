@@ -17,6 +17,7 @@ Requires `gradio_client` (installed with gradio). The app's event API names
 are Gradio's defaults (the handler function names); if the UI is refactored,
 pass --login-api / --chat-api.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,8 +43,16 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[k]
 
 
-def _one_user(url: str, idx: int, password: str, login_api: str, chat_api: str,
-              ttfts: list[float], errors: list[str], start: threading.Barrier | None) -> None:
+def _one_user(
+    url: str,
+    idx: int,
+    password: str,
+    login_api: str,
+    chat_api: str,
+    ttfts: list[float],
+    errors: list[str],
+    start: threading.Barrier | None,
+) -> None:
     from gradio_client import Client
 
     try:
@@ -81,7 +90,9 @@ def _run(url: str, users: int, password: str, login_api: str, chat_api: str) -> 
     errors: list[str] = []
     barrier = threading.Barrier(users) if users > 1 else None
     threads = [
-        threading.Thread(target=_one_user, args=(url, i, password, login_api, chat_api, ttfts, errors, barrier))
+        threading.Thread(
+            target=_one_user, args=(url, i, password, login_api, chat_api, ttfts, errors, barrier)
+        )
         for i in range(users)
     ]
     for t in threads:
@@ -110,8 +121,12 @@ def main() -> int:
     concurrent, errors = _run(args.url, args.users, args.password, args.login_api, args.chat_api)
 
     b95, c95 = _percentile(baseline, 95), _percentile(concurrent, 95)
-    print(f"single-user TTFT  p50={statistics.median(baseline) if baseline else float('nan'):.2f}s  p95={b95:.2f}s  (n={len(baseline)})")
-    print(f"{args.users}-user TTFT     p50={statistics.median(concurrent) if concurrent else float('nan'):.2f}s  p95={c95:.2f}s  (n={len(concurrent)})")
+    print(
+        f"single-user TTFT  p50={statistics.median(baseline) if baseline else float('nan'):.2f}s  p95={b95:.2f}s  (n={len(baseline)})"
+    )
+    print(
+        f"{args.users}-user TTFT     p50={statistics.median(concurrent) if concurrent else float('nan'):.2f}s  p95={c95:.2f}s  (n={len(concurrent)})"
+    )
     for e in errors:
         print("ERROR", e)
     ratio = c95 / b95 if b95 and b95 == b95 else float("inf")

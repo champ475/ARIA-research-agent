@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from tools.data import evidence_cache
@@ -31,7 +31,7 @@ class TestGet:
         fresh_row = {
             "payload": {"pe": 24.3},
             "confidence": 0.9,
-            "fetched_at": datetime.now(timezone.utc) - timedelta(seconds=10),
+            "fetched_at": datetime.now(UTC) - timedelta(seconds=10),
         }
         with patch("tools.data.evidence_cache.evidence_cache_get", return_value=fresh_row):
             result = evidence_cache.get("fetch_info", "RELIANCE", "quote_info")
@@ -42,7 +42,7 @@ class TestGet:
         stale_row = {
             "payload": {"pe": 24.3},
             "confidence": 0.9,
-            "fetched_at": datetime.now(timezone.utc) - timedelta(seconds=1000),
+            "fetched_at": datetime.now(UTC) - timedelta(seconds=1000),
         }
         with patch("tools.data.evidence_cache.evidence_cache_get", return_value=stale_row):
             result = evidence_cache.get("fetch_info", "RELIANCE", "quote_info")
@@ -53,7 +53,7 @@ class TestGet:
         row = {
             "payload": {"x": 1},
             "confidence": 1.0,
-            "fetched_at": datetime.now(timezone.utc) - timedelta(seconds=2000),
+            "fetched_at": datetime.now(UTC) - timedelta(seconds=2000),
         }
         with patch("tools.data.evidence_cache.evidence_cache_get", return_value=row):
             assert evidence_cache.get("fetch_info", "RELIANCE", "quote_info") is None
@@ -72,7 +72,9 @@ class TestGet:
         assert result is not None
 
     def test_db_error_is_a_safe_cache_miss(self):
-        with patch("tools.data.evidence_cache.evidence_cache_get", side_effect=Exception("connection refused")):
+        with patch(
+            "tools.data.evidence_cache.evidence_cache_get", side_effect=Exception("connection refused")
+        ):
             result = evidence_cache.get("fetch_info", "RELIANCE", "quote_info")
         assert result is None
 
@@ -82,4 +84,6 @@ class TestPut:
         with patch("tools.data.evidence_cache.evidence_cache_put") as mock_put:
             evidence_cache.put("fetch_info", "RELIANCE", "quote_info", {"pe": 24.3}, confidence=0.9)
         expected_hash = evidence_cache.compute_args_hash("RELIANCE")
-        mock_put.assert_called_once_with("fetch_info", expected_hash, "RELIANCE", "quote_info", {"pe": 24.3}, 0.9)
+        mock_put.assert_called_once_with(
+            "fetch_info", expected_hash, "RELIANCE", "quote_info", {"pe": 24.3}, 0.9
+        )

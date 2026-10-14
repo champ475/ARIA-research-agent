@@ -10,6 +10,7 @@ DataFrame payloads (e.g. fetch_ohlcv's raw OHLCV history) are summarized to
 their shape rather than included in full — nothing downstream of Reflection
 needs the full time series, just "there is price history and how much".
 """
+
 from __future__ import annotations
 
 import json

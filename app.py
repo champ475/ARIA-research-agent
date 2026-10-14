@@ -3,23 +3,26 @@ app.py — Gradio front end for ARIA, an autonomous financial research engine.
 Gradio 6 compatible. show_api=False fixes the proxy/launch error.
 """
 
-import os
-import time
 import logging
+import os
 import threading
+import time
+
 import gradio as gr
+
 from utils.logging_setup import configure_logging, run_in_turn
 
 # Before anything else logs: JSON lines with turn ids + secret redaction (OBS-01).
 configure_logging()
 
-from utils.db    import init_db
-from utils.helpers import now_ist, IST as IST_TZ
-from utils.auth import signup, login, AuthError
+from config import MAX_CHAT_CHARS
+from utils.auth import AuthError, login, signup
+from utils.db import init_db
+from utils.helpers import IST as IST_TZ
+from utils.helpers import now_ist
+from utils.input_guard import CleanMessage, InputRejected, clean_message
 from utils.telegram_link import start_polling_thread
 from utils.url_safety import UnsafeURLError
-from utils.input_guard import CleanMessage, InputRejected, clean_message
-from config import MAX_CHAT_CHARS
 
 log = logging.getLogger(__name__)
 
@@ -30,11 +33,7 @@ init_db()
 start_polling_thread()
 
 # ── Loading indicator HTML (three bouncing dots, styled via global CSS) ──────
-LOADING_HTML = (
-    '<span class="aria-dot"></span>'
-    '<span class="aria-dot"></span>'
-    '<span class="aria-dot"></span>'
-)
+LOADING_HTML = '<span class="aria-dot"></span><span class="aria-dot"></span><span class="aria-dot"></span>'
 
 # ── Lazy orchestrator loader ──────────────────────────────────────────────────
 # One GraphOrchestrator per user (agents/graph_orchestrator.py) — the LangGraph
@@ -45,12 +44,14 @@ LOADING_HTML = (
 _orchestrators = {}
 _orchestrators_lock = threading.Lock()
 
+
 def get_orchestrator(user_id: int):
     # Concurrent turns (REL-01) mean two threads can race to build the same
     # user's orchestrator; the lock keeps it to exactly one instance.
     with _orchestrators_lock:
         if user_id not in _orchestrators:
             from agents.graph_orchestrator import GraphOrchestrator
+
             _orchestrators[user_id] = GraphOrchestrator(user_id)
         return _orchestrators[user_id]
 
@@ -90,11 +91,11 @@ _TF_KEYWORDS = {
 }
 
 _TAB_LABELS = {
-    "equity"  : "📊 Equity Research",
-    "report"  : "📋 Report Generator",
-    "mf"      : "📈 Mutual Funds",
+    "equity": "📊 Equity Research",
+    "report": "📋 Report Generator",
+    "mf": "📈 Mutual Funds",
     "screener": "🔍 Screener",
-    "alert"   : "🔔 Alerts",
+    "alert": "🔔 Alerts",
     "planning": "🧭 Financial Planner",
 }
 
@@ -108,8 +109,12 @@ def _tab_label(tab_used: str) -> str:
     parts = tab_used.split("+")
     return " + ".join(_TAB_LABELS.get(p, p) for p in parts)
 
+
 CHAT_DEFAULTS = [
-    "Analyse TCS", "IC report for TCS", "Best ELSS for tax saving", "Top gainers today",
+    "Analyse TCS",
+    "IC report for TCS",
+    "Best ELSS for tax saving",
+    "Top gainers today",
 ]
 CHAT_PLACEHOLDER = (
     "Ask anything — stock analysis, IC/result-update reports, mutual funds, "
@@ -129,10 +134,10 @@ def _session_title(msg: str) -> str:
 
 # ── Core respond function (orchestrator-routed) ───────────────────────────────
 
-_INPUT_BUSY  = gr.update(value="", interactive=False)   # locked while a turn is in flight
-_INPUT_READY = gr.update(value="", interactive=True)     # unlocked once the turn is done
-_SEND_BUSY   = gr.update(interactive=False)
-_SEND_READY  = gr.update(interactive=True)
+_INPUT_BUSY = gr.update(value="", interactive=False)  # locked while a turn is in flight
+_INPUT_READY = gr.update(value="", interactive=True)  # unlocked once the turn is done
+_SEND_BUSY = gr.update(interactive=False)
+_SEND_READY = gr.update(interactive=True)
 
 
 def respond(user_id: int, message: str, history: list, suggestions: list, session_id: int, tf: str):
@@ -158,7 +163,16 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     checked = clean_message(message)
     if isinstance(checked, InputRejected):
         if checked.reason == "empty":
-            yield (_INPUT_READY, _SEND_READY, history, gr.update(), suggestions, no_file, no_file, no_file) + tuple(gr.update() for _ in range(4))
+            yield (
+                _INPUT_READY,
+                _SEND_READY,
+                history,
+                gr.update(),
+                suggestions,
+                no_file,
+                no_file,
+                no_file,
+            ) + tuple(gr.update() for _ in range(4))
             return
         log.info(f"[respond] input rejected: {checked.reason}")
         preview = message[:200] + "…" if isinstance(message, str) and len(message) > 200 else message
@@ -168,7 +182,16 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         ]
         # Keep the user's text in the box so they can shorten it instead of retyping.
         keep_text = gr.update(value=message if isinstance(message, str) else "", interactive=True)
-        yield (keep_text, _SEND_READY, rejected_hist, gr.update(), suggestions, no_file, no_file, no_file) + tuple(gr.update() for _ in range(4))
+        yield (
+            keep_text,
+            _SEND_READY,
+            rejected_hist,
+            gr.update(),
+            suggestions,
+            no_file,
+            no_file,
+            no_file,
+        ) + tuple(gr.update() for _ in range(4))
         return
     message = checked.text
 
@@ -195,17 +218,26 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
 
     # Immediately show loading indicator while the orchestrator processes
     loading_hist = history + [
-        {"role": "user",      "content": message},
+        {"role": "user", "content": message},
         {"role": "assistant", "content": LOADING_HTML},
     ]
-    yield (_INPUT_BUSY, _SEND_BUSY, loading_hist, gr.update(value=None, visible=False), suggestions, no_file, no_file, no_file) + _make_btn_updates(suggestions)
+    yield (
+        _INPUT_BUSY,
+        _SEND_BUSY,
+        loading_hist,
+        gr.update(value=None, visible=False),
+        suggestions,
+        no_file,
+        no_file,
+        no_file,
+    ) + _make_btn_updates(suggestions)
 
-    chart_fig  = None
-    new_sugg   = suggestions
+    chart_fig = None
+    new_sugg = suggestions
     pdf_update = no_file
-    md_update  = no_file
+    md_update = no_file
     csv_update = no_file
-    text       = ""
+    text = ""
     try:
         orch = get_orchestrator(user_id)
         tab_used = "equity"
@@ -217,12 +249,18 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
             if chart is not None:
                 chart_fig = chart
             streaming_hist = history + [
-                {"role": "user",      "content": message},
+                {"role": "user", "content": message},
                 {"role": "assistant", "content": f"*🔀 Routed to: {_tab_label(tab_used)}*\n\n" + text},
             ]
             yield (
-                _INPUT_BUSY, _SEND_BUSY, streaming_hist, gr.update(value=chart_fig, visible=chart_fig is not None),
-                suggestions, no_file, no_file, no_file,
+                _INPUT_BUSY,
+                _SEND_BUSY,
+                streaming_hist,
+                gr.update(value=chart_fig, visible=chart_fig is not None),
+                suggestions,
+                no_file,
+                no_file,
+                no_file,
             ) + _make_btn_updates(suggestions)
 
         new_sugg = orch.generate_suggestions(text, clean)
@@ -230,12 +268,14 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         if pdf_path:
             pdf_update = gr.update(value=pdf_path, label=f"⬇ {os.path.basename(pdf_path)}", visible=True)
         if md_path:
-            md_update = gr.update(value=md_path,  label=f"⬇ {os.path.basename(md_path)}",  visible=True)
+            md_update = gr.update(value=md_path, label=f"⬇ {os.path.basename(md_path)}", visible=True)
         if csv_path:
             csv_update = gr.update(value=csv_path, label="⬇ Export Results CSV", visible=True)
     except UnsafeURLError as e:
         # A saved BYO base URL that fails the egress policy (SEC-01).
-        text = f"### ⚠️ Settings need attention\n\n{e}\n\nUpdate or remove the base URL in the **Settings** tab."
+        text = (
+            f"### ⚠️ Settings need attention\n\n{e}\n\nUpdate or remove the base URL in the **Settings** tab."
+        )
     except ValueError as e:
         text = (
             f"### ⚠️ API Key Required\n\n{e}\n\n"
@@ -260,13 +300,22 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         log.warning(f"[respond] failed to persist turn for session {session_id}: {e}")
 
     updated_history = history + [
-        {"role": "user",      "content": message},
+        {"role": "user", "content": message},
         {"role": "assistant", "content": text},
     ]
     chart_update = gr.update(value=chart_fig, visible=chart_fig is not None)
-    btn_updates  = _make_btn_updates(new_sugg)
+    btn_updates = _make_btn_updates(new_sugg)
     log.info(f"[respond] turn end ms={int((time.monotonic() - started) * 1000)}")
-    yield (_INPUT_READY, _SEND_READY, updated_history, chart_update, new_sugg, pdf_update, md_update, csv_update) + btn_updates
+    yield (
+        _INPUT_READY,
+        _SEND_READY,
+        updated_history,
+        chart_update,
+        new_sugg,
+        pdf_update,
+        md_update,
+        csv_update,
+    ) + btn_updates
 
 
 def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
@@ -280,7 +329,9 @@ def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
     try:
         # run_in_turn keeps one turn_id on every log line of this turn, across
         # yields (Gradio resumes each generator step in a fresh context).
-        yield from run_in_turn(respond(user_id, message, history, suggestions, session_id, tf), user_id, session_id)
+        yield from run_in_turn(
+            respond(user_id, message, history, suggestions, session_id, tf), user_id, session_id
+        )
     finally:
         lock.release()
 
@@ -291,8 +342,11 @@ def _busy_outputs(message, history: list, suggestions: list) -> tuple:
     no_file = gr.update(value=None, visible=False)
     busy_hist = (history or []) + [
         {"role": "user", "content": (message or "")[:200]},
-        {"role": "assistant", "content": "⏳ Still working on your previous question — "
-                                         "send this again once that answer arrives."},
+        {
+            "role": "assistant",
+            "content": "⏳ Still working on your previous question — "
+            "send this again once that answer arrives.",
+        },
     ]
     keep_text = gr.update(value=message or "", interactive=True)
     return (keep_text, _SEND_READY, busy_hist, gr.update(), suggestions, no_file, no_file, no_file) + tuple(
@@ -302,6 +356,7 @@ def _busy_outputs(message, history: list, suggestions: list) -> tuple:
 
 def _persist_turn(user_id: int, session_id: int, user_msg: str, assistant_msg: str, is_first: bool):
     from utils.db import chat_save, session_touch
+
     chat_save(user_id, session_id, "chat", "user", user_msg)
     chat_save(user_id, session_id, "chat", "assistant", assistant_msg)
     session_touch(user_id, session_id, title=_session_title(user_msg) if is_first else None)
@@ -325,9 +380,18 @@ def _make_btn_updates(sugg: list) -> tuple:
 
 # ── ChatGPT-style sidebar: past sessions per user ──────────────────────────────
 
-def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
-                         chatbot, chart_panel, suggestions_state, sug_btns,
-                         extra_reset=None):
+
+def _build_chat_sidebar(
+    tab_id,
+    user_state,
+    session_state,
+    refresh_state,
+    chatbot,
+    chart_panel,
+    suggestions_state,
+    sug_btns,
+    extra_reset=None,
+):
     """
     ChatGPT-style left sidebar: a persistent icon rail (toggle + new-chat
     icon) that's always visible, plus a full nav panel (session list) that
@@ -342,14 +406,16 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
     Returns (sidebar_col, sidebar_open_state, toggle_btn) so the caller can
     read/drive the collapse state from elsewhere if needed.
     """
-    from utils.db import session_list, session_delete, chat_load
+    from utils.db import chat_load, session_delete, session_list
 
     extra_reset = extra_reset or []
     load_outputs = [session_state, chatbot, chart_panel, suggestions_state] + sug_btns + extra_reset
     sidebar_open = gr.State(True)
 
     def _blank_update():
-        core = [None, [], gr.update(value=None, visible=False), CHAT_DEFAULTS] + list(_make_btn_updates(CHAT_DEFAULTS))
+        core = [None, [], gr.update(value=None, visible=False), CHAT_DEFAULTS] + list(
+            _make_btn_updates(CHAT_DEFAULTS)
+        )
         extras = [gr.update(value=None, visible=False) for _ in extra_reset]
         return tuple(core + extras)
 
@@ -362,7 +428,9 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
         msgs = chat_load(user_id, sid)
         hist = [{"role": m["role"], "content": m["content"]} for m in msgs]
         get_orchestrator(user_id).load_history(hist)
-        core = [sid, hist, gr.update(value=None, visible=False), CHAT_DEFAULTS] + list(_make_btn_updates(CHAT_DEFAULTS))
+        core = [sid, hist, gr.update(value=None, visible=False), CHAT_DEFAULTS] + list(
+            _make_btn_updates(CHAT_DEFAULTS)
+        )
         extras = [gr.update(value=None, visible=False) for _ in extra_reset]
         return tuple(core + extras)
 
@@ -380,7 +448,9 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
         # exactly like ChatGPT's persistent left rail.
         with gr.Row(elem_classes=["sidebar-rail"]):
             toggle_btn = gr.Button("◧", size="sm", elem_classes=["sidebar-icon-btn"], min_width=32)
-            new_chat_icon_btn = gr.Button("✎", size="sm", elem_classes=["sidebar-icon-btn", "collapsed-only"], min_width=32)
+            new_chat_icon_btn = gr.Button(
+                "✎", size="sm", elem_classes=["sidebar-icon-btn", "collapsed-only"], min_width=32
+            )
 
         # Expanded content — full "New chat" button + session list.
         with gr.Column(visible=True, elem_classes=["sidebar-expanded-panel"]) as expanded_panel:
@@ -406,10 +476,13 @@ def _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
                         d = gr.Button("✕", size="sm", scale=0, min_width=28, elem_classes=["session-del-btn"])
                     b.click(
                         fn=lambda uid=user_id, s=sid: _load_session(uid, s),
-                        inputs=[], outputs=load_outputs,
+                        inputs=[],
+                        outputs=load_outputs,
                     )
                     d.click(
-                        fn=lambda current_sid, refresh, uid=user_id, s=sid: _delete_session(uid, s, current_sid, refresh),
+                        fn=lambda current_sid, refresh, uid=user_id, s=sid: _delete_session(
+                            uid, s, current_sid, refresh
+                        ),
                         inputs=[session_state, refresh_state],
                         outputs=load_outputs + [refresh_state],
                     )
@@ -683,6 +756,7 @@ footer { display: none !important; }
 
 # ── Build the single unified chat tab (orchestrator-routed) ──────────────────
 
+
 def _build_chat_tab(user_state: gr.State):
     """
     One chat surface for everything — equity research, report generation,
@@ -692,8 +766,8 @@ def _build_chat_tab(user_state: gr.State):
     """
     tab_id = "chat"
 
-    session_state   = gr.State(None)
-    refresh_state   = gr.State(0)
+    session_state = gr.State(None)
+    refresh_state = gr.State(0)
     suggestions_state = gr.State(CHAT_DEFAULTS)
 
     # Sidebar has to be *built* after chatbot/chart_panel/sug_btns exist (it
@@ -703,8 +777,11 @@ def _build_chat_tab(user_state: gr.State):
     with gr.Row(elem_classes=["chat-shell"]):
         with gr.Column(scale=4, elem_classes=["chat-main"]):
             chatbot = gr.Chatbot(
-                label="", show_label=False, height=480,
-                render_markdown=True, elem_id=f"chatbot-{tab_id}",
+                label="",
+                show_label=False,
+                height=480,
+                render_markdown=True,
+                elem_id=f"chatbot-{tab_id}",
             )
             chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
 
@@ -720,40 +797,76 @@ def _build_chat_tab(user_state: gr.State):
 
             # Download buttons — report PDF/MD and screener CSV, hidden until produced
             with gr.Row(elem_classes=["dl-row"]):
-                pdf_btn = gr.DownloadButton("⬇ Download PDF",      value=None, visible=False,
-                                            variant="primary",   size="sm", elem_classes=["dl-btn"])
-                md_btn  = gr.DownloadButton("⬇ Download Markdown", value=None, visible=False,
-                                            variant="secondary", size="sm", elem_classes=["dl-btn"])
-                csv_btn = gr.DownloadButton("⬇ Export Results CSV", value=None, visible=False,
-                                            variant="secondary", size="sm", elem_classes=["dl-btn"])
+                pdf_btn = gr.DownloadButton(
+                    "⬇ Download PDF",
+                    value=None,
+                    visible=False,
+                    variant="primary",
+                    size="sm",
+                    elem_classes=["dl-btn"],
+                )
+                md_btn = gr.DownloadButton(
+                    "⬇ Download Markdown",
+                    value=None,
+                    visible=False,
+                    variant="secondary",
+                    size="sm",
+                    elem_classes=["dl-btn"],
+                )
+                csv_btn = gr.DownloadButton(
+                    "⬇ Export Results CSV",
+                    value=None,
+                    visible=False,
+                    variant="secondary",
+                    size="sm",
+                    elem_classes=["dl-btn"],
+                )
 
             gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
             with gr.Row():
                 sug_btns = [
-                    gr.Button(CHAT_DEFAULTS[i], size="sm", elem_classes=["sugg-btn"])
-                    for i in range(4)
+                    gr.Button(CHAT_DEFAULTS[i], size="sm", elem_classes=["sugg-btn"]) for i in range(4)
                 ]
 
             with gr.Row(elem_id=f"input-row-{tab_id}"):
-                msg_box  = gr.Textbox(
-                    placeholder=CHAT_PLACEHOLDER, label="", show_label=False,
-                    lines=1, max_lines=3, autofocus=True,
-                    elem_id=f"msg-{tab_id}", scale=10,
+                msg_box = gr.Textbox(
+                    placeholder=CHAT_PLACEHOLDER,
+                    label="",
+                    show_label=False,
+                    lines=1,
+                    max_lines=3,
+                    autofocus=True,
+                    elem_id=f"msg-{tab_id}",
+                    scale=10,
                     max_length=MAX_CHAT_CHARS,  # UI hint; respond() enforces it (VAL-01)
                 )
-                send_btn  = gr.Button("Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"])
+                send_btn = gr.Button(
+                    "Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"]
+                )
                 clear_btn = gr.Button("Clear chat", scale=1, min_width=60, elem_classes=["clear-btn"])
 
-        _build_chat_sidebar(tab_id, user_state, session_state, refresh_state,
-                             chatbot, chart_panel, suggestions_state, sug_btns,
-                             extra_reset=[pdf_btn, md_btn, csv_btn])
+        _build_chat_sidebar(
+            tab_id,
+            user_state,
+            session_state,
+            refresh_state,
+            chatbot,
+            chart_panel,
+            suggestions_state,
+            sug_btns,
+            extra_reset=[pdf_btn, md_btn, csv_btn],
+        )
 
-    outputs = ([msg_box, send_btn, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn]
-               + sug_btns + [session_state, refresh_state])
+    outputs = (
+        [msg_box, send_btn, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn]
+        + sug_btns
+        + [session_state, refresh_state]
+    )
 
     def _respond(user_id, session_id, refresh, msg, hist, sugg, tf):
         if session_id is None and isinstance(clean_message(msg), CleanMessage):
             from utils.db import session_create
+
             session_id = session_create(user_id, tab_id, title=_session_title(msg))
             # A freshly created session must show up in the sidebar the moment
             # this turn starts, not on some later yield — bump refresh_state
@@ -779,12 +892,25 @@ def _build_chat_tab(user_state: gr.State):
     chat_inputs = [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio]
     # Both triggers share one "chat" worker pool (REL-01): the limit is on
     # concurrent chat turns server-wide, not per button.
-    msg_box.submit(_respond, chat_inputs, outputs, show_progress="hidden",
-                   concurrency_id="chat", concurrency_limit=CHAT_CONCURRENCY)
-    send_btn.click(_respond, chat_inputs, outputs, show_progress="hidden",
-                   concurrency_id="chat", concurrency_limit=CHAT_CONCURRENCY)
+    msg_box.submit(
+        _respond,
+        chat_inputs,
+        outputs,
+        show_progress="hidden",
+        concurrency_id="chat",
+        concurrency_limit=CHAT_CONCURRENCY,
+    )
+    send_btn.click(
+        _respond,
+        chat_inputs,
+        outputs,
+        show_progress="hidden",
+        concurrency_id="chat",
+        concurrency_limit=CHAT_CONCURRENCY,
+    )
     clear_btn.click(
-        _clear, [user_state],
+        _clear,
+        [user_state],
         [chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn] + sug_btns + [session_state],
     )
 
@@ -800,11 +926,12 @@ def _build_chat_tab(user_state: gr.State):
 
 # ── Watchlist helpers ─────────────────────────────────────────────────────────
 
+
 def _fetch_watchlist_table(user_id: int) -> list[list]:
     """Return rows for the watchlist dataframe: Symbol, Name, Price, Change%, RSI, 52W High, 52W Low."""
-    from utils.db import watchlist_all
-    from tools.data.fetcher import get_info, get_ohlcv
     from tools.analysis.technical import compute_all, snapshot
+    from tools.data.fetcher import get_info, get_ohlcv
+    from utils.db import watchlist_all
 
     symbols = watchlist_all(user_id)
     if not symbols:
@@ -813,13 +940,13 @@ def _fetch_watchlist_table(user_id: int) -> list[list]:
     rows = []
     for sym in symbols:
         try:
-            info  = get_info(sym)
+            info = get_info(sym)
             price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
-            prev  = info.get("previousClose") or price
-            chg   = round(((price - prev) / prev) * 100, 2) if prev else 0.0
-            name  = (info.get("shortName") or sym)[:22]
+            prev = info.get("previousClose") or price
+            chg = round(((price - prev) / prev) * 100, 2) if prev else 0.0
+            name = (info.get("shortName") or sym)[:22]
             high52 = info.get("fiftyTwoWeekHigh", "N/A")
-            low52  = info.get("fiftyTwoWeekLow",  "N/A")
+            low52 = info.get("fiftyTwoWeekLow", "N/A")
 
             # RSI from cached OHLCV (fast — usually already in Parquet cache).
             # snapshot() always has the "RSI" key but its value is None when
@@ -837,9 +964,17 @@ def _fetch_watchlist_table(user_id: int) -> list[list]:
                 pass
 
             arrow = "▲" if chg >= 0 else "▼"
-            rows.append([sym, name, f"₹{price:,.2f}", f"{arrow} {chg:+.2f}%", rsi,
-                         f"₹{high52:,.2f}" if isinstance(high52, float) else str(high52),
-                         f"₹{low52:,.2f}"  if isinstance(low52,  float) else str(low52)])
+            rows.append(
+                [
+                    sym,
+                    name,
+                    f"₹{price:,.2f}",
+                    f"{arrow} {chg:+.2f}%",
+                    rsi,
+                    f"₹{high52:,.2f}" if isinstance(high52, float) else str(high52),
+                    f"₹{low52:,.2f}" if isinstance(low52, float) else str(low52),
+                ]
+            )
         except Exception:
             rows.append([sym, "—", "—", "—", "—", "—", "—"])
     return rows
@@ -859,10 +994,7 @@ def _watchlist_table_html(rows: list[list]) -> str:
     if not rows:
         return "<p class='wl-empty'>No symbols yet — add one below.</p>"
     head = "".join(f"<th>{c}</th>" for c in WATCHLIST_COLS)
-    body = "".join(
-        "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
-        for row in rows
-    )
+    body = "".join("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows)
     return f"<table class='wl-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
 
@@ -890,13 +1022,20 @@ def _build_watchlist_tab(user_state: gr.State):
 
     # Add / Remove / Refresh row
     with gr.Row():
-        add_box  = gr.Textbox(placeholder="Add symbol (e.g. TCS, RELIANCE)", label="", show_label=False,
-                              scale=4, lines=1, max_lines=1)
-        add_btn  = gr.Button("➕ Add",     variant="primary",   scale=1, min_width=80)
-        rem_box  = gr.Textbox(placeholder="Remove symbol",      label="", show_label=False,
-                              scale=4, lines=1, max_lines=1)
-        rem_btn  = gr.Button("➖ Remove",  variant="secondary", scale=1, min_width=80)
-        ref_btn  = gr.Button("🔄 Refresh", variant="secondary", scale=1, min_width=90)
+        add_box = gr.Textbox(
+            placeholder="Add symbol (e.g. TCS, RELIANCE)",
+            label="",
+            show_label=False,
+            scale=4,
+            lines=1,
+            max_lines=1,
+        )
+        add_btn = gr.Button("➕ Add", variant="primary", scale=1, min_width=80)
+        rem_box = gr.Textbox(
+            placeholder="Remove symbol", label="", show_label=False, scale=4, lines=1, max_lines=1
+        )
+        rem_btn = gr.Button("➖ Remove", variant="secondary", scale=1, min_width=80)
+        ref_btn = gr.Button("🔄 Refresh", variant="secondary", scale=1, min_width=90)
 
     def _add(user_id, sym_raw, refresh):
         sym = clean_ticker(sym_raw.strip().upper())
@@ -916,11 +1055,15 @@ def _build_watchlist_tab(user_state: gr.State):
         n = len(_fetch_watchlist_table(user_id))
         return refresh + 1, f"🔄 Refreshed {n} symbol{'s' if n != 1 else ''}."
 
-    add_btn.click(_add,          inputs=[user_state, add_box, wl_refresh],  outputs=[wl_refresh, status])
-    rem_btn.click(_remove,       inputs=[user_state, rem_box, wl_refresh],  outputs=[wl_refresh, status])
-    ref_btn.click(_refresh_click, inputs=[user_state, wl_refresh],          outputs=[wl_refresh, status],
-                  concurrency_limit=WATCHLIST_CONCURRENCY)  # one yfinance call per symbol; keep it bounded
-    add_box.submit(_add,         inputs=[user_state, add_box, wl_refresh], outputs=[wl_refresh, status])
+    add_btn.click(_add, inputs=[user_state, add_box, wl_refresh], outputs=[wl_refresh, status])
+    rem_btn.click(_remove, inputs=[user_state, rem_box, wl_refresh], outputs=[wl_refresh, status])
+    ref_btn.click(
+        _refresh_click,
+        inputs=[user_state, wl_refresh],
+        outputs=[wl_refresh, status],
+        concurrency_limit=WATCHLIST_CONCURRENCY,
+    )  # one yfinance call per symbol; keep it bounded
+    add_box.submit(_add, inputs=[user_state, add_box, wl_refresh], outputs=[wl_refresh, status])
 
     return status
 
@@ -931,18 +1074,22 @@ _TRIAL_DAILY_LIMIT = 5
 
 
 def _settings_status_md(user_id: int) -> str:
-    from utils.db import llm_config_get, _query
+    from utils.db import _query, llm_config_get
+
     row = llm_config_get(user_id)
     if row:
         base = row["base_url"] or "api.openai.com (or provider default)"
         return f"✅ **Using your own key** — model `{row['model']}` via `{base}`."
     urow = _query(
         "SELECT free_msgs_used_today, free_msgs_reset_at FROM users WHERE id=%s",
-        (user_id,), fetch="one",
+        (user_id,),
+        fetch="one",
     )
     used = urow["free_msgs_used_today"] if urow else 0
     from datetime import datetime
+
     from utils.helpers import IST
+
     today = datetime.now(IST).date()
     if urow and urow["free_msgs_reset_at"] != today:
         used = 0
@@ -966,9 +1113,14 @@ def _build_settings_tab(user_state: gr.State):
     status = gr.Markdown("")
 
     with gr.Row():
-        model_box = gr.Textbox(label="Model", placeholder="e.g. gpt-4o-mini, llama-3.3-70b-versatile", scale=2)
-        base_url_box = gr.Textbox(label="Base URL (optional — leave blank for OpenAI itself)",
-                                   placeholder="e.g. https://openrouter.ai/api/v1", scale=3)
+        model_box = gr.Textbox(
+            label="Model", placeholder="e.g. gpt-4o-mini, llama-3.3-70b-versatile", scale=2
+        )
+        base_url_box = gr.Textbox(
+            label="Base URL (optional — leave blank for OpenAI itself)",
+            placeholder="e.g. https://openrouter.ai/api/v1",
+            scale=3,
+        )
     api_key_box = gr.Textbox(label="API Key", type="password", placeholder="sk-...")
 
     with gr.Row():
@@ -992,12 +1144,14 @@ def _build_settings_tab(user_state: gr.State):
         if base_url:
             # SEC-01: only public https endpoints — never internal hosts.
             from utils.url_safety import UnsafeURLError, validate_public_https_url
+
             try:
                 base_url = validate_public_https_url(base_url)
             except UnsafeURLError as e:
                 return f"⚠️ {e}", model, base_url, api_key
         from utils.crypto import encrypt
         from utils.db import llm_config_set
+
         try:
             encrypted = encrypt(api_key)
         except ValueError as e:
@@ -1005,7 +1159,9 @@ def _build_settings_tab(user_state: gr.State):
             return (
                 "⚠️ Server misconfiguration: keys can't be saved securely right now. "
                 "Please contact the site operator.",
-                model, base_url or "", api_key,
+                model,
+                base_url or "",
+                api_key,
             )
         llm_config_set(user_id, "openai_compatible", model, encrypted, base_url=base_url)
         # Evict the cached orchestrator so the new key applies on this
@@ -1015,7 +1171,12 @@ def _build_settings_tab(user_state: gr.State):
         # otherwise keep using whatever was configured (or the trial path)
         # when it was first built.
         _orchestrators.pop(user_id, None)
-        return _settings_status_md(user_id), model, base_url or "", ""  # clear the key field, never echo it back
+        return (
+            _settings_status_md(user_id),
+            model,
+            base_url or "",
+            "",
+        )  # clear the key field, never echo it back
 
     def _test(user_id, model, base_url, api_key):
         """One 1-token call with the typed (or, if the key box is empty, the
@@ -1024,15 +1185,17 @@ def _build_settings_tab(user_state: gr.State):
         arbitrary endpoints (SEC-01)."""
         if not user_id:
             return ""
-        from agents.llm_client import LLMProvidersExhausted, _ERROR_CLASS_TEXT, _error_class
+        from agents.llm_client import _ERROR_CLASS_TEXT, LLMProvidersExhausted, _error_class
         from agents.providers.openai_compatible import OpenAICompatibleProvider
         from utils.url_safety import UnsafeURLError
+
         model = (model or "").strip()
         base_url = (base_url or "").strip() or None
         api_key = (api_key or "").strip()
         if not api_key:
             from utils.crypto import decrypt
             from utils.db import llm_config_get
+
             row = llm_config_get(user_id)
             if row is None:
                 return "⚠️ Enter a model and API key (or save one) first."
@@ -1059,18 +1222,23 @@ def _build_settings_tab(user_state: gr.State):
         if not user_id:
             return "", "", "", ""
         from utils.db import llm_config_clear
+
         llm_config_clear(user_id)
         _orchestrators.pop(user_id, None)
         return _settings_status_md(user_id), "", "", ""
 
-    save_btn.click(_save, inputs=[user_state, model_box, base_url_box, api_key_box],
-                    outputs=[status, model_box, base_url_box, api_key_box])
+    save_btn.click(
+        _save,
+        inputs=[user_state, model_box, base_url_box, api_key_box],
+        outputs=[status, model_box, base_url_box, api_key_box],
+    )
     test_btn.click(_test, inputs=[user_state, model_box, base_url_box, api_key_box], outputs=[status])
-    clear_btn.click(_clear, inputs=[user_state],
-                     outputs=[status, model_box, base_url_box, api_key_box])
+    clear_btn.click(_clear, inputs=[user_state], outputs=[status, model_box, base_url_box, api_key_box])
     user_state.change(_refresh_status, inputs=[user_state], outputs=[status])
 
-    gr.Markdown("---\n### 🔔 Telegram Alerts\nConnect your own Telegram chat so alerts you create come straight to you.")
+    gr.Markdown(
+        "---\n### 🔔 Telegram Alerts\nConnect your own Telegram chat so alerts you create come straight to you."
+    )
     tg_status = gr.Markdown("")
 
     with gr.Row():
@@ -1079,9 +1247,12 @@ def _build_settings_tab(user_state: gr.State):
 
     def _telegram_status_md(user_id: int) -> str:
         from utils.db import telegram_chat_id_get
-        return "✅ **Telegram connected** — alerts will be sent to your linked chat." \
-            if telegram_chat_id_get(user_id) else \
-            "⚪ **Not connected** — click Connect Telegram below to link your chat."
+
+        return (
+            "✅ **Telegram connected** — alerts will be sent to your linked chat."
+            if telegram_chat_id_get(user_id)
+            else "⚪ **Not connected** — click Connect Telegram below to link your chat."
+        )
 
     def _tg_refresh(user_id):
         return _telegram_status_md(user_id) if user_id else ""
@@ -1090,11 +1261,13 @@ def _build_settings_tab(user_state: gr.State):
         if not user_id:
             return ""
         from config import TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME
+
         if not TELEGRAM_BOT_TOKEN:
             return "⚠️ This ARIA instance hasn't configured a Telegram bot yet — ask the admin to set `TELEGRAM_BOT_TOKEN`."
         if not TELEGRAM_BOT_USERNAME:
             return "⚠️ Admin needs to set `TELEGRAM_BOT_USERNAME` for the connect link to work."
         from utils.telegram_link import generate_link_code
+
         code = generate_link_code(user_id)
         link = f"https://t.me/{TELEGRAM_BOT_USERNAME}?start={code}"
         return (
@@ -1106,6 +1279,7 @@ def _build_settings_tab(user_state: gr.State):
         if not user_id:
             return ""
         from utils.db import telegram_chat_id_set
+
         telegram_chat_id_set(user_id, None)
         return _telegram_status_md(user_id)
 
@@ -1126,6 +1300,7 @@ def _build_settings_tab(user_state: gr.State):
         if not user_id:
             return ""
         from utils.db import notifications_list
+
         try:
             rows = notifications_list(user_id, limit=30)
         except Exception as e:
@@ -1140,6 +1315,7 @@ def _build_settings_tab(user_state: gr.State):
         if not user_id:
             return ""
         from utils.db import notifications_mark_read
+
         notifications_mark_read(user_id)
         return _inbox_refresh(user_id)
 
@@ -1154,6 +1330,7 @@ def _inbox_md(rows: list[dict]) -> str:
     """Render inbox rows. Alert text is generated by scripts/check_alerts.py
     from symbols/thresholds, but escape it anyway — it's shown as Markdown."""
     import html as _html
+
     if not rows:
         return "*No alert notifications.*"
     lines = []
@@ -1166,6 +1343,7 @@ def _inbox_md(rows: list[dict]) -> str:
 
 # ── Auth gate ─────────────────────────────────────────────────────────────────
 
+
 def _build_auth_gate():
     """
     Login/signup screen. On success, sets user_state to the authenticated
@@ -1177,7 +1355,7 @@ def _build_auth_gate():
     def _load_legal_text() -> str:
         try:
             path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "LEGAL.md")
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return f.read()
         except Exception:
             return "Terms of Use & Privacy Notice unavailable — contact this instance's operator."
@@ -1191,13 +1369,13 @@ def _build_auth_gate():
         )
         with gr.Column(scale=1, min_width=360, elem_id="auth-card"):
             email_box = gr.Textbox(label="Email", placeholder="you@example.com")
-            pass_box  = gr.Textbox(label="Password", type="password", placeholder="At least 8 characters")
+            pass_box = gr.Textbox(label="Password", type="password", placeholder="At least 8 characters")
             with gr.Accordion("📜 Terms of Use & Privacy Notice", open=False):
                 gr.Markdown(_load_legal_text(), elem_id="legal-text")
             terms_box = gr.Checkbox(label="I agree to the Terms of Use & Privacy Notice above", value=False)
-            auth_msg  = gr.Markdown("")
+            auth_msg = gr.Markdown("")
             with gr.Row():
-                login_btn  = gr.Button("Log in", variant="primary")
+                login_btn = gr.Button("Log in", variant="primary")
                 signup_btn = gr.Button("Sign up", variant="secondary")
 
     with gr.Column(elem_id="main-app", visible=False) as main_group:
@@ -1209,33 +1387,46 @@ def _build_auth_gate():
         except AuthError as e:
             return str(e), gr.update(visible=True), gr.update(visible=False), None
         from utils.auth import get_user_id
+
         uid = get_user_id(token)
         return "", gr.update(visible=False), gr.update(visible=True), uid
 
     def _do_signup(email, password, agreed):
         if not agreed:
-            return "⚠️ Please agree to the Terms of Use & Privacy Notice to sign up.", gr.update(visible=True), gr.update(visible=False), None
+            return (
+                "⚠️ Please agree to the Terms of Use & Privacy Notice to sign up.",
+                gr.update(visible=True),
+                gr.update(visible=False),
+                None,
+            )
         try:
             uid = signup(email, password)
             from utils.db import accept_terms
+
             accept_terms(uid)
             token = login(email, password)
         except AuthError as e:
             return str(e), gr.update(visible=True), gr.update(visible=False), None
         from utils.auth import get_user_id
+
         uid = get_user_id(token)
         return "", gr.update(visible=False), gr.update(visible=True), uid
 
-    login_btn.click(_do_login,  [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state])
-    signup_btn.click(_do_signup, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state])
-    pass_box.submit(_do_login,  [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state])
+    login_btn.click(
+        _do_login, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state]
+    )
+    signup_btn.click(
+        _do_signup, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state]
+    )
+    pass_box.submit(
+        _do_login, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state]
+    )
 
     return auth_group, main_group, user_state
 
 
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="ARIA — Autonomous Financial Research Engine") as demo:
-
         auth_group, main_group, user_state = _build_auth_gate()
 
         with main_group:
@@ -1285,7 +1476,8 @@ def build_ui() -> gr.Blocks:
             return [], gr.update(value=None, visible=False), CHAT_DEFAULTS, None
 
         user_state.change(
-            _reset_chat, [user_state],
+            _reset_chat,
+            [user_state],
             [chat_chatbot, chat_chart, chat_sugg_state, chat_session],
         )
 
@@ -1296,7 +1488,9 @@ def build_ui() -> gr.Blocks:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import sys, io
+    import io
+    import sys
+
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
     print("=" * 62)
     print("  ⚡ ARIA v2 — Professional Investment Research Platform")
@@ -1308,6 +1502,7 @@ if __name__ == "__main__":
     print("  Fallback : Google Gemini 2.0 Flash")
     print("=" * 62)
     from config import SECRET_KEY
+
     if not SECRET_KEY:
         print("  ⚠️  SECRET_KEY is not set — BYO LLM key encryption (Settings tab)")
         print("      will fail. Add SECRET_KEY=<any random string> to .env.")

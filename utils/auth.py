@@ -12,9 +12,9 @@ import hashlib
 import os
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from utils.db import get_conn, release_conn, auth_attempt_record, auth_attempt_count, auth_attempt_clear
+from utils.db import auth_attempt_clear, auth_attempt_count, auth_attempt_record, get_conn, release_conn
 
 SESSION_TTL_HOURS = 24 * 14  # 14 days
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -33,7 +33,7 @@ def _check_rate_limit(email: str):
     Call BEFORE the main DB work so a flood doesn't also hammer the rest of
     signup/login — this is still one query against a small, indexed table,
     not free, but far cheaper than a password hash + user lookup."""
-    since = datetime.now(timezone.utc) - timedelta(seconds=_RATE_LIMIT_WINDOW_S)
+    since = datetime.now(UTC) - timedelta(seconds=_RATE_LIMIT_WINDOW_S)
     if auth_attempt_count(email, since) >= _RATE_LIMIT_MAX_ATTEMPTS:
         raise AuthError("Too many attempts. Please wait a few minutes and try again.")
     auth_attempt_record(email)
@@ -103,7 +103,7 @@ def login(email: str, password: str) -> str:
             raise AuthError("Invalid email or password.")
 
         token = secrets.token_urlsafe(32)
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=SESSION_TTL_HOURS)
+        expires_at = datetime.now(UTC) + timedelta(hours=SESSION_TTL_HOURS)
         cur.execute(
             "INSERT INTO sessions (user_id, token, expires_at) VALUES (%s,%s,%s)",
             (row["id"], token, expires_at),
@@ -138,6 +138,6 @@ def get_user_id(token: str) -> int | None:
         release_conn(conn)
     if not row:
         return None
-    if row["expires_at"] < datetime.now(timezone.utc):
+    if row["expires_at"] < datetime.now(UTC):
         return None
     return row["user_id"]

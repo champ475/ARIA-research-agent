@@ -7,7 +7,7 @@ and test_every_user_scoped_db_function_is_covered fails if a new function
 taking `user_id` is added without an isolation test."""
 
 import inspect
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +16,7 @@ pytestmark = pytest.mark.integration
 
 
 # ── utils/db.py ───────────────────────────────────────────────────────────────
+
 
 def test_portfolio(db, two_users):
     a, b = two_users
@@ -108,7 +109,9 @@ def test_financial_profile(db, two_users):
 
 def test_llm_config(db, two_users):
     a, b = two_users
-    db.llm_config_set(a, "openai_compatible", "gpt-4o-mini", "enc-key-a", base_url="https://api.openai.com/v1")
+    db.llm_config_set(
+        a, "openai_compatible", "gpt-4o-mini", "enc-key-a", base_url="https://api.openai.com/v1"
+    )
     assert db.llm_config_get(b) is None
     db.llm_config_clear(b)
     assert db.llm_config_get(a)["api_key_encrypted"] == "enc-key-a"
@@ -124,7 +127,7 @@ def test_trial_quota(db, two_users):
 
 def test_telegram_linking(db, two_users):
     a, b = two_users
-    db.telegram_link_code_create(a, "CODE-A", datetime.now(timezone.utc) + timedelta(minutes=10))
+    db.telegram_link_code_create(a, "CODE-A", datetime.now(UTC) + timedelta(minutes=10))
     db.telegram_chat_id_set(a, "111")
     assert db.telegram_chat_id_get(b) is None
     assert db.telegram_link_code_resolve("CODE-A") == a
@@ -142,22 +145,41 @@ def test_accept_terms(db, two_users):
 
 
 COVERED = {
-    "portfolio_add": test_portfolio, "portfolio_remove": test_portfolio, "portfolio_all": test_portfolio,
-    "watchlist_add": test_watchlist, "watchlist_remove": test_watchlist, "watchlist_all": test_watchlist,
-    "session_create": test_sessions_and_chat_history, "session_list": test_sessions_and_chat_history,
-    "session_touch": test_sessions_and_chat_history, "session_delete": test_sessions_and_chat_history,
-    "chat_save": test_sessions_and_chat_history, "chat_load": test_sessions_and_chat_history,
-    "report_save": test_reports, "report_list": test_reports, "report_get": test_reports,
-    "screener_save": test_saved_screeners, "screener_list": test_saved_screeners,
-    "alert_add": test_alerts, "alert_list": test_alerts, "alert_remove": test_alerts,
-    "alert_pause": test_alerts, "alert_resume": test_alerts,
-    "notification_add": test_notifications, "notifications_list": test_notifications,
-    "notifications_unread_count": test_notifications, "notifications_mark_read": test_notifications,
-    "profile_get": test_financial_profile, "profile_upsert": test_financial_profile,
+    "portfolio_add": test_portfolio,
+    "portfolio_remove": test_portfolio,
+    "portfolio_all": test_portfolio,
+    "watchlist_add": test_watchlist,
+    "watchlist_remove": test_watchlist,
+    "watchlist_all": test_watchlist,
+    "session_create": test_sessions_and_chat_history,
+    "session_list": test_sessions_and_chat_history,
+    "session_touch": test_sessions_and_chat_history,
+    "session_delete": test_sessions_and_chat_history,
+    "chat_save": test_sessions_and_chat_history,
+    "chat_load": test_sessions_and_chat_history,
+    "report_save": test_reports,
+    "report_list": test_reports,
+    "report_get": test_reports,
+    "screener_save": test_saved_screeners,
+    "screener_list": test_saved_screeners,
+    "alert_add": test_alerts,
+    "alert_list": test_alerts,
+    "alert_remove": test_alerts,
+    "alert_pause": test_alerts,
+    "alert_resume": test_alerts,
+    "notification_add": test_notifications,
+    "notifications_list": test_notifications,
+    "notifications_unread_count": test_notifications,
+    "notifications_mark_read": test_notifications,
+    "profile_get": test_financial_profile,
+    "profile_upsert": test_financial_profile,
     "profile_clear": test_financial_profile,
-    "llm_config_get": test_llm_config, "llm_config_set": test_llm_config, "llm_config_clear": test_llm_config,
+    "llm_config_get": test_llm_config,
+    "llm_config_set": test_llm_config,
+    "llm_config_clear": test_llm_config,
     "trial_quota_check_and_increment": test_trial_quota,
-    "telegram_link_code_create": test_telegram_linking, "telegram_chat_id_set": test_telegram_linking,
+    "telegram_link_code_create": test_telegram_linking,
+    "telegram_chat_id_set": test_telegram_linking,
     "telegram_chat_id_get": test_telegram_linking,
     "accept_terms": test_accept_terms,
 }
@@ -167,7 +189,8 @@ def test_every_user_scoped_db_function_is_covered():
     import utils.db as db_module
 
     user_scoped = {
-        name for name, fn in inspect.getmembers(db_module, inspect.isfunction)
+        name
+        for name, fn in inspect.getmembers(db_module, inspect.isfunction)
         if fn.__module__ == db_module.__name__ and "user_id" in inspect.signature(fn).parameters
     }
     missing = sorted(user_scoped - set(COVERED))
@@ -176,12 +199,26 @@ def test_every_user_scoped_db_function_is_covered():
 
 # ── graph tools (through execute_task, with the real evidence cache) ──────────
 
+
 def _run(tool, entity, user_id, query, intent="alert", extra=None):
     from graph.nodes.execute_task import execute_task
 
-    task = {"id": f"{tool}:{entity}", "tool": tool, "entity": entity, "description": "",
-            "depends_on": [], "status": "pending", "result_evidence_ids": []}
-    ctx = {"_user_id": user_id, "_query": query, "_llm_config": None, "_intent": intent, "_secondary_intents": []}
+    task = {
+        "id": f"{tool}:{entity}",
+        "tool": tool,
+        "entity": entity,
+        "description": "",
+        "depends_on": [],
+        "status": "pending",
+        "result_evidence_ids": [],
+    }
+    ctx = {
+        "_user_id": user_id,
+        "_query": query,
+        "_llm_config": None,
+        "_intent": intent,
+        "_secondary_intents": [],
+    }
     ctx.update(extra or {})
     return execute_task(task, ctx)["payload"]
 
@@ -200,8 +237,14 @@ def test_alert_tools_never_cross_users(db, two_users):
 
 def test_screener_save_writes_only_for_the_caller(db, two_users):
     a, b = two_users
-    _run("screener_save", "market", b, "save this screen as bvalue", intent="screener",
-         extra={"screener_parse_query": {"pe_max": 20}})
+    _run(
+        "screener_save",
+        "market",
+        b,
+        "save this screen as bvalue",
+        intent="screener",
+        extra={"screener_parse_query": {"pe_max": 20}},
+    )
     assert db.screener_list(a) == []
     assert len(db.screener_list(b)) == 1
 

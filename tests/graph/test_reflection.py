@@ -53,10 +53,20 @@ class TestReflectionNoGaps:
 
 class TestReflectionStructuredOutput:
     def test_parses_missing_item_shape(self):
-        stub = _StubClient(json.dumps({
-            "missing": [{"missing": "Quarterly earnings", "reason": "Needed for revenue trend",
-                         "priority": "high", "action": "fetch_financials"}],
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "missing": [
+                        {
+                            "missing": "Quarterly earnings",
+                            "reason": "Needed for revenue trend",
+                            "priority": "high",
+                            "action": "fetch_financials",
+                        }
+                    ],
+                }
+            )
+        )
         node = build_reflection_node(stub)
         result = node(_base_state())
         item = result["missing_info"][0]
@@ -66,25 +76,43 @@ class TestReflectionStructuredOutput:
         assert item["action"] == "fetch_financials"
 
     def test_generates_task_for_valid_action(self):
-        stub = _StubClient(json.dumps({
-            "missing": [{"missing": "x", "reason": "y", "priority": "high", "action": "fetch_financials"}],
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "missing": [
+                        {"missing": "x", "reason": "y", "priority": "high", "action": "fetch_financials"}
+                    ],
+                }
+            )
+        )
         node = build_reflection_node(stub)
         result = node(_base_state())
         assert any(t["tool"] == "fetch_financials" and t["entity"] == "RELIANCE" for t in result["tasks"])
 
     def test_ignores_invalid_action_tool_name(self):
-        stub = _StubClient(json.dumps({
-            "missing": [{"missing": "x", "reason": "y", "priority": "high", "action": "not_a_real_tool"}],
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "missing": [
+                        {"missing": "x", "reason": "y", "priority": "high", "action": "not_a_real_tool"}
+                    ],
+                }
+            )
+        )
         node = build_reflection_node(stub)
         result = node(_base_state())
         assert result["tasks"] == []
 
     def test_invalid_priority_falls_back_to_medium(self):
-        stub = _StubClient(json.dumps({
-            "missing": [{"missing": "x", "reason": "y", "priority": "urgent!!", "action": "fetch_financials"}],
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "missing": [
+                        {"missing": "x", "reason": "y", "priority": "urgent!!", "action": "fetch_financials"}
+                    ],
+                }
+            )
+        )
         node = build_reflection_node(stub)
         result = node(_base_state())
         assert result["missing_info"][0]["priority"] == "medium"
@@ -98,17 +126,29 @@ class TestReflectionStructuredOutput:
 
 class TestReflectionLoopBudget:
     def test_increments_loop_count_when_requesting_more_work(self):
-        stub = _StubClient(json.dumps({
-            "missing": [{"missing": "x", "reason": "y", "priority": "high", "action": "fetch_financials"}],
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "missing": [
+                        {"missing": "x", "reason": "y", "priority": "high", "action": "fetch_financials"}
+                    ],
+                }
+            )
+        )
         node = build_reflection_node(stub)
         result = node(_base_state(loop_count=0))
         assert result["loop_count"] == 1
 
     def test_does_not_generate_tasks_when_loop_budget_exhausted(self):
-        stub = _StubClient(json.dumps({
-            "missing": [{"missing": "x", "reason": "y", "priority": "high", "action": "fetch_financials"}],
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "missing": [
+                        {"missing": "x", "reason": "y", "priority": "high", "action": "fetch_financials"}
+                    ],
+                }
+            )
+        )
         node = build_reflection_node(stub)
         result = node(_base_state(loop_count=2, max_loops=2))
         assert "tasks" not in result
@@ -116,14 +156,27 @@ class TestReflectionLoopBudget:
         assert result["missing_info"] != []
 
     def test_does_not_reset_already_done_tasks(self):
-        stub = _StubClient(json.dumps({
-            "missing": [{"missing": "x", "reason": "y", "priority": "high", "action": "fetch_financials"}],
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "missing": [
+                        {"missing": "x", "reason": "y", "priority": "high", "action": "fetch_financials"}
+                    ],
+                }
+            )
+        )
         node = build_reflection_node(stub)
-        existing = [{
-            "id": "fetch_financials:RELIANCE", "description": "x", "tool": "fetch_financials",
-            "entity": "RELIANCE", "depends_on": [], "status": "done", "result_evidence_ids": ["ev-1"],
-        }]
+        existing = [
+            {
+                "id": "fetch_financials:RELIANCE",
+                "description": "x",
+                "tool": "fetch_financials",
+                "entity": "RELIANCE",
+                "depends_on": [],
+                "status": "done",
+                "result_evidence_ids": ["ev-1"],
+            }
+        ]
         result = node(_base_state(tasks=existing))
         assert result["tasks"] == []
 
@@ -163,6 +216,7 @@ class TestReflectionProviderExhaustion:
 class TestReflectionRouting:
     def test_routes_through_fast_model(self):
         from config import GROQ_MODEL_FAST
+
         stub = _StubClient(json.dumps({"missing": []}))
         node = build_reflection_node(stub)
         node(_base_state())

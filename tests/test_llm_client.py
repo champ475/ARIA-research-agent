@@ -3,13 +3,18 @@ Covers the model-override addition to LLMClient (agents/llm_client.py), which
 the graph work needs to route QueryAnalyzer/Reflection/Verification's cheap
 calls through GROQ_MODEL_FAST instead of the primary model (RFC Sec17).
 """
+
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agents.llm_client import (
-    LLMClient, LLMProvidersExhausted, _classify_error, _GroqProvider,
-    _ProviderHealthCache, format_exhausted_message,
+    LLMClient,
+    LLMProvidersExhausted,
+    _classify_error,
+    _GroqProvider,
+    _ProviderHealthCache,
+    format_exhausted_message,
 )
 from config import GROQ_MODEL, GROQ_MODEL_FAST
 
@@ -71,8 +76,8 @@ def _reset_provider_health():
     (mirrors _groq_rotator) — reset it around every test in this file so a
     provider marked unavailable by one test can never leak into the next."""
     import agents.llm_client as llm_client_module
-    from agents.llm_client import _ProviderHealthCache
     from config import PROVIDER_ZERO_QUOTA_TTL_SECONDS
+
     original = llm_client_module._provider_health
     llm_client_module._provider_health = _ProviderHealthCache(PROVIDER_ZERO_QUOTA_TTL_SECONDS)
     yield
@@ -109,7 +114,7 @@ class TestClassifyError:
         assert _classify_error(Exception("You exceeded your current quota")) == "rate_limited"
 
     def test_zero_quota_marker_classified_zero_quota(self):
-        assert _classify_error(Exception('quotaMetric limit: 0, model gemini-2.0-flash')) == "zero_quota"
+        assert _classify_error(Exception("quotaMetric limit: 0, model gemini-2.0-flash")) == "zero_quota"
 
     def test_unrelated_error_classified_other(self):
         assert _classify_error(Exception("connection reset by peer")) == "other"
@@ -152,6 +157,7 @@ class TestCallTooLargeNeverRetriesSameProvider:
 class TestCallRateLimitedStillRetries:
     def test_rate_limited_retries_up_to_max_retries_with_backoff(self):
         from config import MAX_RETRIES
+
         err = Exception("429 rate limit exceeded")
         client = _stub_client(primary_side_effect=err, secondary_side_effect=err)
 
@@ -180,9 +186,8 @@ class TestCallTotalExhaustionRaises:
         err = Exception("boom")
         client = _stub_client(primary_side_effect=err, secondary_side_effect=err)
 
-        with patch("agents.llm_client.time.sleep"):
-            with pytest.raises(LLMProvidersExhausted) as exc_info:
-                client.ask("hello")
+        with patch("agents.llm_client.time.sleep"), pytest.raises(LLMProvidersExhausted) as exc_info:
+            client.ask("hello")
 
         assert exc_info.value.last_err is err
         assert exc_info.value.is_byo is False
@@ -190,19 +195,19 @@ class TestCallTotalExhaustionRaises:
 
 class TestZeroQuotaProviderSkipped:
     def test_zero_quota_error_marks_provider_unavailable_for_later_calls(self):
-        zero_quota_err = Exception('quotaMetric ... limit: 0, model gemini-2.0-flash')
+        zero_quota_err = Exception("quotaMetric ... limit: 0, model gemini-2.0-flash")
         rate_limited_err = Exception("429 rate limited")
         client = _stub_client(primary_side_effect=rate_limited_err, secondary_side_effect=zero_quota_err)
 
-        with patch("agents.llm_client.time.sleep"):
-            with pytest.raises(LLMProvidersExhausted):
-                client.ask("hello")
+        with patch("agents.llm_client.time.sleep"), pytest.raises(LLMProvidersExhausted):
+            client.ask("hello")
 
         # Marked unavailable after its FIRST failure — not retried again
         # even within this same call's remaining attempts.
         assert client._secondary.ask.call_count == 1
 
         import agents.llm_client as llm_client_module
+
         assert llm_client_module._provider_health.is_unavailable("Gemini") is True
 
         # A brand new client instance still skips Gemini entirely — the
@@ -212,9 +217,8 @@ class TestZeroQuotaProviderSkipped:
         client2._secondary.name = "Gemini"
         client2._secondary.ask.side_effect = zero_quota_err
 
-        with patch("agents.llm_client.time.sleep"):
-            with pytest.raises(LLMProvidersExhausted):
-                client2.ask("hello")
+        with patch("agents.llm_client.time.sleep"), pytest.raises(LLMProvidersExhausted):
+            client2.ask("hello")
 
         client2._secondary.ask.assert_not_called()
 

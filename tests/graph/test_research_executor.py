@@ -65,8 +65,11 @@ class TestBuildContext:
         tasks_by_id = {
             "fetch_info:RELIANCE": _task(id="fetch_info:RELIANCE", tool="fetch_info"),
         }
-        task = _task(id="compute_fundamentals:RELIANCE", tool="compute_fundamentals",
-                      depends_on=["fetch_info:RELIANCE"])
+        task = _task(
+            id="compute_fundamentals:RELIANCE",
+            tool="compute_fundamentals",
+            depends_on=["fetch_info:RELIANCE"],
+        )
         evidence = [{"tool": "fetch_info", "entity": "RELIANCE", "payload": {"pe": 24.3}}]
         context = _build_context(task, tasks_by_id, evidence)
         assert context["fetch_info"] == {"pe": 24.3}
@@ -76,7 +79,11 @@ class TestBuildContext:
         task = _task(id="compute_fundamentals:RELIANCE", depends_on=["fetch_info:RELIANCE"])
         context = _build_context(task, tasks_by_id, evidence=[])
         assert context == {
-            "_user_id": None, "_query": None, "_llm_config": None, "_intent": None, "_secondary_intents": [],
+            "_user_id": None,
+            "_query": None,
+            "_llm_config": None,
+            "_intent": None,
+            "_secondary_intents": [],
         }
 
     def test_query_injected_regardless_of_dependencies(self):
@@ -125,8 +132,11 @@ class TestRouteAfterResearchExecutor:
     def test_send_arg_includes_resolved_context(self):
         tasks = [
             _task(id="fetch_info:RELIANCE", tool="fetch_info", status="done"),
-            _task(id="compute_fundamentals:RELIANCE", tool="compute_fundamentals",
-                   depends_on=["fetch_info:RELIANCE"]),
+            _task(
+                id="compute_fundamentals:RELIANCE",
+                tool="compute_fundamentals",
+                depends_on=["fetch_info:RELIANCE"],
+            ),
         ]
         evidence = [{"tool": "fetch_info", "entity": "RELIANCE", "payload": {"pe": 24.3}}]
         route = route_after_research_executor({"tasks": tasks, "evidence": evidence})

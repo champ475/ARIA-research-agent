@@ -90,7 +90,9 @@ def test_nfkc_expansion_counts_toward_the_limit():
 
 def test_too_large_error_is_not_labelled_rate_limited():
     msg = format_exhausted_message(
-        LLMProvidersExhausted(RuntimeError("Error code: 413 - Request too large"), is_byo=False, too_large=True)
+        LLMProvidersExhausted(
+            RuntimeError("Error code: 413 - Request too large"), is_byo=False, too_large=True
+        )
     )
     assert "too long" in msg
     assert "rate-limited" not in msg
@@ -114,7 +116,10 @@ def _drain(gen):
 
 
 def test_respond_rejects_too_long_without_calling_the_orchestrator(app_module):
-    with patch.object(app_module, "get_orchestrator") as get_orch, patch.object(app_module, "_persist_turn") as persist:
+    with (
+        patch.object(app_module, "get_orchestrator") as get_orch,
+        patch.object(app_module, "_persist_turn") as persist,
+    ):
         outputs = _drain(app_module.respond(1, "x" * (MAX_CHAT_CHARS + 50), [], [], 7, "1M"))
     get_orch.assert_not_called()
     persist.assert_not_called()
@@ -129,6 +134,9 @@ def test_respond_uses_cleaned_text_downstream(app_module):
     orch.classify.return_value = "chat"
     orch.process_stream.return_value = iter([("ok", None, None, None, None, "chat")])
     orch.generate_suggestions.return_value = []
-    with patch.object(app_module, "get_orchestrator", return_value=orch), patch.object(app_module, "_persist_turn"):
+    with (
+        patch.object(app_module, "get_orchestrator", return_value=orch),
+        patch.object(app_module, "_persist_turn"),
+    ):
         _drain(app_module.respond(1, "T​CS\x00 price", [], [], 7, "1M"))
     orch.process_stream.assert_called_once_with("TCS price")

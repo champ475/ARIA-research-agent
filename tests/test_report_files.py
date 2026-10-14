@@ -9,7 +9,13 @@ from unittest.mock import patch
 import pytest
 
 from utils import report_files
-from utils.report_files import MAX_REPORT_BYTES, BlockedFetchError, _deny_fetcher, render_report, sanitise_html
+from utils.report_files import (
+    MAX_REPORT_BYTES,
+    BlockedFetchError,
+    _deny_fetcher,
+    render_report,
+    sanitise_html,
+)
 
 _HOSTILE = """# TCS Initiating Coverage
 
@@ -36,16 +42,36 @@ def test_sanitiser_strips_every_fetching_or_active_element():
 
     html = sanitise_html(markdown.markdown(_HOSTILE, extensions=["tables", "fenced_code"]))
     lowered = html.lower()
-    for bad in ("<img", "<link", "<style", "<script", "<iframe", "<object", "javascript:", "style=", "@import",
-                "file://", "127.0.0.1", "169.254", "document.cookie"):
+    for bad in (
+        "<img",
+        "<link",
+        "<style",
+        "<script",
+        "<iframe",
+        "<object",
+        "javascript:",
+        "style=",
+        "@import",
+        "file://",
+        "127.0.0.1",
+        "169.254",
+        "document.cookie",
+    ):
         assert bad not in lowered, bad
-    for good in ("<h1>", "<table>", "<td>24.3</td>", "<strong>bold</strong>", "<code>code</code>",
-                 'href="https://www.nseindia.com"'):
+    for good in (
+        "<h1>",
+        "<table>",
+        "<td>24.3</td>",
+        "<strong>bold</strong>",
+        "<code>code</code>",
+        'href="https://www.nseindia.com"',
+    ):
         assert good.lower() in lowered, good
 
 
 @pytest.mark.parametrize(
-    "url", ["file:///etc/hosts", "http://127.0.0.1/", "https://example.com/a.png", "data:image/png;base64,AAAA", ""]
+    "url",
+    ["file:///etc/hosts", "http://127.0.0.1/", "https://example.com/a.png", "data:image/png;base64,AAAA", ""],
 )
 def test_fetcher_refuses_every_url(url):
     with pytest.raises(BlockedFetchError):
@@ -90,13 +116,21 @@ def test_render_passes_deny_fetcher_and_no_base_url(fake_weasyprint, tmp_path):
 
 @pytest.mark.parametrize(
     ("sym", "rtype"),
-    [("../../etc/passwd", "x"), ("..\\..\\Windows\\win", "y"), ("TCS/../../a", "../b"), ("", ""), (None, None)],
+    [
+        ("../../etc/passwd", "x"),
+        ("..\\..\\Windows\\win", "y"),
+        ("TCS/../../a", "../b"),
+        ("", ""),
+        (None, None),
+    ],
 )
 def test_filename_parts_cannot_traverse(fake_weasyprint, sym, rtype):
     md_path, pdf_path = render_report(sym, rtype, "# hi")
     try:
         for p in (md_path, pdf_path):
-            assert os.path.dirname(p) == os.path.dirname(os.path.join(report_files.tempfile.gettempdir(), "x"))
+            assert os.path.dirname(p) == os.path.dirname(
+                os.path.join(report_files.tempfile.gettempdir(), "x")
+            )
             assert ".." not in os.path.basename(p)
     finally:
         for p in (md_path, pdf_path):

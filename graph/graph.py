@@ -25,6 +25,7 @@ function sends control straight to END, skipping the rest of the pipeline —
 otherwise a later node would silently overwrite the decline with its own
 output.
 """
+
 from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
@@ -68,7 +69,9 @@ def build_graph(
     graph.add_node("Verification", build_verification_node(verification_client, provider_config))
     graph.add_node("VerificationGate", verification_gate)
     graph.add_node("ConclusionBuilder", conclusion_builder)
-    graph.add_node("CommunicationLayer", build_communication_layer_node(communication_client, provider_config))
+    graph.add_node(
+        "CommunicationLayer", build_communication_layer_node(communication_client, provider_config)
+    )
 
     graph.add_edge(START, "QueryAnalyzer")
     graph.add_edge("QueryAnalyzer", "Planner")
@@ -104,9 +107,7 @@ def build_graph(
         has_pending = any(t["status"] == "pending" for t in state.get("tasks", []))
         return "ResearchExecutor" if has_pending else "Verification"
 
-    graph.add_conditional_edges(
-        "Reflection", _route_after_reflection, ["ResearchExecutor", "Verification"]
-    )
+    graph.add_conditional_edges("Reflection", _route_after_reflection, ["ResearchExecutor", "Verification"])
 
     def _route_after_verification(state: GraphState) -> str:
         # loop_count < max_loops also does double duty as the exit for total
@@ -122,9 +123,7 @@ def build_graph(
         max_loops = state.get("max_loops", 2)
         return "Reflection" if issues and loop_count < max_loops else "VerificationGate"
 
-    graph.add_conditional_edges(
-        "Verification", _route_after_verification, ["Reflection", "VerificationGate"]
-    )
+    graph.add_conditional_edges("Verification", _route_after_verification, ["Reflection", "VerificationGate"])
 
     def _route_after_verification_gate(state: GraphState) -> str:
         return END if state.get("final_report") else "ConclusionBuilder"

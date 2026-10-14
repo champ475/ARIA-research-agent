@@ -1,10 +1,11 @@
 """utils/helpers.py — shared utilities, intent-first query parser, ticker resolver"""
 
-import re
-import math
 import logging
-import pytz
+import math
+import re
 from datetime import datetime
+
+import pytz
 
 log = logging.getLogger(__name__)
 
@@ -13,52 +14,89 @@ IST = pytz.timezone("Asia/Kolkata")
 # ── Alias map: common names → NSE ticker ──────────────────────────────────────
 TICKER_ALIASES = {
     # Banks
-    "SBI": "SBIN", "STATE BANK": "SBIN", "HDFC BANK": "HDFCBANK",
-    "ICICI BANK": "ICICIBANK", "AXIS BANK": "AXISBANK",
-    "KOTAK BANK": "KOTAKBANK", "KOTAK": "KOTAKBANK",
-    "INDUSIND": "INDUSINDBK", "YES BANK": "YESBANK",
-    "PUNJAB NATIONAL": "PNB", "CANARA": "CANBK", "UNION BANK": "UNIONBANK",
+    "SBI": "SBIN",
+    "STATE BANK": "SBIN",
+    "HDFC BANK": "HDFCBANK",
+    "ICICI BANK": "ICICIBANK",
+    "AXIS BANK": "AXISBANK",
+    "KOTAK BANK": "KOTAKBANK",
+    "KOTAK": "KOTAKBANK",
+    "INDUSIND": "INDUSINDBK",
+    "YES BANK": "YESBANK",
+    "PUNJAB NATIONAL": "PNB",
+    "CANARA": "CANBK",
+    "UNION BANK": "UNIONBANK",
     # IT
-    "HCL TECH": "HCLTECH", "HCL TECHNOLOGIES": "HCLTECH",
-    "L&T INFOTECH": "LTIM", "MPHASIS": "MPHASIS",
+    "HCL TECH": "HCLTECH",
+    "HCL TECHNOLOGIES": "HCLTECH",
+    "L&T INFOTECH": "LTIM",
+    "MPHASIS": "MPHASIS",
     # Conglomerates
-    "L&T": "LT", "LARSEN": "LT", "LARSEN TOUBRO": "LT",
-    "TATA MOTORS": "TATAMOTORS", "TATA STEEL": "TATASTEEL",
-    "TATA CONSUMER": "TATACONSUM", "TATA POWER": "TATAPOWER",
+    "L&T": "LT",
+    "LARSEN": "LT",
+    "LARSEN TOUBRO": "LT",
+    "TATA MOTORS": "TATAMOTORS",
+    "TATA STEEL": "TATASTEEL",
+    "TATA CONSUMER": "TATACONSUM",
+    "TATA POWER": "TATAPOWER",
     "TATA COMMUNICATIONS": "TATACOMM",
     # Consumer
-    "HUL": "HINDUNILVR", "HINDUSTAN UNILEVER": "HINDUNILVR",
-    "NESTLE": "NESTLEIND", "ASIAN PAINTS": "ASIANPAINT",
-    "BAJAJ AUTO": "BAJAJ-AUTO", "BAJAJ FINANCE": "BAJFINANCE",
+    "HUL": "HINDUNILVR",
+    "HINDUSTAN UNILEVER": "HINDUNILVR",
+    "NESTLE": "NESTLEIND",
+    "ASIAN PAINTS": "ASIANPAINT",
+    "BAJAJ AUTO": "BAJAJ-AUTO",
+    "BAJAJ FINANCE": "BAJFINANCE",
     "BAJAJ FINSERV": "BAJAJFINSV",
     # Other
-    "AIRTEL": "BHARTIARTL", "BHARTI": "BHARTIARTL",
-    "HERO": "HEROMOTOCO", "HERO MOTOCORP": "HEROMOTOCO",
-    "EICHER": "EICHERMOT", "MAHINDRA": "M&M",
-    "COAL INDIA": "COALINDIA", "POWER GRID": "POWERGRID",
-    "ADANI PORT": "ADANIPORTS", "ADANI PORTS": "ADANIPORTS",
-    "SHREE CEMENT": "SHREECEM", "ULTRA CEMENT": "ULTRACEMCO",
-    "ULTRA TECH": "ULTRACEMCO", "OIL AND GAS": "ONGC",
+    "AIRTEL": "BHARTIARTL",
+    "BHARTI": "BHARTIARTL",
+    "HERO": "HEROMOTOCO",
+    "HERO MOTOCORP": "HEROMOTOCO",
+    "EICHER": "EICHERMOT",
+    "MAHINDRA": "M&M",
+    "COAL INDIA": "COALINDIA",
+    "POWER GRID": "POWERGRID",
+    "ADANI PORT": "ADANIPORTS",
+    "ADANI PORTS": "ADANIPORTS",
+    "SHREE CEMENT": "SHREECEM",
+    "ULTRA CEMENT": "ULTRACEMCO",
+    "ULTRA TECH": "ULTRACEMCO",
+    "OIL AND GAS": "ONGC",
     # EV / New listings
-    "ATHER": "ATHERENERG", "ATHER ENERGY": "ATHERENERG",
-    "OLA ELECTRIC": "OLAELEC", "ZOMATO": "ZOMATO",
-    "NYKAA": "NYKAA", "PAYTM": "PAYTM",
-    "POLICYBAZAAR": "POLICYBZR", "DELHIVERY": "DELHIVERY",
-    "IRCTC": "IRCTC", "HAL": "HAL", "BEL": "BEL",
+    "ATHER": "ATHERENERG",
+    "ATHER ENERGY": "ATHERENERG",
+    "OLA ELECTRIC": "OLAELEC",
+    "ZOMATO": "ZOMATO",
+    "NYKAA": "NYKAA",
+    "PAYTM": "PAYTM",
+    "POLICYBAZAAR": "POLICYBZR",
+    "DELHIVERY": "DELHIVERY",
+    "IRCTC": "IRCTC",
+    "HAL": "HAL",
+    "BEL": "BEL",
     # Full/plain-language company names for the curated universe — without
     # these, a natural mention like "what about Infosys stock" doesn't match
     # any alias or the bare ticker, so it fails validate_ticker() and (in the
     # Planning agent) can't trip the "a named ticker breaks sticky routing"
     # escape hatch documented in agents/orchestrator.py::route().
-    "INFOSYS": "INFY", "WIPRO LIMITED": "WIPRO",
-    "TATA CONSULTANCY": "TCS", "TATA CONSULTANCY SERVICES": "TCS",
+    "INFOSYS": "INFY",
+    "WIPRO LIMITED": "WIPRO",
+    "TATA CONSULTANCY": "TCS",
+    "TATA CONSULTANCY SERVICES": "TCS",
     "RELIANCE INDUSTRIES": "RELIANCE",
     "MARUTI SUZUKI": "MARUTI",
-    "SUN PHARMA": "SUNPHARMA", "SUN PHARMACEUTICAL": "SUNPHARMA",
-    "DR REDDY": "DRREDDY", "DR REDDYS": "DRREDDY", "DR. REDDY": "DRREDDY",
+    "SUN PHARMA": "SUNPHARMA",
+    "SUN PHARMACEUTICAL": "SUNPHARMA",
+    "DR REDDY": "DRREDDY",
+    "DR REDDYS": "DRREDDY",
+    "DR. REDDY": "DRREDDY",
     "APOLLO HOSPITALS": "APOLLOHOSP",
-    "DIVIS LAB": "DIVISLAB", "DIVI'S LAB": "DIVISLAB", "DIVIS LABORATORIES": "DIVISLAB",
-    "TORRENT PHARMA": "TORNTPHARM", "TORRENT PHARMACEUTICALS": "TORNTPHARM",
+    "DIVIS LAB": "DIVISLAB",
+    "DIVI'S LAB": "DIVISLAB",
+    "DIVIS LABORATORIES": "DIVISLAB",
+    "TORRENT PHARMA": "TORNTPHARM",
+    "TORRENT PHARMACEUTICALS": "TORNTPHARM",
     "JSW STEEL": "JSWSTEEL",
     "VEDANTA": "VEDL",
     "GODREJ PROPERTIES": "GODREJPROP",
@@ -69,7 +107,8 @@ TICKER_ALIASES = {
     "TATA ELXSI": "TATAELXSI",
     "KPIT TECHNOLOGIES": "KPIT",
     "AVENUE SUPERMARTS": "DMART",
-    "ADANI GREEN": "ADANIGREEN", "ADANI GREEN ENERGY": "ADANIGREEN",
+    "ADANI GREEN": "ADANIGREEN",
+    "ADANI GREEN ENERGY": "ADANIGREEN",
     "ADANI POWER": "ADANIPOWER",
     "BHARAT ELECTRONICS": "BEL",
     "HINDUSTAN AERONAUTICS": "HAL",
@@ -77,48 +116,240 @@ TICKER_ALIASES = {
 
 # Words that are NEVER tickers — stop-list for regex extraction
 STOP_WORDS = {
-    "IC", "REPORT", "ON", "FOR", "THE", "AND", "OR", "VS", "AT",
-    "CHART", "WEEKLY", "DAILY", "MONTHLY", "SHOW", "GET", "GIVE",
-    "ANALYSE", "ANALYZE", "ANALYSIS", "RESEARCH", "TECHNICAL",
-    "FUNDAMENTAL", "FUNDAMENTALS", "NEWS", "LATEST", "COMPARE", "BETWEEN",
-    "SCREENER", "SCREEN", "FIND", "TOP", "BEST", "WORST",
-    "QUICK", "FULL", "DETAILED", "BRIEF", "SHORT", "LONG",
-    "NOTE", "UPDATE", "RESULT", "RESULTS", "EARNINGS", "SECTOR", "THEMATIC",
-    "GENERATE", "WRITE", "CREATE", "MAKE", "PLEASE", "WHAT", "HOW",
-    "INITIATING", "COVERAGE", "INITIATE", "FLASH", "MARKET",
-    "OVERVIEW", "TODAY", "NIFTY", "SENSEX", "FII", "DII", "MACRO",
-    "RSI", "MACD", "SMA", "EMA", "ADX", "ATR", "VWAP", "BB",
-    "BACKTEST", "STRATEGY", "OPTION", "OPTIONS", "CALL", "PUT",
-    "INTRADAY", "SWING", "POSITIONAL", "LONG", "SHORT", "BUY", "SELL",
-    "PORTFOLIO", "HOLDING", "WATCHLIST", "ALERT", "PRICE", "CMP",
-    "SUPPORT", "RESISTANCE", "LEVEL", "LEVELS", "ZONE", "ZONES",
-    "BREAKOUT", "BREAKDOWN", "TARGET", "ENTRY", "EXIT", "PIVOT",
-    "TREND", "MOMENTUM", "SIGNAL", "PATTERN", "SETUP", "TRIGGER",
+    "IC",
+    "REPORT",
+    "ON",
+    "FOR",
+    "THE",
+    "AND",
+    "OR",
+    "VS",
+    "AT",
+    "CHART",
+    "WEEKLY",
+    "DAILY",
+    "MONTHLY",
+    "SHOW",
+    "GET",
+    "GIVE",
+    "ANALYSE",
+    "ANALYZE",
+    "ANALYSIS",
+    "RESEARCH",
+    "TECHNICAL",
+    "FUNDAMENTAL",
+    "FUNDAMENTALS",
+    "NEWS",
+    "LATEST",
+    "COMPARE",
+    "BETWEEN",
+    "SCREENER",
+    "SCREEN",
+    "FIND",
+    "TOP",
+    "BEST",
+    "WORST",
+    "QUICK",
+    "FULL",
+    "DETAILED",
+    "BRIEF",
+    "SHORT",
+    "LONG",
+    "NOTE",
+    "UPDATE",
+    "RESULT",
+    "RESULTS",
+    "EARNINGS",
+    "SECTOR",
+    "THEMATIC",
+    "GENERATE",
+    "WRITE",
+    "CREATE",
+    "MAKE",
+    "PLEASE",
+    "WHAT",
+    "HOW",
+    "INITIATING",
+    "COVERAGE",
+    "INITIATE",
+    "FLASH",
+    "MARKET",
+    "OVERVIEW",
+    "TODAY",
+    "NIFTY",
+    "SENSEX",
+    "FII",
+    "DII",
+    "MACRO",
+    "RSI",
+    "MACD",
+    "SMA",
+    "EMA",
+    "ADX",
+    "ATR",
+    "VWAP",
+    "BB",
+    "BACKTEST",
+    "STRATEGY",
+    "OPTION",
+    "OPTIONS",
+    "CALL",
+    "PUT",
+    "INTRADAY",
+    "SWING",
+    "POSITIONAL",
+    "BUY",
+    "SELL",
+    "PORTFOLIO",
+    "HOLDING",
+    "WATCHLIST",
+    "ALERT",
+    "PRICE",
+    "CMP",
+    "SUPPORT",
+    "RESISTANCE",
+    "LEVEL",
+    "LEVELS",
+    "ZONE",
+    "ZONES",
+    "BREAKOUT",
+    "BREAKDOWN",
+    "TARGET",
+    "ENTRY",
+    "EXIT",
+    "PIVOT",
+    "TREND",
+    "MOMENTUM",
+    "SIGNAL",
+    "PATTERN",
+    "SETUP",
+    "TRIGGER",
     # Generic words mistaken for tickers
-    "ANNUAL", "CHECK", "STOCK", "COMPANY", "DATA",
+    "ANNUAL",
+    "CHECK",
+    "STOCK",
+    "COMPANY",
+    "DATA",
     # Modal verbs / question words / generic connectors — closes the
     # "what price should I buy TCS at" class of bug at the deterministic
     # layer, before ever needing an LLM call.
-    "SHOULD", "WOULD", "COULD", "CAN", "WILL", "MUST", "MAY", "MIGHT", "SHALL", "OR",
-    "WITH", "FROM", "INTO", "ABOUT", "THIS", "THAT", "THESE", "THOSE",
-    "WHEN", "WHERE", "WHICH", "WHO", "WHY", "WHOM", "IF", "UNLESS", "ONCE", "WHILE",
-    "DOES", "DO", "DID", "IS", "ARE", "WAS", "WERE", "BE", "BEEN", "BEING",
-    "HAVE", "HAS", "HAD", "NOT", "NOW", "THEN", "THAN",
-    "YOU", "YOUR", "YOURS", "MY", "MINE", "ME", "WE", "OUR", "THEY", "THEIR", "IT", "ITS",
-    "SOME", "ANY", "ALL", "EACH", "EVERY", "MUCH", "MANY", "MORE", "MOST",
-    "GOOD", "BAD", "WORTH", "WORTHY", "SAFE", "SAFELY", "SOON", "RIGHT", "STILL",
-    "INVEST", "INVESTING", "INVESTMENT", "HOLD", "HOLDING",
+    "SHOULD",
+    "WOULD",
+    "COULD",
+    "CAN",
+    "WILL",
+    "MUST",
+    "MAY",
+    "MIGHT",
+    "SHALL",
+    "WITH",
+    "FROM",
+    "INTO",
+    "ABOUT",
+    "THIS",
+    "THAT",
+    "THESE",
+    "THOSE",
+    "WHEN",
+    "WHERE",
+    "WHICH",
+    "WHO",
+    "WHY",
+    "WHOM",
+    "IF",
+    "UNLESS",
+    "ONCE",
+    "WHILE",
+    "DOES",
+    "DO",
+    "DID",
+    "IS",
+    "ARE",
+    "WAS",
+    "WERE",
+    "BE",
+    "BEEN",
+    "BEING",
+    "HAVE",
+    "HAS",
+    "HAD",
+    "NOT",
+    "NOW",
+    "THEN",
+    "THAN",
+    "YOU",
+    "YOUR",
+    "YOURS",
+    "MY",
+    "MINE",
+    "ME",
+    "WE",
+    "OUR",
+    "THEY",
+    "THEIR",
+    "IT",
+    "ITS",
+    "SOME",
+    "ANY",
+    "ALL",
+    "EACH",
+    "EVERY",
+    "MUCH",
+    "MANY",
+    "MORE",
+    "MOST",
+    "GOOD",
+    "BAD",
+    "WORTH",
+    "WORTHY",
+    "SAFE",
+    "SAFELY",
+    "SOON",
+    "RIGHT",
+    "STILL",
+    "INVEST",
+    "INVESTING",
+    "INVESTMENT",
+    "HOLD",
+    "HOLDING",
     # Alert-phrasing vocabulary — none of these are ever tickers, but they're
     # capitalized (query is upper-cased before token extraction) and common
     # in "alert me if/when X does Y" phrasing, so without this they can beat
     # the real ticker to the first non-stopword match.
-    "NOTIFY", "TELL", "PING", "LET", "KNOW", "REACH", "REACHES",
-    "CROSS", "CROSSES", "CROSSING", "DROPS", "DROP", "GOES", "GO",
-    "ABOVE", "BELOW", "THRESHOLD", "CANCEL", "DELETE", "REMOVE",
-    "PAUSE", "RESUME", "REACTIVATE", "UNPAUSE", "ACTIVE",
+    "NOTIFY",
+    "TELL",
+    "PING",
+    "LET",
+    "KNOW",
+    "REACH",
+    "REACHES",
+    "CROSS",
+    "CROSSES",
+    "CROSSING",
+    "DROPS",
+    "DROP",
+    "GOES",
+    "GO",
+    "ABOVE",
+    "BELOW",
+    "THRESHOLD",
+    "CANCEL",
+    "DELETE",
+    "REMOVE",
+    "PAUSE",
+    "RESUME",
+    "REACTIVATE",
+    "UNPAUSE",
+    "ACTIVE",
     # Recurring-alert phrasing ("alert me every time X", "recurring alert if Y") —
     # same class of bug as above: capitalized, common in alert phrasing, not tickers.
-    "TIME", "TIMES", "KEEP", "REPEATEDLY", "RECURRING", "DEACTIVATE", "DEACTIVATES",
+    "TIME",
+    "TIMES",
+    "KEEP",
+    "REPEATEDLY",
+    "RECURRING",
+    "DEACTIVATE",
+    "DEACTIVATES",
 }
 
 
@@ -144,9 +375,9 @@ def fmt_num(val, prefix="₹", dec=2) -> str:
     if math.isnan(v) or math.isinf(v):
         return "N/A"
     if abs(v) >= 1e7:
-        return f"{prefix}{v/1e7:.{dec}f}Cr"
+        return f"{prefix}{v / 1e7:.{dec}f}Cr"
     if abs(v) >= 1e5:
-        return f"{prefix}{v/1e5:.{dec}f}L"
+        return f"{prefix}{v / 1e5:.{dec}f}L"
     return f"{prefix}{v:,.{dec}f}"
 
 
@@ -164,7 +395,7 @@ def safe_val(val, fmt: str = "") -> str:
     if f is None:
         return "N/A"
     if fmt == "pct":
-        return f"{f*100:.2f}%"
+        return f"{f * 100:.2f}%"
     if fmt == "pct_direct":
         return f"{f:.2f}%"
     if fmt == "2f":
@@ -174,7 +405,7 @@ def safe_val(val, fmt: str = "") -> str:
 
 def pct(val) -> str:
     f = safe_float(val)
-    return "N/A" if f is None else f"{f*100:.2f}%"
+    return "N/A" if f is None else f"{f * 100:.2f}%"
 
 
 def trim_text(text: str, max_words: int = 150) -> str:
@@ -195,7 +426,7 @@ def parse_screener_name(query: str) -> str:
     quoted = re.search(r'["\']([^"\']+)["\']', query)
     if quoted:
         return quoted.group(1).strip()
-    trailing_as = re.search(r'\bas\s+([a-zA-Z0-9\s]+)$', query, re.I)
+    trailing_as = re.search(r"\bas\s+([a-zA-Z0-9\s]+)$", query, re.I)
     if trailing_as:
         return trailing_as.group(1).strip()
     return "My Screener"
@@ -219,33 +450,141 @@ def detect_report_type(lower: str) -> str:
 
 # Ordered intent keywords — checked in order, first match wins
 INTENT_MAP = [
-    ("chart",       ["chart","candlestick","show price","ohlc","price chart","show chart"]),
-    ("technical",   ["technical analysis","technical","rsi","macd","bollinger","supertrend",
-                     "support resistance","indicator","ema","sma","adx","atr","vwap"]),
-    ("fundamental", ["fundamental","valuation","pe ratio","roe","roce","dcf","financials",
-                     "balance sheet","earnings","revenue","margins","eps","book value"]),
-    ("options",     ["option chain","options chain","options","call put","open interest","oi","iv"]),
-    ("backtest",    ["backtest","back test","strategy test","ma crossover","rsi strategy"]),
-    ("news",        ["news","latest news","acquisition","merger","funding","deal","announced",
-                     "corporate action","bulk deal","block deal"]),
-    ("compare",     ["compare","vs ","versus"," vs"]),
-    ("market",      ["market overview","market today","nifty","sensex","fii","dii","macro",
-                     "market news","market update"]),
-    ("screener",    ["screen","screener","find stocks","filter stocks","top gainer","top loser",
-                     "top gainers","top losers","bulk deal","block deal","momentum stocks",
-                     "value screen","quality screen"]),
-    ("portfolio",   ["my portfolio","portfolio","my holdings","show holdings"]),
-    ("port_add",    ["add to portfolio","bought","add tcs","add infy","add reliance"]),
-    ("port_remove", ["remove from portfolio","sold","remove tcs"]),
-    ("report_ic",   ["initiating coverage","ic report","initiate coverage","full report on",
-                     "generate report","write report","create report","detailed report on"]),
-    ("report_ru",   ["result update","earnings update","quarterly results","q1 results",
-                     "q2 results","q3 results","q4 results"]),
-    ("report_qn",   ["quick note","flash note","brief note","quick report"]),
-    ("report_st",   ["sector report","thematic report","sector analysis","sector outlook",
-                     "sector thematic"]),
-    ("analyse",     ["analyse","analyze","analysis","research","deep dive","tell me about",
-                     "should i buy","should i invest","full analysis","overview"]),
+    ("chart", ["chart", "candlestick", "show price", "ohlc", "price chart", "show chart"]),
+    (
+        "technical",
+        [
+            "technical analysis",
+            "technical",
+            "rsi",
+            "macd",
+            "bollinger",
+            "supertrend",
+            "support resistance",
+            "indicator",
+            "ema",
+            "sma",
+            "adx",
+            "atr",
+            "vwap",
+        ],
+    ),
+    (
+        "fundamental",
+        [
+            "fundamental",
+            "valuation",
+            "pe ratio",
+            "roe",
+            "roce",
+            "dcf",
+            "financials",
+            "balance sheet",
+            "earnings",
+            "revenue",
+            "margins",
+            "eps",
+            "book value",
+        ],
+    ),
+    ("options", ["option chain", "options chain", "options", "call put", "open interest", "oi", "iv"]),
+    ("backtest", ["backtest", "back test", "strategy test", "ma crossover", "rsi strategy"]),
+    (
+        "news",
+        [
+            "news",
+            "latest news",
+            "acquisition",
+            "merger",
+            "funding",
+            "deal",
+            "announced",
+            "corporate action",
+            "bulk deal",
+            "block deal",
+        ],
+    ),
+    ("compare", ["compare", "vs ", "versus", " vs"]),
+    (
+        "market",
+        [
+            "market overview",
+            "market today",
+            "nifty",
+            "sensex",
+            "fii",
+            "dii",
+            "macro",
+            "market news",
+            "market update",
+        ],
+    ),
+    (
+        "screener",
+        [
+            "screen",
+            "screener",
+            "find stocks",
+            "filter stocks",
+            "top gainer",
+            "top loser",
+            "top gainers",
+            "top losers",
+            "bulk deal",
+            "block deal",
+            "momentum stocks",
+            "value screen",
+            "quality screen",
+        ],
+    ),
+    ("portfolio", ["my portfolio", "portfolio", "my holdings", "show holdings"]),
+    ("port_add", ["add to portfolio", "bought", "add tcs", "add infy", "add reliance"]),
+    ("port_remove", ["remove from portfolio", "sold", "remove tcs"]),
+    (
+        "report_ic",
+        [
+            "initiating coverage",
+            "ic report",
+            "initiate coverage",
+            "full report on",
+            "generate report",
+            "write report",
+            "create report",
+            "detailed report on",
+        ],
+    ),
+    (
+        "report_ru",
+        [
+            "result update",
+            "earnings update",
+            "quarterly results",
+            "q1 results",
+            "q2 results",
+            "q3 results",
+            "q4 results",
+        ],
+    ),
+    ("report_qn", ["quick note", "flash note", "brief note", "quick report"]),
+    (
+        "report_st",
+        ["sector report", "thematic report", "sector analysis", "sector outlook", "sector thematic"],
+    ),
+    (
+        "analyse",
+        [
+            "analyse",
+            "analyze",
+            "analysis",
+            "research",
+            "deep dive",
+            "tell me about",
+            "should i buy",
+            "should i invest",
+            "full analysis",
+            "overview",
+        ],
+    ),
 ]
 
 
@@ -272,20 +611,20 @@ def extract_entity(query: str) -> str | None:
     #    substring check would match short aliases like "BEL" inside ordinary
     #    words (e.g. "BELOW"), which alert phrasing ("drops below X") hits often.
     for alias, ticker in sorted(TICKER_ALIASES.items(), key=lambda x: -len(x[0])):
-        if re.search(rf'\b{re.escape(alias)}\b', upper):
+        if re.search(rf"\b{re.escape(alias)}\b", upper):
             return ticker
 
     # 1b. "... for/on/of SYMBOL" pattern — highest-confidence preposition cue
     #     e.g. "annual report for HDFCBANK" → HDFCBANK
     #          "IC report on TCS"           → TCS
-    prep = re.search(r'\b(?:FOR|ON|OF)\s+([A-Z][A-Z0-9\-&]{1,14})\b', upper)
+    prep = re.search(r"\b(?:FOR|ON|OF)\s+([A-Z][A-Z0-9\-&]{1,14})\b", upper)
     if prep:
         candidate = prep.group(1)
         if candidate not in STOP_WORDS and len(candidate) >= 2:
             return TICKER_ALIASES.get(candidate, candidate)
 
     # 2. Check explicit .NS / .BO suffix
-    m = re.search(r'\b([A-Z][A-Z0-9\-&]{1,14})\.(NS|BO)\b', upper)
+    m = re.search(r"\b([A-Z][A-Z0-9\-&]{1,14})\.(NS|BO)\b", upper)
     if m:
         return m.group(1)
 
@@ -297,7 +636,8 @@ def extract_entity(query: str) -> str | None:
     #    stronger signal). Falls back to first-token order for genuinely
     #    unrecognized tickers not yet in the curated universe.
     from config import STOCK_UNIVERSE
-    tokens = re.findall(r'\b([A-Z][A-Z0-9\-&]{1,14})\b', upper)
+
+    tokens = re.findall(r"\b([A-Z][A-Z0-9\-&]{1,14})\b", upper)
     candidates = [t for t in tokens if t not in STOP_WORDS and len(t) >= 2]
     for t in candidates:
         if t in STOCK_UNIVERSE or t in TICKER_ALIASES:
@@ -325,7 +665,7 @@ def extract_all_entities(query: str) -> list[str]:
     #    match — a plain substring search would match short aliases like "BEL"
     #    inside ordinary words (e.g. "BELOW").
     for alias, ticker in sorted(TICKER_ALIASES.items(), key=lambda x: -len(x[0])):
-        pattern = re.compile(rf'\b{re.escape(alias)}\b')
+        pattern = re.compile(rf"\b{re.escape(alias)}\b")
         text = "".join(masked)
         m = pattern.search(text)
         while m:
@@ -337,14 +677,14 @@ def extract_all_entities(query: str) -> list[str]:
 
     # 2. Explicit .NS/.BO suffix on whatever text is left unmasked.
     remaining = "".join(masked)
-    for m in re.finditer(r'\b([A-Z][A-Z0-9\-&]{1,14})\.(NS|BO)\b', remaining):
+    for m in re.finditer(r"\b([A-Z][A-Z0-9\-&]{1,14})\.(NS|BO)\b", remaining):
         matches.append((m.start(), m.group(1)))
         for i in range(m.start(), m.end()):
             masked[i] = " "
 
     # 3. Capitalised tokens not in stopwords, on remaining unmasked text.
     remaining = "".join(masked)
-    for m in re.finditer(r'\b([A-Z][A-Z0-9\-&]{1,14})\b', remaining):
+    for m in re.finditer(r"\b([A-Z][A-Z0-9\-&]{1,14})\b", remaining):
         t = m.group(1)
         if t not in STOP_WORDS and len(t) >= 2:
             matches.append((m.start(), t))
@@ -378,8 +718,9 @@ def resolve_ticker(query: str) -> tuple[str | None, str]:
     # 4. Search API fallback
     try:
         import yfinance as yf
+
         results = yf.Search(query, max_results=5)
-        for q in (results.quotes or []):
+        for q in results.quotes or []:
             if q.get("exchange", "") in ("NSI", "BSE", "NSE", "BOM"):
                 sym = q.get("symbol", "").replace(".NS", "").replace(".BO", "")
                 return clean_ticker(sym), "yfinance search API"
@@ -402,6 +743,7 @@ def _known_intents() -> set[str]:
 def is_known_ticker(ticker: str) -> bool:
     """Cheap, no-network membership check against the curated sector universe."""
     from config import STOCK_UNIVERSE
+
     return ticker in STOCK_UNIVERSE
 
 
@@ -409,10 +751,10 @@ def ticker_has_market_data(ticker: str) -> bool:
     """Network check via yfinance. Mirrors the predicate used in equity_agent.py::_full_analysis."""
     try:
         from tools.data.fetcher import get_info
+
         info = get_info(ticker)
         return bool(info) and (
-            info.get("regularMarketPrice") is not None
-            or info.get("currentPrice") is not None
+            info.get("regularMarketPrice") is not None or info.get("currentPrice") is not None
         )
     except Exception:
         return False
@@ -467,6 +809,7 @@ def llm_resolve_query(query: str, client) -> dict:
     (network, parse, or malformed-JSON error), so callers never need a try/except.
     """
     import json
+
     from config import STOCK_UNIVERSE, TOKENS_FAST
 
     global _VALID_LLM_INTENTS
@@ -480,14 +823,14 @@ def llm_resolve_query(query: str, client) -> dict:
         f"Known NSE tickers (prefer these if the query matches one): {universe}\n\n"
         f'User query: "{query}"\n\n'
         "Extract:\n"
-        "1. \"ticker\": the single NSE ticker symbol the query is about (uppercase, no "
-        "suffix, e.g. \"TCS\" not \"TCS.NS\"). If the query names a company not in the "
+        '1. "ticker": the single NSE ticker symbol the query is about (uppercase, no '
+        'suffix, e.g. "TCS" not "TCS.NS"). If the query names a company not in the '
         "known list, still give your best-guess correct NSE symbol. If no company or "
         "stock is mentioned at all, use null.\n"
-        "2. \"intent\": exactly one of "
-        "[\"chart\",\"technical\",\"fundamental\",\"news\",\"options\",\"backtest\","
-        "\"compare\",\"market\",\"screener\",\"analyse\",\"chat\"]. "
-        "Use \"analyse\" for general research/opinion/should-I-buy questions.\n\n"
+        '2. "intent": exactly one of '
+        '["chart","technical","fundamental","news","options","backtest",'
+        '"compare","market","screener","analyse","chat"]. '
+        'Use "analyse" for general research/opinion/should-I-buy questions.\n\n'
         "Respond with ONLY this JSON shape, nothing else, no markdown fences:\n"
         '{"ticker": "SYMBOL_OR_null", "intent": "one_of_the_list_above"}'
     )
@@ -544,7 +887,9 @@ def resolve_query(query: str, client=None, last_symbol: str | None = None) -> di
     det_ok = validate_ticker(det_ticker)
 
     log.debug(f"[PARSE] query={query!r}")
-    log.debug(f"[PARSE] deterministic: ticker={det_ticker!r} valid={det_ok} intent={det_intent!r} source={det_source!r}")
+    log.debug(
+        f"[PARSE] deterministic: ticker={det_ticker!r} valid={det_ok} intent={det_intent!r} source={det_source!r}"
+    )
 
     needs_llm = (det_ticker is None) or (not det_ok) or (det_ticker is not None and det_intent == "chat")
 
@@ -558,8 +903,10 @@ def resolve_query(query: str, client=None, last_symbol: str | None = None) -> di
         log.debug(f"[PARSE] final (no LLM call): {result}")
         return result
 
-    log.debug(f"[PARSE] ambiguous -> falling back to LLM "
-          f"(det_ticker={det_ticker!r}, det_ok={det_ok}, det_intent={det_intent!r})")
+    log.debug(
+        f"[PARSE] ambiguous -> falling back to LLM "
+        f"(det_ticker={det_ticker!r}, det_ok={det_ok}, det_intent={det_intent!r})"
+    )
 
     llm_result = llm_resolve_query(query, client)
     llm_ticker_ok = validate_ticker(llm_result["ticker"])
