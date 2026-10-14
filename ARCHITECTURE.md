@@ -16,6 +16,35 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Tenant isolation is proven by a real-Postgres test suite with a coverage meta-test
+
+**Problem.** Every user-scoped query relies on a hand-written `WHERE user_id=%s`;
+unit tests mock the database, so nothing proved the clauses exist or work, and
+the shared-cache bug (DATA-01) and two unchecked session writes showed it had
+already broken.
+
+**Alternatives considered.** Postgres Row-Level Security now (the strongest
+backstop, but every connection would need `SET app.user_id` plumbed through the
+pool, the checkpointer and the alert script — a larger change than Phase 0
+allows); an in-memory SQLite stand-in (different SQL dialect: `ON CONFLICT`,
+`ANY(%s)`, JSONB and partial indexes would diverge from production); mock-based
+tests of the SQL strings (proves text, not behaviour).
+
+**Final decision.** An integration suite on a real Postgres (CI service
+container, or testcontainers locally) where user B acts on user A's ids through
+every user-scoped db function and graph tool. A meta-test introspects
+`utils.db` for functions taking `user_id` and fails if any lacks an entry in the
+suite's coverage map. The fixture refuses to run against the app's own
+`DATABASE_URL`.
+
+**Trade-offs.** Coverage is by function, not by every parameter combination;
+functions that are deliberately cross-user (`alert_get_active_all`, caches,
+auth rate limits) are outside the meta-test. Local runs need Docker.
+
+**Future improvements.** Enable Row-Level Security with a per-connection
+`app.user_id` as a database-level backstop; extend the meta-test to the app's
+Gradio handlers.
+
 ## 2026-10-14 — Alert delivery contract: consumed only after delivery, with an in-app inbox fallback
 
 **Problem.** The alert checker marked an alert triggered as soon as its condition

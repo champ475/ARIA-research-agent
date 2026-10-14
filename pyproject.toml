@@ -18,6 +18,9 @@ packages = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: needs a real Postgres (TEST_DATABASE_URL or Docker); skipped otherwise",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

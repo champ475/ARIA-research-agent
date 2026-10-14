@@ -398,16 +398,18 @@ def session_list(user_id: int, tab: str, limit: int = 50) -> list[dict]:
     )
 
 
-def session_touch(session_id: int, title: str | None = None):
+def session_touch(user_id: int, session_id: int, title: str | None = None):
+    """Bumps (and optionally retitles) a session — only if `user_id` owns it
+    (SEC-13: previously any session id could be touched)."""
     if title is not None:
         _query(
-            "UPDATE chat_sessions SET updated_at=now(), title=%s WHERE id=%s",
-            (title, session_id), fetch=None, commit=True,
+            "UPDATE chat_sessions SET updated_at=now(), title=%s WHERE id=%s AND user_id=%s",
+            (title, session_id, user_id), fetch=None, commit=True,
         )
     else:
         _query(
-            "UPDATE chat_sessions SET updated_at=now() WHERE id=%s",
-            (session_id,), fetch=None, commit=True,
+            "UPDATE chat_sessions SET updated_at=now() WHERE id=%s AND user_id=%s",
+            (session_id, user_id), fetch=None, commit=True,
         )
 
 
@@ -429,9 +431,13 @@ def session_delete(user_id: int, session_id: int):
 
 
 def chat_save(user_id: int, session_id: int, tab: str, role: str, content: str):
+    """Appends a message to a session — only if `user_id` owns that session
+    (SEC-13: a forged session id can't write into someone else's history)."""
     _query(
-        "INSERT INTO chat_history (user_id, session_id, tab, role, content) VALUES (%s,%s,%s,%s,%s)",
-        (user_id, session_id, tab, role, content), fetch=None, commit=True,
+        "INSERT INTO chat_history (user_id, session_id, tab, role, content) "
+        "SELECT %s, %s, %s, %s, %s "
+        "WHERE EXISTS (SELECT 1 FROM chat_sessions WHERE id=%s AND user_id=%s)",
+        (user_id, session_id, tab, role, content, session_id, user_id), fetch=None, commit=True,
     )
 
 

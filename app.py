@@ -304,7 +304,7 @@ def _persist_turn(user_id: int, session_id: int, user_msg: str, assistant_msg: s
     from utils.db import chat_save, session_touch
     chat_save(user_id, session_id, "chat", "user", user_msg)
     chat_save(user_id, session_id, "chat", "assistant", assistant_msg)
-    session_touch(session_id, title=_session_title(user_msg) if is_first else None)
+    session_touch(user_id, session_id, title=_session_title(user_msg) if is_first else None)
 
 
 def clear_chat(user_id: int):
