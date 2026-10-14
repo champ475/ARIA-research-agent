@@ -183,7 +183,10 @@ def sanity_note(profile: dict) -> str:
 def build_strategy_prompt(profile: dict) -> str:
     fund_data = fetch_fund_data(profile)
     equity_screen = fetch_equity_screen()
-    macro_news = fetch_macro_news()
+    from graph.prompt_safety import wrap_untrusted
+
+    # Headlines are third-party text: fenced as data (SEC-03).
+    macro_news = wrap_untrusted("news", fetch_macro_news())
 
     return f"""Build a complete, personalised long-term investment strategy for this investor.
 

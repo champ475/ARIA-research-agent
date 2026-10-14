@@ -32,6 +32,7 @@ from config import GROQ_MODEL_FAST, TOKENS_AGENT
 from graph.journal import log_decision
 from graph.state import GraphState, ResearchPlan, Task
 from graph.tool_catalogue import NO_ENTITY_SENTINEL, catalogue_summary, get_tool, list_tools
+from graph.write_policy import WRITE_TOOLS, allowed_write_tools
 
 log = logging.getLogger(__name__)
 
@@ -47,15 +48,15 @@ _SYSTEM = (
 _ALL_TOOL_NAMES = {spec.name for spec in list_tools()}
 
 
-def _build_prompt(objective: str, entities: list[str]) -> str:
+def _build_prompt(objective: str, entities: list[str], hidden: frozenset[str] = frozenset()) -> str:
     return (
         f"Objective: {objective}\n"
         f"Entities: {', '.join(entities)}\n\n"
-        f"Available tools:\n{catalogue_summary()}"
+        f"Available tools:\n{catalogue_summary(exclude=hidden)}"
     )
 
 
-def _parse_tool_selection(raw: str) -> list[str]:
+def _parse_tool_selection(raw: str, hidden: frozenset[str] = frozenset()) -> list[str]:
     text = raw.strip()
     if text.startswith("```"):
         text = text[3:]
@@ -65,7 +66,10 @@ def _parse_tool_selection(raw: str) -> list[str]:
     try:
         parsed = json.loads(text.strip())
         tools = parsed.get("tools", [])
-        return [t for t in tools if t in _ALL_TOOL_NAMES]
+        dropped = [t for t in tools if t in hidden]
+        if dropped:
+            log.warning("Planner: dropped write tool(s) not allowed for this intent: %s", dropped)
+        return [t for t in tools if t in _ALL_TOOL_NAMES and t not in hidden]
     except (json.JSONDecodeError, AttributeError, TypeError):
         log.warning("Planner: failed to parse tool selection: %r", raw)
         return []
@@ -129,13 +133,16 @@ def build_planner_node(
                 ),
             }
 
+        # SEC-03: write tools this turn's intent doesn't own are neither shown
+        # to the model nor accepted from it.
+        hidden = WRITE_TOOLS - allowed_write_tools(state.get("intent"), state.get("secondary_intents"))
         raw = client.ask(
-            _build_prompt(objective, entities),
+            _build_prompt(objective, entities, hidden),
             model=GROQ_MODEL_FAST,
             max_tokens=TOKENS_AGENT,
             temperature=0.0,
         )
-        selected = _parse_tool_selection(raw)
+        selected = _parse_tool_selection(raw, hidden)
         tool_names = _with_transitive_deps(selected)
         tasks = _build_tasks(tool_names, entities)
         plan: ResearchPlan = {"objective": objective, "tasks": tasks, "complexity": complexity}

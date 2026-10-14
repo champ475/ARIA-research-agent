@@ -54,6 +54,7 @@ def _stuck_tasks(tasks: list[Task]) -> list[Task]:
 def _build_context(
     task: Task, tasks_by_id: dict[str, Task], evidence: list[dict],
     user_id: int | None = None, query: str | None = None, llm_config: dict | None = None,
+    intent: str | None = None, secondary_intents: list[str] | None = None,
 ) -> dict[str, Any]:
     """Maps each dependency tool's name -> its evidence payload, so
     execute_task's tool fn can read an already-fetched dependency result.
@@ -69,7 +70,11 @@ def _build_context(
     for ev in evidence:
         latest_by_tool_entity[(ev["tool"], ev["entity"])] = ev["payload"]
 
-    context: dict[str, Any] = {"_user_id": user_id, "_query": query, "_llm_config": llm_config}
+    context: dict[str, Any] = {
+        "_user_id": user_id, "_query": query, "_llm_config": llm_config,
+        # SEC-03: execute_task re-checks write permission against these.
+        "_intent": intent, "_secondary_intents": list(secondary_intents or []),
+    }
     for dep_id in task["depends_on"]:
         dep_task = tasks_by_id.get(dep_id)
         if dep_task is None:
@@ -120,7 +125,11 @@ def route_after_research_executor(state: GraphState):
     llm_config = state.get("llm_config")
     return [
         Send("execute_task_node", {
-            "task": task, "context": _build_context(task, tasks_by_id, evidence, user_id, query, llm_config),
+            "task": task,
+            "context": _build_context(
+                task, tasks_by_id, evidence, user_id, query, llm_config,
+                state.get("intent"), state.get("secondary_intents"),
+            ),
         })
         for task in ready
     ]

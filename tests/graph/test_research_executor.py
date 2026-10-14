@@ -75,7 +75,9 @@ class TestBuildContext:
         tasks_by_id = {"fetch_info:RELIANCE": _task(id="fetch_info:RELIANCE", tool="fetch_info")}
         task = _task(id="compute_fundamentals:RELIANCE", depends_on=["fetch_info:RELIANCE"])
         context = _build_context(task, tasks_by_id, evidence=[])
-        assert context == {"_user_id": None, "_query": None, "_llm_config": None}
+        assert context == {
+            "_user_id": None, "_query": None, "_llm_config": None, "_intent": None, "_secondary_intents": [],
+        }
 
     def test_query_injected_regardless_of_dependencies(self):
         task = _task(id="screener_parse_query:market", tool="screener_parse_query", depends_on=[])

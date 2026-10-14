@@ -121,8 +121,13 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
 
     elif ev["evidence_type"] == "screener_saved" and isinstance(ev["payload"], dict):
         p = ev["payload"]
+        claim = (
+            f"Screen NOT saved — {p.get('reason')}"
+            if p.get("result") == "blocked"
+            else f"Screener saved as '{p.get('name')}' with filters: {p.get('filters')}"
+        )
         conclusions.append({
-            "claim": f"Screener saved as '{p.get('name')}' with filters: {p.get('filters')}",
+            "claim": claim,
             "value": p,
             "confidence": ev["confidence"],
             "evidence_ids": [ev["id"]],
@@ -141,7 +146,7 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
     elif ev["evidence_type"] == "alert_action" and isinstance(ev["payload"], dict):
         p = ev["payload"]
         conclusions.append({
-            "claim": f"Alert {p.get('action')} on {p.get('symbol')}: {p.get('result')}",
+            "claim": _alert_action_claim(p),
             "value": p,
             "confidence": ev["confidence"],
             "evidence_ids": [ev["id"]],
@@ -149,6 +154,29 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
         })
 
     return conclusions
+
+
+_ALERT_DONE_VERB = {"created": "Created", "removed": "Cancelled", "paused": "Paused", "resumed": "Resumed"}
+_ALERT_FAIL_TEXT = {
+    "not_found": "no matching alert was found",
+    "ambiguous": "more than one alert matches — say which one",
+    "unrecognized_condition": "the alert condition couldn't be understood",
+    "invalid_symbol": "no valid stock symbol was given",
+}
+
+
+def _alert_action_claim(p: dict) -> str:
+    """Every alert write is echoed back in plain words (SEC-03), so the user
+    can see exactly what changed — or that nothing did, and why."""
+    action, symbol, result = p.get("action"), p.get("symbol"), p.get("result")
+    alert_ref = f"alert #{p['alert_id']}" if p.get("alert_id") is not None else "alert"
+    if result in _ALERT_DONE_VERB:
+        detail = f": {p['condition']}" if p.get("condition") else ""
+        recurring = " (recurring)" if p.get("recurring") else ""
+        return f"{_ALERT_DONE_VERB[result]} {alert_ref} on {symbol}{detail}{recurring}"
+    if result == "blocked":
+        return f"Did NOT {action} an alert on {symbol} — {p.get('reason')}"
+    return f"Could not {action} an alert on {symbol}: {_ALERT_FAIL_TEXT.get(result, result)}"
 
 
 def conclusion_builder(state: GraphState) -> dict:

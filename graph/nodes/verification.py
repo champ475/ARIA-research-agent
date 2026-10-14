@@ -31,6 +31,7 @@ from agents.llm_client import LLMClient, LLMProvidersExhausted
 from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
+from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
 from graph.state import Evidence, GraphState, VerificationIssue
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ _SYSTEM = (
     '"evidence_ids": ["..."]}]}. An empty issues list means the evidence is '
     "sufficient and consistent. Be conservative — only flag a genuine "
     "problem, not a stylistic preference."
+    + UNTRUSTED_NOTICE
 )
 
 
@@ -193,7 +195,8 @@ def _parse_llm_issues(raw: str) -> list[VerificationIssue]:
 
 def _build_judge_prompt(objective: str, evidence_summary: dict) -> str:
     capped = cap_evidence_for_prompt(evidence_summary, EVIDENCE_PROMPT_CHAR_BUDGET)
-    return f"Objective: {objective}\n\nEvidence summary:\n{json.dumps(capped, default=str)}"
+    evidence_json = json.dumps(capped, default=str)
+    return f"Objective: {objective}\n\nEvidence summary:\n{wrap_untrusted('evidence', evidence_json)}"
 
 
 def build_verification_node(

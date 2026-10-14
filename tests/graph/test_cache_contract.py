@@ -39,9 +39,17 @@ def test_every_tool_reading_user_or_query_is_keyed_on_it_or_uncached():
     assert offenders == []
 
 
-@pytest.mark.parametrize(
-    "tool", ["alert_create", "alert_cancel", "alert_pause", "alert_resume", "alert_list", "screener_save"]
-)
+_ALLOWED_CTX = {
+    "alert_create": {"_intent": "alert", "_query": "alert me if TCS drops below 3500"},
+    "alert_cancel": {"_intent": "alert", "_query": "cancel my TCS alert"},
+    "alert_pause": {"_intent": "alert", "_query": "pause my TCS alert"},
+    "alert_resume": {"_intent": "alert", "_query": "resume my TCS alert"},
+    "alert_list": {"_intent": "alert", "_query": "show my alerts"},
+    "screener_save": {"_intent": "screener", "_query": "save this screen as value"},
+}
+
+
+@pytest.mark.parametrize("tool", list(_ALLOWED_CTX))
 def test_write_and_user_scoped_tools_never_touch_the_cache(tool):
     spec = dataclasses.replace(get_tool(tool), fn=MagicMock(return_value={"result": "ok"}))
     task = {"id": f"{tool}:TCS", "tool": tool, "entity": "TCS", "description": "", "depends_on": [], "status": "pending"}
@@ -50,8 +58,8 @@ def test_write_and_user_scoped_tools_never_touch_the_cache(tool):
         patch("graph.nodes.execute_task.evidence_cache.get") as get,
         patch("graph.nodes.execute_task.evidence_cache.put") as put,
     ):
-        execute_task(task, {"_user_id": 1, "_query": "x"})
-        execute_task(task, {"_user_id": 1, "_query": "x"})
+        execute_task(task, {"_user_id": 1, **_ALLOWED_CTX[tool]})
+        execute_task(task, {"_user_id": 1, **_ALLOWED_CTX[tool]})
     get.assert_not_called()
     put.assert_not_called()
     assert spec.fn.call_count == 2  # the write runs every time

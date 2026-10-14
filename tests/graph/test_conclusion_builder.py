@@ -173,5 +173,5 @@ class TestConclusionBuilder:
             payload={"action": "cancel", "symbol": "TCS", "result": "removed", "alert_id": 5},
         )]
         result = conclusion_builder({"evidence": evidence, "verification_issues": []})
-        assert "cancel on TCS: removed" in result["conclusions"][0]["claim"]
+        assert result["conclusions"][0]["claim"] == "Cancelled alert #5 on TCS"
         assert result["conclusions"][0]["citation_key"] == "RELIANCE.alert_cancel"

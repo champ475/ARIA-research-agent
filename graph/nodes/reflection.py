@@ -26,7 +26,9 @@ from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
 from graph.nodes.planner import _ALL_TOOL_NAMES, _build_tasks, _with_transitive_deps
+from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
 from graph.state import GraphState, MissingInfoItem, Task
+from graph.write_policy import WRITE_TOOLS
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +42,11 @@ _SYSTEM = (
     'evidence already covers everything asked. "action" must be one of the '
     "available tool names below; if no available tool would fill the gap, "
     "omit that item entirely rather than inventing a tool name."
+    + UNTRUSTED_NOTICE
 )
+
+# SEC-03: Reflection fills research gaps; it may never add a tool that writes.
+_REFLECTION_TOOL_NAMES = _ALL_TOOL_NAMES - WRITE_TOOLS
 
 _VALID_PRIORITIES = {"high", "medium", "low"}
 _DEFAULT_PRIORITY = "medium"
@@ -49,10 +55,10 @@ _DEFAULT_PRIORITY = "medium"
 def _build_prompt(query: str, objective: str, evidence_summary: dict) -> str:
     capped = cap_evidence_for_prompt(evidence_summary, EVIDENCE_PROMPT_CHAR_BUDGET)
     return (
-        f"Original query: {query}\n"
+        f"Original query:\n{wrap_untrusted('user', query)}\n"
         f"Objective: {objective}\n\n"
-        f"Evidence collected so far:\n{json.dumps(capped, default=str)}\n\n"
-        f"Available tools: {', '.join(sorted(_ALL_TOOL_NAMES))}"
+        f"Evidence collected so far:\n{wrap_untrusted('evidence', json.dumps(capped, default=str))}\n\n"
+        f"Available tools: {', '.join(sorted(_REFLECTION_TOOL_NAMES))}"
     )
 
 
@@ -136,7 +142,7 @@ def build_reflection_node(
                 ),
             }
 
-        valid_actions = [item["action"] for item in missing_items if item["action"] in _ALL_TOOL_NAMES]
+        valid_actions = [item["action"] for item in missing_items if item["action"] in _REFLECTION_TOOL_NAMES]
         tool_names = _with_transitive_deps(valid_actions)
         candidate_tasks = _build_tasks(tool_names, state.get("entities", []))
 

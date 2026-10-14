@@ -16,6 +16,35 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Write-tool trust boundary: deterministic intent + verb gate, enforced in three places
+
+**Problem.** The research graph lets an LLM choose tools, and five tools write
+user data. The LLM's inputs include text the user didn't write (news, filing
+PDFs, earlier turns), so a prompt injection or a plain misread could create,
+cancel, pause or resume alerts or save screens without the user asking.
+
+**Alternatives considered.** A human-in-the-loop confirmation before every
+write (safest, but adds a round-trip to the most common alert flow and the
+current HITL gate is typed yes/no only — revisit with UX-02 buttons); an LLM
+"is this write intended?" judge (itself injectable and non-deterministic);
+removing writes from the graph entirely and routing them through dedicated UI
+(right long-term for management actions, but a larger UX change).
+
+**Final decision.** `graph/write_policy.py` owns a deterministic rule: a write
+tool runs only when the classified intent owns it and the user's own message
+contains an explicit action verb for it. Planner hides/drops disallowed write
+tools, Reflection can never add one, and `execute_task` re-checks immediately
+before the call and records a "blocked" result. Untrusted text is fenced in
+`<untrusted>` blocks with a system notice as defence in depth.
+
+**Trade-offs.** Depends on QueryAnalyzer's intent being right; a user whose
+phrasing lacks a recognised verb ("TCS alert below 3500") now gets no alert.
+A user who *does* type "cancel my alerts" inside an alert-intent message is
+trusted — the gate stops third-party text, not the user.
+
+**Future improvements.** ID-based alert management with confirmation buttons
+(VAL-04, UX-02); log blocked writes as a metric (OBS-03) to tune the verb list.
+
 ## 2026-10-14 — Evidence-cache contract: a tool is cacheable only if its key covers every input
 
 **Problem.** The shared evidence cache keyed every tool on (tool, entity) for all

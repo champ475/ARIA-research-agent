@@ -20,6 +20,7 @@ compute_technicals, communication_layer.py's chart lookup) call
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,7 +29,10 @@ import pandas as pd
 from graph.journal import log_decision
 from graph.state import Evidence, Task
 from graph.tool_catalogue import get_tool
+from graph.write_policy import write_allowed
 from tools.data import evidence_cache
+
+log = logging.getLogger(__name__)
 
 
 _INDEX_COL_FALLBACK = "index"  # pandas' own default name for reset_index() on an unnamed index
@@ -80,6 +84,21 @@ def _evidence_id(tool_name: str, entity: str, evidence_type: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def _blocked_evidence(task: Task, evidence_type: str, reason: str) -> Evidence:
+    action = task["tool"].split("_", 1)[1] if task["tool"].startswith("alert_") else "save"
+    return {
+        "id": _evidence_id(task["tool"], task["entity"], evidence_type),
+        "source": task["tool"],
+        "tool": task["tool"],
+        "entity": task["entity"],
+        "evidence_type": evidence_type,
+        "payload": {"action": action, "symbol": task["entity"], "result": "blocked", "reason": reason},
+        "timestamp": datetime.now(timezone.utc),
+        "confidence": 1.0,
+        "citation_key": evidence_type,
+    }
+
+
 def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
     """
     Runs one Task: cache check, fall back to the bound tool on a miss, always
@@ -88,6 +107,16 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
     for marking the Task failed, RFC Sec11) rather than being swallowed here.
     """
     spec = get_tool(task["tool"])
+    if spec.side_effect:
+        # SEC-03 last line of defence: even if a write task got planned, it
+        # only runs when the turn's intent owns it and the user's own message
+        # explicitly asked for it.
+        ok, reason = write_allowed(
+            task["tool"], context.get("_intent"), context.get("_secondary_intents"), context.get("_query")
+        )
+        if not ok:
+            log.warning(f"[execute_task] blocked write tool {task['tool']}: {reason}")
+            return _blocked_evidence(task, spec.evidence_type, reason)
     # DATA-01: write tools and user-scoped reads bypass the shared cache
     # entirely; cacheable tools key on every input that changes their output.
     key_parts = spec.cache_key(task["entity"], context) if (spec.cacheable and spec.cache_key) else {}

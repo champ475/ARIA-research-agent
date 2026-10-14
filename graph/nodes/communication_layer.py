@@ -62,6 +62,7 @@ from agents.llm_client import LLMClient
 from config import TOKENS_SYNTHESIS
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
+from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
 from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
@@ -91,6 +92,7 @@ _SYSTEM = (
     "one to a value that has none. Do not introduce any number that isn't in "
     "the conclusions list. If the conclusions don't fully cover the "
     "objective, say so plainly rather than filling the gap."
+    + UNTRUSTED_NOTICE
 )
 
 
@@ -105,11 +107,10 @@ def _render_history(history: list[dict]) -> str:
     used to behave."""
     if not history:
         return ""
-    lines = ["Recent conversation (oldest first):"]
+    lines = []
     for msg in history[-_HISTORY_TURNS_IN_PROMPT:]:
         lines.append(f"{msg.get('role', 'user')}: {msg.get('content', '')[:500]}")
-    lines.append("")
-    return "\n".join(lines)
+    return "Recent conversation (oldest first):\n" + wrap_untrusted("history", "\n".join(lines)) + "\n"
 
 
 def _build_prompt(objective: str, conclusions: list[Conclusion], history: list[dict]) -> str:
