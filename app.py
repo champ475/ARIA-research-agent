@@ -6,6 +6,7 @@ Gradio 6 compatible. show_api=False fixes the proxy/launch error.
 import os
 import time
 import logging
+import threading
 import gradio as gr
 from utils.logging_setup import configure_logging, run_in_turn
 
@@ -42,12 +43,40 @@ LOADING_HTML = (
 # specialist agent classes were retired once the graph reached feature parity
 # across all 6 domains — see ARCHITECTURE.md).
 _orchestrators = {}
+_orchestrators_lock = threading.Lock()
 
 def get_orchestrator(user_id: int):
-    if user_id not in _orchestrators:
-        from agents.graph_orchestrator import GraphOrchestrator
-        _orchestrators[user_id] = GraphOrchestrator(user_id)
-    return _orchestrators[user_id]
+    # Concurrent turns (REL-01) mean two threads can race to build the same
+    # user's orchestrator; the lock keeps it to exactly one instance.
+    with _orchestrators_lock:
+        if user_id not in _orchestrators:
+            from agents.graph_orchestrator import GraphOrchestrator
+            _orchestrators[user_id] = GraphOrchestrator(user_id)
+        return _orchestrators[user_id]
+
+
+# ── Concurrency (REL-01) ──────────────────────────────────────────────────────
+# Gradio defaults every event to concurrency_limit=1, so one user's 30-second
+# report used to queue every other user's message behind it. Chat turns now
+# share a pool of CHAT_CONCURRENCY workers (concurrency_id="chat"); each user
+# still gets at most ONE turn in flight, because their GraphOrchestrator (and
+# its conversation memory) is per-user state that isn't safe to drive from two
+# threads at once — a second tab's message gets a "still working" reply.
+CHAT_CONCURRENCY = int(os.getenv("CHAT_CONCURRENCY", "8"))
+QUEUE_MAX_SIZE = int(os.getenv("QUEUE_MAX_SIZE", "100"))
+WATCHLIST_CONCURRENCY = 4
+
+_user_turn_locks: dict[int, threading.Lock] = {}
+_user_turn_locks_guard = threading.Lock()
+
+
+def _user_turn_lock(user_id) -> threading.Lock:
+    with _user_turn_locks_guard:
+        return _user_turn_locks.setdefault(user_id, threading.Lock())
+
+
+def _queue_kwargs() -> dict:
+    return {"default_concurrency_limit": CHAT_CONCURRENCY, "max_size": QUEUE_MAX_SIZE}
 
 
 # ── Timeframe keyword map (appended to message when non-default, equity only) ─
@@ -238,6 +267,37 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     btn_updates  = _make_btn_updates(new_sugg)
     log.info(f"[respond] turn end ms={int((time.monotonic() - started) * 1000)}")
     yield (_INPUT_READY, _SEND_READY, updated_history, chart_update, new_sugg, pdf_update, md_update, csv_update) + btn_updates
+
+
+def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
+    """respond(), but at most one turn per user at a time (REL-01), with every
+    log line of the turn tagged by run_in_turn (OBS-01)."""
+    lock = _user_turn_lock(user_id)
+    if not lock.acquire(blocking=False):
+        log.info("[respond] rejected: user already has a turn in flight")
+        yield _busy_outputs(message, history, suggestions)
+        return
+    try:
+        # run_in_turn keeps one turn_id on every log line of this turn, across
+        # yields (Gradio resumes each generator step in a fresh context).
+        yield from run_in_turn(respond(user_id, message, history, suggestions, session_id, tf), user_id, session_id)
+    finally:
+        lock.release()
+
+
+def _busy_outputs(message, history: list, suggestions: list) -> tuple:
+    """Reply for a second message from a user whose previous turn is still
+    running (e.g. from another browser tab). Keeps their text in the box."""
+    no_file = gr.update(value=None, visible=False)
+    busy_hist = (history or []) + [
+        {"role": "user", "content": (message or "")[:200]},
+        {"role": "assistant", "content": "⏳ Still working on your previous question — "
+                                         "send this again once that answer arrives."},
+    ]
+    keep_text = gr.update(value=message or "", interactive=True)
+    return (keep_text, _SEND_READY, busy_hist, gr.update(), suggestions, no_file, no_file, no_file) + tuple(
+        gr.update() for _ in range(4)
+    )
 
 
 def _persist_turn(user_id: int, session_id: int, user_msg: str, assistant_msg: str, is_first: bool):
@@ -701,10 +761,7 @@ def _build_chat_tab(user_state: gr.State):
             # ARCHITECTURE.md: the sidebar's @gr.render previously missed a
             # brand-new session for the rest of that browser session).
             refresh += 1
-        # run_in_turn keeps one turn_id on every log line of this turn, across
-        # yields (Gradio resumes each generator step in a fresh context).
-        turn = run_in_turn(respond(user_id, msg, hist, sugg, session_id, tf), user_id, session_id)
-        for i, out in enumerate(turn):
+        for i, out in enumerate(respond_exclusive(user_id, msg, hist, sugg, session_id, tf)):
             yield out + (session_id, refresh if i == 0 else refresh + 1)
 
     def _clear(user_id):
@@ -719,8 +776,13 @@ def _build_chat_tab(user_state: gr.State):
     # app most needs to look composed. respond()'s own LOADING_HTML
     # (bouncing dots, prefixed to the assistant bubble) is the one loading
     # indicator meant to be visible; this stops Gradio's from fighting it.
-    msg_box.submit(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio], outputs, show_progress="hidden")
-    send_btn.click(_respond,  [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio], outputs, show_progress="hidden")
+    chat_inputs = [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio]
+    # Both triggers share one "chat" worker pool (REL-01): the limit is on
+    # concurrent chat turns server-wide, not per button.
+    msg_box.submit(_respond, chat_inputs, outputs, show_progress="hidden",
+                   concurrency_id="chat", concurrency_limit=CHAT_CONCURRENCY)
+    send_btn.click(_respond, chat_inputs, outputs, show_progress="hidden",
+                   concurrency_id="chat", concurrency_limit=CHAT_CONCURRENCY)
     clear_btn.click(
         _clear, [user_state],
         [chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn] + sug_btns + [session_state],
@@ -856,7 +918,8 @@ def _build_watchlist_tab(user_state: gr.State):
 
     add_btn.click(_add,          inputs=[user_state, add_box, wl_refresh],  outputs=[wl_refresh, status])
     rem_btn.click(_remove,       inputs=[user_state, rem_box, wl_refresh],  outputs=[wl_refresh, status])
-    ref_btn.click(_refresh_click, inputs=[user_state, wl_refresh],          outputs=[wl_refresh, status])
+    ref_btn.click(_refresh_click, inputs=[user_state, wl_refresh],          outputs=[wl_refresh, status],
+                  concurrency_limit=WATCHLIST_CONCURRENCY)  # one yfinance call per symbol; keep it bounded
     add_box.submit(_add,         inputs=[user_state, add_box, wl_refresh], outputs=[wl_refresh, status])
 
     return status
@@ -1178,6 +1241,7 @@ def build_ui() -> gr.Blocks:
             [chat_chatbot, chat_chart, chat_sugg_state, chat_session],
         )
 
+    demo.queue(**_queue_kwargs())
     return demo
 
 

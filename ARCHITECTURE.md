@@ -16,6 +16,37 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Concurrency model: N concurrent chat turns server-wide, one per user
+
+**Problem.** Gradio's default concurrency limit of 1 per event serialised all
+users behind whichever turn was running (reports take 30 s+). Raising it
+exposes two shared-state hazards: the per-user `GraphOrchestrator` (memory,
+pending HITL state) isn't safe to drive from two threads, and psycopg2's
+`ThreadedConnectionPool` raises instead of waiting when exhausted.
+
+**Alternatives considered.** Async handlers end to end (the graph, LLM SDKs and
+yfinance are synchronous; a big rewrite for this phase); one process per user
+or a job queue with workers (right for scale, REL-05/OPS-02 territory);
+per-user queuing that waits instead of rejecting (hides a stuck turn and ties
+up a worker slot doing nothing).
+
+**Final decision.** Gradio queue with a shared "chat" concurrency pool sized by
+`CHAT_CONCURRENCY` (default 8). A per-user lock allows one in-flight turn per
+user; a second message is answered immediately with a "still working" reply.
+The DB pool is sized by `DB_POOL_MAX` and fronted by a semaphore so callers
+wait up to a timeout for a connection.
+
+**Trade-offs.** Threads, not processes: CPU-heavy work (PDF render, indicator
+maths) still contends for the GIL, and the in-memory orchestrator cache keeps
+the app single-replica. Rate-limit backoff in `LLMClient._call` still uses
+`time.sleep`, holding a worker slot while it waits (REL-02). The PRD's
+load-test acceptance (p95 TTFT ≤ 1.5× single-user) has a script but has not
+been run against a staging deployment yet.
+
+**Future improvements.** Deadline-aware retries (REL-02); move orchestrator
+state out of process (OPS-02) so the app can run multiple replicas; run
+`scripts/load_test.py` in a staging pipeline (TEST-06).
+
 ## 2026-10-14 — BYO LLM egress policy: public https only, checked at save, load and every request
 
 **Problem.** The bring-your-own-key feature lets a user choose the URL the

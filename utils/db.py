@@ -6,6 +6,8 @@ Creates the DB and all tables on first run.
 """
 
 import json
+import os
+import threading
 import logging
 import psycopg2
 from psycopg2 import pool
@@ -16,21 +18,41 @@ log = logging.getLogger(__name__)
 
 _pool: "pool.ThreadedConnectionPool | None" = None
 
+# REL-01: psycopg2's ThreadedConnectionPool *raises* PoolError once maxconn
+# connections are checked out, instead of waiting. With concurrent chat turns
+# each fanning tools out in parallel, that turned a busy moment into failed
+# turns. A semaphore sized to the pool makes callers wait (up to
+# DB_POOL_ACQUIRE_TIMEOUT seconds) for a free connection instead.
+DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "20"))
+DB_POOL_ACQUIRE_TIMEOUT = float(os.getenv("DB_POOL_ACQUIRE_TIMEOUT", "10"))
+_pool_slots = threading.BoundedSemaphore(DB_POOL_MAX)
+
+
+class PoolTimeout(psycopg2.OperationalError):
+    """No pooled connection became free within DB_POOL_ACQUIRE_TIMEOUT."""
+
 
 def _get_pool() -> "pool.ThreadedConnectionPool":
     global _pool
     if _pool is None:
         _pool = pool.ThreadedConnectionPool(
-            minconn=1, maxconn=10, dsn=DATABASE_URL, cursor_factory=RealDictCursor
+            minconn=1, maxconn=DB_POOL_MAX, dsn=DATABASE_URL, cursor_factory=RealDictCursor
         )
     return _pool
 
 
 def get_conn():
-    """Returns a pooled connection. Caller MUST release it via release_conn()
-    (not conn.close(), which would just drop the socket instead of returning
-    it to the pool)."""
-    return _get_pool().getconn()
+    """Returns a pooled connection, waiting for a free one if the pool is
+    fully checked out. Caller MUST release it via release_conn() (not
+    conn.close(), which would just drop the socket instead of returning it to
+    the pool, and would leak a pool slot)."""
+    if not _pool_slots.acquire(timeout=DB_POOL_ACQUIRE_TIMEOUT):
+        raise PoolTimeout(f"no database connection free within {DB_POOL_ACQUIRE_TIMEOUT:.0f}s")
+    try:
+        return _get_pool().getconn()
+    except BaseException:
+        _pool_slots.release()
+        raise
 
 
 def release_conn(conn, discard: bool = False):
@@ -56,8 +78,11 @@ def release_conn(conn, discard: bool = False):
         if not conn.closed:
             conn.rollback()
     finally:
-        if not discard:
-            _get_pool().putconn(conn)
+        try:
+            if not discard:
+                _get_pool().putconn(conn)
+        finally:
+            _pool_slots.release()
 
 
 def _query(sql: str, params: tuple = (), fetch: str | None = "all", commit: bool = False):
