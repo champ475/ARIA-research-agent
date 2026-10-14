@@ -46,16 +46,19 @@ def pg_url():
 
 @pytest.fixture(scope="session")
 def pg_db(pg_url):
-    """utils.db pointed at the test database, schema created."""
+    """utils.db pointed at the test database, schema migrated to head the
+    same way a deploy does it (ARCH-01: scripts/migrate.py)."""
     import config
     import utils.db as db
+    from utils import migrations
 
     mp = pytest.MonkeyPatch()
     mp.setattr(config, "DATABASE_URL", pg_url)
     mp.setattr(db, "DATABASE_URL", pg_url)
     saved_pool = db._pool
     db._pool = None
-    db.init_db()
+    migrations.upgrade(pg_url)
+    migrations.setup_checkpointer_tables(pg_url)
     yield db
     if db._pool is not None:
         db._pool.closeall()
@@ -67,7 +70,8 @@ def pg_db(pg_url):
 def db(pg_db):
     """Empty tables for every test."""
     tables = pg_db._query(
-        "SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename NOT LIKE 'checkpoint%%'"
+        "SELECT tablename FROM pg_tables WHERE schemaname='public' "
+        "AND tablename NOT LIKE 'checkpoint%%' AND tablename <> 'alembic_version'"
     )
     names = ", ".join(f'"{t["tablename"]}"' for t in tables)
     if names:

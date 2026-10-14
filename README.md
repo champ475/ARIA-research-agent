@@ -38,11 +38,14 @@ cp .env.example .env
 
 **Free trial vs. bring your own key:** every signup gets 5 free messages/day on your Groq/Gemini keys above. Beyond that (or from message one, if you skip those keys), each user pastes their own key under the **⚙️ Settings** tab in-app — any OpenAI-compatible provider works (OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...), so you're never on the hook for a stranger's usage.
 
-**3. Run it**
+**3. Create the database schema, then run it**
 
 ```bash
+python scripts/migrate.py   # applies migrations; safe to re-run, needed after every update
 python app.py
 ```
+
+The app checks the schema version at startup and refuses to start (with this instruction) if migrations haven't been applied.
 
 Open **http://localhost:7860**, sign up with an email and password, and start chatting.
 

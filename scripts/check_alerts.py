@@ -52,7 +52,6 @@ from config import DATABASE_URL, TELEGRAM_BOT_TOKEN
 from tools.analysis.technical import compute_all
 from tools.data.fetcher import get_info, get_ohlcv
 from tools.data.nse_scraper import get_bulk_deals
-from utils.db import ALERT_DELIVERY_SCHEMA_SQL
 from utils.helpers import IST
 from utils.logging_setup import configure_logging
 
@@ -328,15 +327,8 @@ def deliver(cur, alert: dict, msg: str) -> str:
     return "retry"
 
 
-def ensure_alert_delivery_schema(conn) -> None:
-    cur = conn.cursor()
-    cur.execute(ALERT_DELIVERY_SCHEMA_SQL)
-    conn.commit()
-
-
 def run_once(conn) -> dict[str, int]:
     """Evaluate every active alert once. Returns outcome counts."""
-    ensure_alert_delivery_schema(conn)
     cur = conn.cursor()
     # JOIN pulls each alert owner's linked Telegram chat_id in the same
     # query — every alert notifies ITS OWNER's own chat, not a single
@@ -380,17 +372,28 @@ def run_once(conn) -> dict[str, int]:
     return counts
 
 
-def main():
+def main() -> int:
     if not market_is_open():
         log.info("Market closed — skipping.")
-        return
+        return 0
+    from utils.migrations import SchemaOutOfDate, check_schema
+
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     try:
+        # ARCH-01: this job only reads/writes rows. The schema is migrated by
+        # the app's release step; if that hasn't happened yet, stop loudly
+        # rather than half-work against an old schema.
+        try:
+            check_schema(conn, require_checkpointer=False)
+        except SchemaOutOfDate as e:
+            log.error(f"Alert check aborted: {e}")
+            return 1
         run_once(conn)
     finally:
         conn.close()
+    return 0
 
 
 if __name__ == "__main__":
     configure_logging()
-    main()
+    sys.exit(main())

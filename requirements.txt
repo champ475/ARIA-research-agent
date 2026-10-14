@@ -44,6 +44,7 @@ vaderSentiment>=3.3.2
 
 # ── Database ──────────────────────────────────────────────────────────────────
 psycopg2-binary>=2.9.9
+alembic>=1.13.0                  # versioned schema migrations (ARCH-01); pulls in SQLAlchemy
 
 # ── Utils ─────────────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0

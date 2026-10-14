@@ -17,7 +17,7 @@ configure_logging()
 
 from config import MAX_CHAT_CHARS
 from utils.auth import AuthError, login, signup
-from utils.db import init_db
+from utils.db import ensure_schema
 from utils.helpers import IST as IST_TZ
 from utils.helpers import now_ist
 from utils.input_guard import CleanMessage, InputRejected, clean_message
@@ -26,8 +26,8 @@ from utils.url_safety import UnsafeURLError
 
 log = logging.getLogger(__name__)
 
-# ── Init DB on startup ────────────────────────────────────────────────────────
-init_db()
+# ── Schema check on startup (migrations run as a release step, ARCH-01) ───────
+ensure_schema()
 
 # ── Start the Telegram /start-code listener (no-ops if no bot token set) ──────
 start_polling_thread()

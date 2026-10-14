@@ -16,6 +16,70 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Schema changes are Alembic migrations run as a release step (ARCH-01)
+
+**Problem.** `utils/db.py::init_db()` ran about 30 `CREATE ... IF NOT EXISTS` /
+`ALTER ... ADD COLUMN IF NOT EXISTS` statements on every app boot, and
+`scripts/check_alerts.py` ran its own DDL on every cron tick.
+- No record of which schema version a database is on.
+- No way to roll back.
+- No safe path for type changes, constraints or foreign-key changes. Phase 1
+  needs these: the VAL-04 unique index, DATA-04 tables, the OBS-02 turns
+  table.
+- Every replica raced to run DDL at startup.
+
+**Alternatives considered.**
+- *Keep idempotent DDL in `init_db`.* Rejected: it can't express reversible
+  or data-moving changes and has no version record.
+- *yoyo or plain numbered SQL files with a home-made runner.* Rejected:
+  Alembic is the standard and adds only a light SQLAlchemy dependency. We
+  use it with raw SQL (`op.execute`), not models.
+- *`alembic stamp` production at the baseline.* Rejected: it needs a manual,
+  error-prone step on the production DB. Instead the baseline is written
+  idempotently (`IF NOT EXISTS`), so production simply runs `upgrade head`.
+
+**Final decision.**
+- **Revisions.** `migrations/versions/` holds:
+  - `0001_baseline`: the exact old `init_db` DDL, plus DATA-08's delivery
+    columns and the DATA-01 purge.
+  - `0002_fk_cascade_indexes`: every user-owned FK becomes `ON DELETE
+    CASCADE`, found by catalog lookup rather than an assumed name. Adds
+    indexes on `chat_history(session_id, ts)`, `alerts(user_id)` and
+    `reports(user_id, created_at)`.
+- **Release step.** `scripts/migrate.py` runs `alembic upgrade head`, then
+  creates LangGraph's checkpoint tables (moved out of
+  `get_postgres_checkpointer`). The Dockerfile runs it before `app.py`.
+- **Startup.** `utils/db.py::ensure_schema()` only reads `alembic_version`
+  and the checkpoint table, and refuses to start with "run `python
+  scripts/migrate.py`" when the database is behind.
+  `RUN_MIGRATIONS_ON_START=true` exists for single-instance hosts.
+- **Alert job.** The checker checks the schema and exits 1 if it is behind;
+  it never runs DDL.
+- **Tests.** Integration tests migrate the test database the same way a
+  deploy does. They also prove:
+  - a database built from a frozen copy of the old DDL
+    (`tests/integration/legacy_schema.sql`) upgrades in place and keeps its
+    rows;
+  - cascades work;
+  - the last revision downgrades and re-applies;
+  - a re-run is a no-op.
+
+**Trade-offs.**
+- **Deploy order matters.** Code that needs a new revision fails fast
+  against an un-migrated database, by design.
+- **The alert job depends on the deploy.** The GitHub Actions alert job
+  stops working until production has been migrated. Deploying means running
+  `scripts/migrate.py` against Neon, and that is the operator's step.
+- **The baseline can't be undone safely.** Downgrading it drops everything,
+  so it refuses unless `ALEMBIC_ALLOW_DESTRUCTIVE=1`.
+
+**Future improvements.**
+- Run the migration as a dedicated release job in the TEST-07 pipeline
+  instead of on container start once there are several replicas.
+- Add row-level security policies (SEC-13 backstop) as a revision.
+
+---
+
 ## 2026-10-14 — Inbox-delivered alerts stay pending until read (supersedes part of "Alert delivery contract")
 
 **Problem.** The first DATA-08 implementation (entry below) wrote the inbox

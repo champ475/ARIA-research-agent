@@ -37,8 +37,10 @@ _lock = threading.Lock()
 
 def get_postgres_checkpointer():
     """Lazily creates a singleton PostgresSaver backed by a small psycopg
-    connection pool, running setup() (create checkpoint tables if missing)
-    exactly once. Safe to call repeatedly — returns the same instance."""
+    connection pool. Safe to call repeatedly — returns the same instance.
+    The checkpoint tables are created by the release step
+    (scripts/migrate.py -> utils/migrations.setup_checkpointer_tables), not
+    here: app processes issue no DDL (ARCH-01)."""
     global _checkpointer, _pool
     if _checkpointer is not None:
         return _checkpointer
@@ -53,6 +55,5 @@ def get_postgres_checkpointer():
 
         _pool = ConnectionPool(conninfo=DATABASE_URL, max_size=5, kwargs={"autocommit": True})
         checkpointer = PostgresSaver(_pool, serde=JsonPlusSerializer(pickle_fallback=True))
-        checkpointer.setup()
         _checkpointer = checkpointer
         return _checkpointer
