@@ -16,6 +16,35 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Evidence-cache contract: a tool is cacheable only if its key covers every input
+
+**Problem.** The shared evidence cache keyed every tool on (tool, entity) for all
+users. Tools whose output depends on the user (alerts) or the free-text query
+(screener, top movers) — and tools with side effects — were served from cache,
+so writes were silently skipped and one user's results answered another's.
+
+**Alternatives considered.** Per-user cache partitions (would still skip writes
+and lose the cross-user sharing that makes the cache worth having for
+market data); dropping the cache for all `market`-sentinel tools (simple, but
+throws away legitimate sharing for movers and screens); adding a generic
+`args` hash of the whole context (dependency payloads include DataFrames and
+large blobs, so the key would be expensive and unstable).
+
+**Final decision.** Each `ToolSpec` declares `side_effect`, `cacheable` and an
+optional `cache_key(entity, context)` returning the extra inputs that change
+its output. Write tools and user-scoped reads are `cacheable=False`;
+query-driven tools key on their parsed input. A key version is part of the hash
+so a scheme change orphans old rows, and a catalogue invariant test fails CI if
+a write tool is cacheable or a tool reading `_query`/`_user_id` is cached
+without keying on it.
+
+**Trade-offs.** The invariant test detects context reads by source inspection,
+so a tool that reaches `_query` indirectly through a helper relies on review.
+Old orphaned rows stay in the table until a retention job (DATA-10) clears them.
+
+**Future improvements.** Typed task args (instead of context keys) so cache keys
+derive from declared inputs automatically; a retention sweep for stale rows.
+
 ## 2026-10-14 — Logs are JSON lines with a per-turn correlation id
 
 **Problem.** No logging was configured at all, so library and app warnings

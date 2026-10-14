@@ -243,6 +243,14 @@ def init_db():
             UNIQUE (tool, args_hash)
         );
         CREATE INDEX IF NOT EXISTS idx_evidence_cache_entity ON evidence_cache (entity, evidence_type);
+        -- DATA-01 purge (idempotent): rows that should never have been cached —
+        -- write tools and user-scoped/query-dependent tools written before the
+        -- cache key covered their inputs. Pre-fix rows for every other tool are
+        -- orphaned by the key-version bump in tools/data/evidence_cache.py.
+        DELETE FROM evidence_cache WHERE tool IN (
+            'alert_create', 'alert_cancel', 'alert_pause', 'alert_resume', 'alert_list',
+            'screener_save', 'screener_to_markdown'
+        );
 
         -- Bring-your-own LLM key. One row per user; provider is a free-text
         -- tag ("openai_compatible" today) rather than an enum since new

@@ -88,7 +88,13 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
     for marking the Task failed, RFC Sec11) rather than being swallowed here.
     """
     spec = get_tool(task["tool"])
-    cached = evidence_cache.get(task["tool"], task["entity"], spec.evidence_type)
+    # DATA-01: write tools and user-scoped reads bypass the shared cache
+    # entirely; cacheable tools key on every input that changes their output.
+    key_parts = spec.cache_key(task["entity"], context) if (spec.cacheable and spec.cache_key) else {}
+    cached = (
+        evidence_cache.get(task["tool"], task["entity"], spec.evidence_type, **key_parts)
+        if spec.cacheable else None
+    )
     if cached is not None:
         cacheable_payload = cached["payload"]
         confidence = cached["confidence"]
@@ -96,7 +102,10 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
         raw_payload = spec.fn(task["entity"], context)
         confidence = 1.0
         cacheable_payload = _to_cacheable(raw_payload)
-        evidence_cache.put(task["tool"], task["entity"], spec.evidence_type, cacheable_payload, confidence)
+        if spec.cacheable:
+            evidence_cache.put(
+                task["tool"], task["entity"], spec.evidence_type, cacheable_payload, confidence, **key_parts
+            )
 
     evidence: Evidence = {
         "id": _evidence_id(task["tool"], task["entity"], spec.evidence_type),

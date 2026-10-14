@@ -36,8 +36,10 @@ ARCHITECTURE.md's 2026-07-24 "alert domain" entry for the full writeup):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
@@ -77,6 +79,36 @@ class ToolSpec:
     cost: Literal["low", "medium", "high"]
     fn: Callable[[str, dict[str, Any]], Any]
     description: str
+    # DATA-01: the evidence cache is shared across users, so a tool may only be
+    # cached if (entity + cache_key(...)) captures EVERY input that changes its
+    # output. Side-effecting (write) tools and user-scoped reads are never
+    # cached — a cache hit would skip the write, or serve another user's rows.
+    side_effect: bool = False
+    cacheable: bool = True
+    cache_key: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None
+
+
+def _normalise_text(text: str | None) -> str:
+    """Case/whitespace/Unicode-insensitive form of free text, used as a
+    cache-key part so trivially different phrasings of one query share a key."""
+    return " ".join(unicodedata.normalize("NFKC", text or "").lower().split())
+
+
+def _key_on_query(entity: str, context: dict[str, Any]) -> dict[str, Any]:
+    return {"q": _normalise_text(context.get("_query"))}
+
+
+def _key_on_parsed_filters(entity: str, context: dict[str, Any]) -> dict[str, Any]:
+    blob = json.dumps(context.get("screener_parse_query") or {}, sort_keys=True, default=str)
+    return {"filters": hashlib.sha256(blob.encode("utf-8")).hexdigest()}
+
+
+def _movers_direction(context: dict[str, Any]) -> str:
+    return "losers" if "loser" in (context.get("_query") or "").lower() else "gainers"
+
+
+def _key_on_movers_direction(entity: str, context: dict[str, Any]) -> dict[str, Any]:
+    return {"direction": _movers_direction(context)}
 
 
 def _fetch_info(entity: str, context: dict[str, Any]) -> dict:
@@ -331,8 +363,7 @@ def _screener_save(entity: str, context: dict[str, Any]) -> dict:
 
 
 def _fetch_top_movers(entity: str, context: dict[str, Any]) -> Any:
-    query = (context.get("_query") or "").lower()
-    return get_top_movers("losers" if "loser" in query else "gainers")
+    return get_top_movers(_movers_direction(context))
 
 
 def _fetch_bulk_deals(entity: str, context: dict[str, Any]) -> Any:
@@ -454,6 +485,8 @@ _register(ToolSpec(
     depends_on=(),
     cost="low",
     fn=_alert_create,
+    side_effect=True,
+    cacheable=False,
     description="Create a new price/technical-indicator alert on a ticker from the user's natural-language request (e.g. 'alert me if TCS drops below 3500').",
 ))
 _register(ToolSpec(
@@ -462,6 +495,7 @@ _register(ToolSpec(
     depends_on=(),
     cost="low",
     fn=_alert_list,
+    cacheable=False,  # per-user rows; the entity is just the 'market' sentinel
     description="List all of the calling user's alerts (active, paused, and triggered).",
 ))
 _register(ToolSpec(
@@ -470,6 +504,8 @@ _register(ToolSpec(
     depends_on=("alert_list",),
     cost="low",
     fn=_alert_cancel,
+    side_effect=True,
+    cacheable=False,
     description="Cancel/remove the calling user's alert on a given ticker.",
 ))
 _register(ToolSpec(
@@ -478,6 +514,8 @@ _register(ToolSpec(
     depends_on=("alert_list",),
     cost="low",
     fn=_alert_pause,
+    side_effect=True,
+    cacheable=False,
     description="Pause the calling user's active alert on a given ticker.",
 ))
 _register(ToolSpec(
@@ -486,6 +524,8 @@ _register(ToolSpec(
     depends_on=("alert_list",),
     cost="low",
     fn=_alert_resume,
+    side_effect=True,
+    cacheable=False,
     description="Resume the calling user's paused alert on a given ticker.",
 ))
 _register(ToolSpec(
@@ -494,6 +534,7 @@ _register(ToolSpec(
     depends_on=(),
     cost="low",
     fn=_screener_parse_query,
+    cache_key=_key_on_query,
     description="Parse filter criteria (PE/ROE/sector/etc.) from a natural-language screening request.",
 ))
 _register(ToolSpec(
@@ -502,6 +543,7 @@ _register(ToolSpec(
     depends_on=("screener_parse_query",),
     cost="medium",
     fn=_screener_run,
+    cache_key=_key_on_parsed_filters,
     description="Run a stock screen across the market universe using parsed filter criteria.",
 ))
 _register(ToolSpec(
@@ -510,6 +552,7 @@ _register(ToolSpec(
     depends_on=("screener_run",),
     cost="low",
     fn=_screener_to_markdown,
+    cacheable=False,  # cheap re-render; depends on two upstream payloads
     description="Render the screen's matching stocks as a Markdown table (use alongside screener_run for a readable result).",
 ))
 _register(ToolSpec(
@@ -518,6 +561,8 @@ _register(ToolSpec(
     depends_on=("screener_parse_query",),
     cost="low",
     fn=_screener_save,
+    side_effect=True,
+    cacheable=False,
     description="Save the current screen's filters under a name for reuse.",
 ))
 _register(ToolSpec(
@@ -526,6 +571,7 @@ _register(ToolSpec(
     depends_on=(),
     cost="low",
     fn=_fetch_top_movers,
+    cache_key=_key_on_movers_direction,
     description="Fetch today's top gaining or losing stocks (NSE).",
 ))
 _register(ToolSpec(
