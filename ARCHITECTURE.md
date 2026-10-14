@@ -16,6 +16,55 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Every figure in an answer is checked against what the model was given (LLM-03)
+
+**Problem.** "Never introduce a number not in the conclusions" was only an
+instruction. A hallucinated P/E, target or return reached users looking as
+confident as a real one.
+
+**Alternatives considered.**
+- *An LLM judge per answer.* Rejected: an extra call, non-deterministic, and
+  the judge itself can be fooled.
+- *Check against conclusions only.* Rejected: LLM-02 now gives the model
+  evidence rows and headlines it may legitimately quote.
+
+**Final decision.**
+- **What "grounded" means.** `graph/grounding.py` takes the *prompt the
+  model actually saw* as the source of truth: conclusions, rendered
+  evidence, history and the user's message.
+- **Extraction.** Figures with units are extracted (₹ / % / x / k / lakh /
+  crore / lakh crore). Dates, years, ordinals, citation markers, indicator
+  periods and small bare counts are skipped, unless a metric word precedes
+  them ("P/E of 99").
+- **Matching.** A figure matches when it is exact, within rounding (±0.5%
+  or half the last shown digit), after a unit change (ratio↔%,
+  rupees↔lakh/crore), or a narrow derivation: a difference or % change of
+  two same-scale numbers, or x% of y. Derivations are never rescaled; an
+  early version let a 5.0% move "support" ₹5,000.
+- **Sync answers** are regenerated once with the unsupported list. Anything
+  still unsupported, and anything on the streamed path once the stream
+  ends, gets "⚠️ Unverified figures: …".
+- **Planning** checks rupee amounts and return claims, but not the model
+  portfolio's own allocation percentages.
+- **Recording.** Results go to `turns.grounding` and are logged.
+
+**Trade-offs.**
+- **Heuristic coverage.** Extraction rules can miss an unusually written
+  number, or skip a small figure without a metric word.
+- **Grounded is not correct.** A number copied from history counts as
+  grounded even if that earlier answer was wrong (it would have been
+  flagged then).
+- **Streamed text isn't corrected.** The streamed path only annotates; it
+  can't take back text already shown.
+
+**Future improvements.**
+- Report the ungrounded-number rate on the OBS-03 dashboard (PRD target
+  below 0.5%).
+- Buffer the streamed last sentence.
+- Map each figure to its claim for per-claim citations (UX-07).
+
+---
+
 ## 2026-10-14 — The answer model reads rendered evidence, not just claim strings (LLM-02)
 
 **Problem.** CommunicationLayer passed only each Conclusion's one-line

@@ -74,6 +74,9 @@ from graph.checkpointer import get_postgres_checkpointer
 from graph.deadline import data_gaps_note, new_deadline
 from graph.entity_resolution import entity_notes_text
 from graph.graph import build_graph
+from graph.grounding import check as grounding_check
+from graph.grounding import record as record_grounding
+from graph.grounding import unverified_note
 from graph.guardrails import check_input, finalize
 
 log = logging.getLogger(__name__)
@@ -480,6 +483,12 @@ class GraphOrchestrator:
                     chunks.append(delta)
                     yield "".join(chunks), chart, None, None, None, tab_used
                 text = "".join(chunks)
+                # LLM-03, streamed path: checked once the stream ends; anything
+                # unsupported gets a note in the final text.
+                grounded = grounding_check(text, pending_prompt)
+                record_grounding(grounded)
+                if not grounded.ok:
+                    text += unverified_note(grounded.unsupported)
                 fundamental_payload = result.get("pending_fundamental_payload")
                 if fundamental_payload:
                     text = text + cited_footnotes(text, fundamental_payload)

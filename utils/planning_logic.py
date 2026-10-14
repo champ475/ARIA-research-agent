@@ -242,5 +242,23 @@ goal approaches)
 
 
 def build_strategy(client, profile: dict) -> str:
-    out = client.chat(build_strategy_prompt(profile), temperature=0.4, max_tokens=TOKENS_COMPLEX)
+    """LLM-03: rupee amounts and return/performance figures in the plan must
+    trace to the prompt's data (the allocation percentages are the model
+    portfolio's design, not data claims). One regeneration, then a note."""
+    from graph.grounding import REGENERATE_INSTRUCTION, check, record, unverified_note
+
+    prompt = build_strategy_prompt(profile)
+    out = client.chat(prompt, temperature=0.4, max_tokens=TOKENS_COMPLEX)
+    result = check(out, prompt, mode="planning")
+    if not result.ok:
+        out = client.ask(
+            prompt + REGENERATE_INSTRUCTION.format(figures=", ".join(result.unsupported)),
+            temperature=0.2,
+            max_tokens=TOKENS_COMPLEX,
+        )
+        result = check(out, prompt, mode="planning")
+        result.regenerated = True
+        if not result.ok:
+            out += unverified_note(result.unsupported)
+    record(result)
     return out + sanity_note(profile)

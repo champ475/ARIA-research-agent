@@ -66,6 +66,9 @@ from graph.advice_policy import REFRAME_INSTRUCTION
 from graph.data_questions import NO_LIVE_DATA_INSTRUCTION
 from graph.entity_resolution import blocking_resolutions, clarification_text
 from graph.evidence_render import render_evidence_block
+from graph.grounding import REGENERATE_INSTRUCTION, unverified_note
+from graph.grounding import check as grounding_check
+from graph.grounding import record as record_grounding
 from graph.guardrails import finalize
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
@@ -144,6 +147,26 @@ def _build_prompt(
         # LLM-02: the actual rows, headlines and passages behind the conclusions.
         lines += ["", "Evidence data:", evidence_block]
     return "\n".join(lines)
+
+
+def _grounded_ask(client: LLMClient, prompt: str) -> str:
+    """LLM-03, sync path: every figure in the answer must be traceable to the
+    prompt it was written from. One regeneration with the unsupported list;
+    whatever is still unsupported gets a visible note."""
+    answer = client.ask(prompt, max_tokens=TOKENS_SYNTHESIS)
+    result = grounding_check(answer, prompt)
+    if not result.ok:
+        retry = client.ask(
+            prompt + REGENERATE_INSTRUCTION.format(figures=", ".join(result.unsupported)),
+            max_tokens=TOKENS_SYNTHESIS,
+        )
+        result = grounding_check(retry, prompt)
+        result.regenerated = True
+        answer = retry
+        if not result.ok:
+            answer += unverified_note(result.unsupported)
+    record_grounding(result)
+    return answer
 
 
 def _confidence_summary(conclusions: list[Conclusion]) -> dict:
@@ -403,7 +426,7 @@ def build_communication_layer_node(
                         "CommunicationLayer", "deferred to streaming, no research needed", "complexity=simple"
                     ),
                 }
-            report = client.ask(prompt, max_tokens=TOKENS_SYNTHESIS)
+            report = _grounded_ask(client, prompt)
             return {
                 "final_report": report,
                 "pending_synthesis_prompt": None,
@@ -457,9 +480,8 @@ def build_communication_layer_node(
                 ),
             }
 
-        report = client.ask(
-            _build_prompt(objective, conclusions, history, evidence_block) + advice,
-            max_tokens=TOKENS_SYNTHESIS,
+        report = _grounded_ask(
+            client, _build_prompt(objective, conclusions, history, evidence_block) + advice
         )
         if fundamental_payload:
             report = report + cited_footnotes(report, fundamental_payload)
