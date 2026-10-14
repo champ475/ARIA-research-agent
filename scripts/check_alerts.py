@@ -15,6 +15,18 @@ TELEGRAM_CHAT_ID. The bot token stays a single shared value (one bot serves
 every user's chat, Telegram's API is chat_id-addressed already) — only the
 per-alert destination changed.
 
+Delivery contract (DATA-08): an alert is marked triggered (one-shot alerts
+deactivated, recurring ones start their cooldown) only once its message has
+been delivered somewhere the user will see it:
+- Telegram linked and the send confirmed (HTTP 200 with "ok": true), or
+- written to the user's in-app inbox (the `notifications` table, shown in the
+  Settings tab) — used when the user hasn't linked Telegram, the bot isn't
+  configured, or Telegram has failed ALERT_MAX_DELIVERY_ATTEMPTS runs in a row.
+A transient Telegram failure leaves the alert untouched apart from a
+delivery_attempts counter, so the next run tries again.
+
+Market data is fetched once per symbol per run (RunCache), not once per alert.
+
 Usage: python scripts/check_alerts.py
 Requires env vars: DATABASE_URL, TELEGRAM_BOT_TOKEN.
 """
@@ -23,6 +35,7 @@ import sys
 import os
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any, Callable
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -35,9 +48,15 @@ from utils.helpers import IST
 from tools.data.fetcher import get_info, get_ohlcv
 from tools.analysis.technical import compute_all
 from tools.data.nse_scraper import get_bulk_deals
+from utils.db import ALERT_DELIVERY_SCHEMA_SQL
 from utils.logging_setup import configure_logging
 
 log = logging.getLogger("check_alerts")
+
+ALERT_MAX_DELIVERY_ATTEMPTS = int(os.getenv("ALERT_MAX_DELIVERY_ATTEMPTS", "5"))
+
+# Failures that retrying can't fix — go straight to the in-app inbox.
+_PERMANENT_DELIVERY_ERRORS = {"not_linked", "bot_not_configured"}
 
 
 def market_is_open() -> bool:
@@ -49,31 +68,75 @@ def market_is_open() -> bool:
     return open_t <= now <= close_t
 
 
-def send_telegram(text: str, chat_id: str | None):
+def send_telegram(text: str, chat_id: str | None) -> tuple[bool, str | None]:
+    """Returns (delivered, error_code). Delivered only on HTTP 200 with
+    Telegram's own `"ok": true` — a 200 carrying `"ok": false` is a failure."""
     if not TELEGRAM_BOT_TOKEN:
-        log.warning(f"Telegram bot not configured — skipping notification: {text}")
-        return
+        log.warning("Telegram bot not configured — cannot send notification")
+        return False, "bot_not_configured"
     if not chat_id:
-        log.info(f"Alert owner hasn't linked Telegram — skipping notification: {text}")
-        return
+        return False, "not_linked"
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         # No parse_mode — alert text (symbols, alert_type names) can contain
         # underscores/asterisks that Telegram's Markdown parser rejects as
         # malformed entities (e.g. "price_below" -> 400 Bad Request).
-        r = requests.post(
-            url,
-            json={"chat_id": chat_id, "text": text},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            log.warning(f"Telegram send failed: {r.status_code} {r.text}")
+        r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
     except Exception as e:
         log.warning(f"Telegram send failed: {e}")
+        return False, f"request_failed:{type(e).__name__}"
+    if r.status_code != 200:
+        log.warning(f"Telegram send failed: {r.status_code} {r.text[:200]}")
+        return False, f"http_{r.status_code}"
+    try:
+        ok = r.json().get("ok") is True
+    except ValueError:
+        ok = False
+    if not ok:
+        log.warning(f"Telegram send returned ok=false: {r.text[:200]}")
+        return False, "telegram_not_ok"
+    return True, None
 
 
-def _price_alert(symbol: str, alert_type: str, threshold: float) -> str | None:
-    info = get_info(symbol)
+class RunCache:
+    """Memoises market-data fetches for one checker run, so N alerts on the
+    same symbol cost one fetch. Failures are memoised too (re-raised for every
+    alert that needs that data) so a broken symbol isn't retried N times."""
+
+    def __init__(self) -> None:
+        self._memo: dict[tuple, Any] = {}
+
+    def _get(self, key: tuple, fetch: Callable[[], Any]) -> Any:
+        if key not in self._memo:
+            try:
+                self._memo[key] = (True, fetch())
+            except Exception as e:
+                self._memo[key] = (False, e)
+        ok, value = self._memo[key]
+        if not ok:
+            raise value
+        return value
+
+    def info(self, symbol: str) -> dict:
+        return self._get(("info", symbol), lambda: get_info(symbol))
+
+    def ohlcv(self, symbol: str, period: str, interval: str):
+        return self._get(("ohlcv", symbol, period, interval), lambda: get_ohlcv(symbol, period=period, interval=interval))
+
+    def indicators(self, symbol: str):
+        def build():
+            df = self.ohlcv(symbol, "1y", "1d")
+            if df is None or len(df) < 30:
+                return None
+            return compute_all(df.copy())
+        return self._get(("indicators", symbol), build)
+
+    def bulk_deals(self, symbol: str):
+        return self._get(("bulk", symbol), lambda: get_bulk_deals(symbol))
+
+
+def _price_alert(cache: RunCache, symbol: str, alert_type: str, threshold: float) -> str | None:
+    info = cache.info(symbol)
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     if price is None or threshold is None:
         return None
@@ -84,8 +147,8 @@ def _price_alert(symbol: str, alert_type: str, threshold: float) -> str | None:
     return None
 
 
-def _pct_change_alert(symbol: str, threshold: float) -> str | None:
-    df = get_ohlcv(symbol, period="5d", interval="1d")
+def _pct_change_alert(cache: RunCache, symbol: str, threshold: float) -> str | None:
+    df = cache.ohlcv(symbol, "5d", "1d")
     if df is None or len(df) < 2 or threshold is None:
         return None
     pct = (df["Close"].iloc[-1] - df["Close"].iloc[-2]) / df["Close"].iloc[-2] * 100
@@ -94,12 +157,9 @@ def _pct_change_alert(symbol: str, threshold: float) -> str | None:
     return None
 
 
-def _indicator_alert(symbol: str, alert_type: str, threshold: float | None) -> str | None:
-    df = get_ohlcv(symbol, period="1y", interval="1d")
-    if df is None or len(df) < 30:
-        return None
-    df = compute_all(df)
-    if len(df) < 2:
+def _indicator_alert(cache: RunCache, symbol: str, alert_type: str, threshold: float | None) -> str | None:
+    df = cache.indicators(symbol)
+    if df is None or len(df) < 2:
         return None
     last, prev = df.iloc[-1], df.iloc[-2]
 
@@ -149,14 +209,14 @@ def _indicator_alert(symbol: str, alert_type: str, threshold: float | None) -> s
     return None
 
 
-def _bulk_deal_alert(symbol: str) -> str | None:
-    deals = get_bulk_deals(symbol)
+def _bulk_deal_alert(cache: RunCache, symbol: str) -> str | None:
+    deals = cache.bulk_deals(symbol)
     if deals is not None and not deals.empty:
         return f"🔔 Bulk deal detected for {symbol} today"
     return None
 
 
-def _portfolio_pnl_alert(conn, user_id: int, symbol: str, threshold: float | None) -> str | None:
+def _portfolio_pnl_alert(conn, cache: RunCache, user_id: int, symbol: str, threshold: float | None) -> str | None:
     if threshold is None:
         return None
     cur = conn.cursor()
@@ -164,7 +224,7 @@ def _portfolio_pnl_alert(conn, user_id: int, symbol: str, threshold: float | Non
     rows = cur.fetchall()
     if not rows:
         return None
-    info = get_info(symbol)
+    info = cache.info(symbol)
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     if price is None:
         return None
@@ -197,59 +257,109 @@ def in_cooldown(alert: dict) -> bool:
     return datetime.now(timezone.utc) - triggered_at < timedelta(hours=cooldown)
 
 
-def evaluate(conn, alert: dict) -> str | None:
+def evaluate(conn, alert: dict, cache: RunCache | None = None) -> str | None:
+    cache = cache or RunCache()
     symbol, atype, threshold = alert["symbol"], alert["alert_type"], alert["threshold"]
     if atype in ("price_above", "price_below"):
-        return _price_alert(symbol, atype, threshold)
+        return _price_alert(cache, symbol, atype, threshold)
     if atype == "pct_change":
-        return _pct_change_alert(symbol, threshold)
+        return _pct_change_alert(cache, symbol, threshold)
     if atype in _INDICATOR_TYPES:
-        return _indicator_alert(symbol, atype, threshold)
+        return _indicator_alert(cache, symbol, atype, threshold)
     if atype == "bulk_deal":
-        return _bulk_deal_alert(symbol)
+        return _bulk_deal_alert(cache, symbol)
     if atype == "portfolio_pnl":
-        return _portfolio_pnl_alert(conn, alert["user_id"], symbol, threshold)
+        return _portfolio_pnl_alert(conn, cache, alert["user_id"], symbol, threshold)
     return None
+
+
+def _mark_triggered(cur, alert: dict, channel: str) -> None:
+    deactivate = "" if alert.get("recurring") else "active=FALSE, "
+    cur.execute(
+        f"UPDATE alerts SET {deactivate}triggered_at=now(), delivery_status=%s, "
+        "delivery_attempts=0, last_delivery_error=NULL WHERE id=%s",
+        (channel, alert["id"]),
+    )
+
+
+def deliver(cur, alert: dict, msg: str) -> str:
+    """Deliver one fired alert and record the outcome in the same transaction.
+    Returns "telegram", "in_app" or "retry"."""
+    ok, err = send_telegram(msg, alert.get("telegram_chat_id"))
+    if ok:
+        _mark_triggered(cur, alert, "telegram")
+        return "telegram"
+    attempts = (alert.get("delivery_attempts") or 0) + 1
+    if err in _PERMANENT_DELIVERY_ERRORS or attempts >= ALERT_MAX_DELIVERY_ATTEMPTS:
+        cur.execute(
+            "INSERT INTO notifications (user_id, alert_id, message) VALUES (%s, %s, %s)",
+            (alert["user_id"], alert["id"], msg),
+        )
+        _mark_triggered(cur, alert, "in_app")
+        return "in_app"
+    cur.execute(
+        "UPDATE alerts SET delivery_attempts=%s, last_delivery_error=%s, delivery_status='retrying' WHERE id=%s",
+        (attempts, err, alert["id"]),
+    )
+    return "retry"
+
+
+def ensure_alert_delivery_schema(conn) -> None:
+    cur = conn.cursor()
+    cur.execute(ALERT_DELIVERY_SCHEMA_SQL)
+    conn.commit()
+
+
+def run_once(conn) -> dict[str, int]:
+    """Evaluate every active alert once. Returns outcome counts."""
+    ensure_alert_delivery_schema(conn)
+    cur = conn.cursor()
+    # JOIN pulls each alert owner's linked Telegram chat_id in the same
+    # query — every alert notifies ITS OWNER's own chat, not a single
+    # shared one (see module docstring).
+    cur.execute(
+        "SELECT alerts.*, users.telegram_chat_id FROM alerts "
+        "JOIN users ON alerts.user_id = users.id "
+        "WHERE alerts.active=TRUE ORDER BY alerts.symbol, alerts.id"
+    )
+    alerts = cur.fetchall()
+    log.info(f"Evaluating {len(alerts)} active alert(s).")
+    cache = RunCache()
+    counts = {"fired": 0, "telegram": 0, "in_app": 0, "retry": 0, "errors": 0}
+    for alert in alerts:
+        alert = dict(alert)
+        if in_cooldown(alert):
+            continue
+        try:
+            msg = evaluate(conn, alert, cache)
+        except Exception as e:
+            counts["errors"] += 1
+            log.exception(f"Error evaluating alert {alert['id']} ({alert['symbol']}): {e}")
+            continue
+        if not msg:
+            continue
+        counts["fired"] += 1
+        try:
+            outcome = deliver(cur, alert, msg)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            counts["errors"] += 1
+            log.exception(f"Error recording delivery for alert {alert['id']}: {e}")
+            continue
+        counts[outcome] += 1
+        log.info(f"Fired alert {alert['id']} via {outcome}: {msg}")
+    log.info(f"Run summary: {counts}")
+    return counts
 
 
 def main():
     if not market_is_open():
         log.info("Market closed — skipping.")
         return
-
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     try:
-        cur = conn.cursor()
-        # JOIN pulls each alert owner's linked Telegram chat_id in the same
-        # query — every alert notifies ITS OWNER's own chat, not a single
-        # shared one (see module docstring).
-        cur.execute(
-            "SELECT alerts.*, users.telegram_chat_id FROM alerts "
-            "JOIN users ON alerts.user_id = users.id "
-            "WHERE alerts.active=TRUE ORDER BY alerts.id"
-        )
-        alerts = cur.fetchall()
-        log.info(f"Evaluating {len(alerts)} active alert(s).")
-        for alert in alerts:
-            alert = dict(alert)
-            if in_cooldown(alert):
-                continue
-            try:
-                msg = evaluate(conn, alert)
-            except Exception as e:
-                log.exception(f"Error evaluating alert {alert['id']} ({alert['symbol']}): {e}")
-                continue
-            if msg:
-                send_telegram(msg, alert.get("telegram_chat_id"))
-                if alert.get("recurring"):
-                    cur.execute("UPDATE alerts SET triggered_at=now() WHERE id=%s", (alert["id"],))
-                else:
-                    cur.execute(
-                        "UPDATE alerts SET active=FALSE, triggered_at=now() WHERE id=%s",
-                        (alert["id"],),
-                    )
-                conn.commit()
-                log.info(f"Fired alert {alert['id']}: {msg}")
+        run_once(conn)
     finally:
         conn.close()
 

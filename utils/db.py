@@ -120,6 +120,25 @@ def _query(sql: str, params: tuple = (), fetch: str | None = "all", commit: bool
             raise
 
 
+# DATA-08: alert delivery tracking + the in-app notification inbox. Kept as a
+# standalone constant because scripts/check_alerts.py (a separate GitHub
+# Actions process that never runs init_db) applies it too. Idempotent.
+ALERT_DELIVERY_SCHEMA_SQL = """
+    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS delivery_attempts   INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS last_delivery_error TEXT;
+    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS delivery_status     TEXT;
+    CREATE TABLE IF NOT EXISTS notifications (
+        id          SERIAL PRIMARY KEY,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        alert_id    INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+        message     TEXT NOT NULL,
+        created_at  TIMESTAMPTZ DEFAULT now(),
+        read_at     TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications (user_id) WHERE read_at IS NULL;
+"""
+
+
 def init_db():
     """Create all tables if they don't exist."""
     conn = get_conn()
@@ -310,6 +329,7 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_auth_attempts_key_time ON auth_attempts (key, attempted_at);
         """)
+        cur.execute(ALERT_DELIVERY_SCHEMA_SQL)
         conn.commit()
     finally:
         release_conn(conn)
@@ -549,6 +569,48 @@ def alert_mark_triggered(alert_id: int, recurring: bool = False):
         _query(
             "UPDATE alerts SET active=FALSE, triggered_at=now() WHERE id=%s",
             (alert_id,), fetch=None, commit=True,
+        )
+
+
+# ── In-app notification inbox (DATA-08) ───────────────────────────────────────
+# The fallback delivery channel for alerts: written by scripts/check_alerts.py
+# when Telegram isn't linked or keeps failing, read in the Settings tab.
+
+def notification_add(user_id: int, message: str, alert_id: int | None = None) -> int:
+    row = _query(
+        "INSERT INTO notifications (user_id, alert_id, message) VALUES (%s, %s, %s) RETURNING id",
+        (user_id, alert_id, message), fetch="one", commit=True,
+    )
+    return row["id"]
+
+
+def notifications_list(user_id: int, unread_only: bool = False, limit: int = 50) -> list[dict]:
+    sql = "SELECT id, alert_id, message, created_at, read_at FROM notifications WHERE user_id=%s"
+    if unread_only:
+        sql += " AND read_at IS NULL"
+    sql += " ORDER BY created_at DESC, id DESC LIMIT %s"
+    return _query(sql, (user_id, limit))
+
+
+def notifications_unread_count(user_id: int) -> int:
+    row = _query(
+        "SELECT count(*) AS n FROM notifications WHERE user_id=%s AND read_at IS NULL", (user_id,), fetch="one"
+    )
+    return int(row["n"]) if row else 0
+
+
+def notifications_mark_read(user_id: int, ids: list[int] | None = None) -> None:
+    """Marks the given notifications (or all unread ones) read — only the
+    caller's own rows, whatever ids are passed."""
+    if ids is None:
+        _query(
+            "UPDATE notifications SET read_at=now() WHERE user_id=%s AND read_at IS NULL",
+            (user_id,), fetch=None, commit=True,
+        )
+    elif ids:
+        _query(
+            "UPDATE notifications SET read_at=now() WHERE user_id=%s AND id = ANY(%s) AND read_at IS NULL",
+            (user_id, list(ids)), fetch=None, commit=True,
         )
 
 

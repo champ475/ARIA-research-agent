@@ -16,6 +16,34 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Alert delivery contract: consumed only after delivery, with an in-app inbox fallback
+
+**Problem.** The alert checker marked an alert triggered as soon as its condition
+held, regardless of whether the notification reached anyone. Users without a
+linked Telegram chat, or whose send failed, silently lost one-shot alerts, and
+recurring alerts went quiet for their cooldown.
+
+**Alternatives considered.** Keep firing the alert every run until Telegram
+succeeds (spams once it recovers and never helps unlinked users); require
+Telegram linking before an alert can be created (blocks a common first-use
+flow); a full outbox/worker with exponential backoff (right at scale, more
+infrastructure than one cron script needs today).
+
+**Final decision.** Triggering is tied to delivery in one transaction. Telegram
+counts only on a confirmed `ok: true`; transient failures are counted on the
+alert and retried next run; permanent failures (not linked, no bot) and
+repeated failures go to an in-app `notifications` inbox shown in Settings.
+Market data is memoised per run, and the workflow can't overlap itself.
+
+**Trade-offs.** A retried alert is re-evaluated, so if the condition stops
+holding before Telegram recovers, nothing is sent (the alert stays active,
+which is the honest outcome). The inbox is only visible inside the app, and
+there's no email channel. Schema changes are still applied with idempotent
+`ALTER TABLE` statements, not migrations.
+
+**Future improvements.** Alembic migrations (ARCH-01); an email channel and an
+Alerts tab with the inbox (UX-06); a delivery-failure metric and alert (OBS-03/04).
+
 ## 2026-10-14 — Concurrency model: N concurrent chat turns server-wide, one per user
 
 **Problem.** Gradio's default concurrency limit of 1 per event serialised all
