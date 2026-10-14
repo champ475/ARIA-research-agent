@@ -67,6 +67,17 @@ Postgres (Neon), via `psycopg2.pool.ThreadedConnectionPool`. Tables: `users`, `s
 ### Ticker Resolution (VAL-02: `tools/data/instruments.py`, `graph/entity_resolution.py`)
 Every company mention resolves against the vendored NSE/BSE instrument master (`data/instruments/`, refresh with `scripts/refresh_instruments.py`) to found / ambiguous / not_found — never trust a guessed or LLM-produced ticker. Aliases (`"SBI"` → `"SBIN"`) live in `utils/helpers.py::TICKER_ALIASES`; renamed symbols in `instruments.RENAMED`. `config.STOCK_UNIVERSE` and alias targets must be listed symbols (a test enforces it). All tickers must be suffixed with `.NS` for NSE or `.BO` for BSE when passed to yfinance.
 
+## Roadmap
+
+Work follows the production-readiness PRD, which is a living Claude Doc:
+https://claude.ai/code/artifact/9bae50e1-07a3-44c1-a152-133336d4b915.
+
+- An offline snapshot is at `docs/PRD_PRODUCTION_READINESS.md`. Re-export it from the doc if the doc has changed.
+- The PRD's "Roadmap and release gates" section lists the items for each phase, by ID (SEC-, VAL-, LLM-, DATA-, REL-, TEST-, OBS-, ARCH-, UX-, COMP-, OPS-).
+- Phases 0 and 1 are done (PR #1, PR #2). Phase 2 is next.
+- Tasks only the repo owner can do (keys, migrations on production, GitHub settings, sign-offs) are in `C:\Users\arnav\Desktop\Arnav\PROJECTS\TODO_ARIA.md`, which lives outside the repo.
+- `docs/PRD.md` is the older July product PRD and is not the current plan.
+
 ## Production-readiness contracts (Phase 0, see ARCHITECTURE.md)
 
 - **Logging**: use `logging.getLogger(__name__)`, never `print()` in app code (ruff T20 + a test enforce it). `utils/logging_setup.py` emits JSON with a per-turn `turn_id`; chat turns run inside `run_in_turn`.
