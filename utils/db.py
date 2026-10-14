@@ -307,21 +307,27 @@ def report_list(user_id: int, limit: int = 20) -> list[dict]:
 # ── PDF cache helpers ─────────────────────────────────────────────────────────
 
 
-def pdf_cache_get(symbol: str, doc_type: str, period: str = None) -> str | None:
+# "No period" is stored as '' (migration 0003): a NULL period made the unique
+# key never match, so every refetch inserted a duplicate row.
+
+
+def pdf_cache_get(symbol: str, doc_type: str, period: str | None = None) -> str | None:
+    """The cached text for exactly this period, else the period-less entry."""
     row = _query(
-        "SELECT text_content FROM pdf_cache WHERE symbol=%s AND doc_type=%s AND (period=%s OR period IS NULL) LIMIT 1",
-        (symbol.upper(), doc_type, period),
+        "SELECT text_content FROM pdf_cache WHERE symbol=%s AND doc_type=%s AND period IN (%s, '') "
+        "ORDER BY (period = %s) DESC, fetched_at DESC LIMIT 1",
+        (symbol.upper(), doc_type, period or "", period or ""),
         fetch="one",
     )
     return row["text_content"] if row else None
 
 
-def pdf_cache_set(symbol: str, doc_type: str, text: str, period: str = None, url: str = None):
+def pdf_cache_set(symbol: str, doc_type: str, text: str, period: str | None = None, url: str | None = None):
     _query(
         "INSERT INTO pdf_cache (symbol, doc_type, period, url, text_content) VALUES (%s,%s,%s,%s,%s) "
         "ON CONFLICT (symbol, doc_type, period) DO UPDATE SET "
         "url=EXCLUDED.url, text_content=EXCLUDED.text_content, fetched_at=now()",
-        (symbol.upper(), doc_type, period, url, text),
+        (symbol.upper(), doc_type, period or "", url, text),
         fetch=None,
         commit=True,
     )
@@ -415,26 +421,6 @@ def alert_resume(user_id: int, alert_id: int):
         fetch=None,
         commit=True,
     )
-
-
-def alert_mark_triggered(alert_id: int, recurring: bool = False):
-    """Called only by scripts/check_alerts.py. One-shot alerts deactivate on
-    fire; recurring alerts stay active — check_alerts.py's cooldown_hours
-    check prevents them from re-firing on every 5-min cron tick."""
-    if recurring:
-        _query(
-            "UPDATE alerts SET triggered_at=now() WHERE id=%s",
-            (alert_id,),
-            fetch=None,
-            commit=True,
-        )
-    else:
-        _query(
-            "UPDATE alerts SET active=FALSE, triggered_at=now() WHERE id=%s",
-            (alert_id,),
-            fetch=None,
-            commit=True,
-        )
 
 
 # ── In-app notification inbox (DATA-08) ───────────────────────────────────────
@@ -598,33 +584,26 @@ def trial_quota_check_and_increment(user_id: int, daily_limit: int, today: "date
     every caller uses the same clock read). Returns True if this message is
     allowed. Resets the counter the first time a new day is seen — no
     separate cron/cleanup job needed, the reset just happens lazily on next
-    use, same pattern as the alert cooldown check in scripts/check_alerts.py."""
+    use, same pattern as the alert cooldown check in scripts/check_alerts.py.
+
+    One conditional UPDATE, so the check and the increment can't interleave:
+    the old read-then-write let concurrent messages (two tabs, two replicas)
+    all see "under the limit" and all get through (SEC-12)."""
+    if daily_limit <= 0:
+        return False
     row = _query(
-        "SELECT free_msgs_used_today, free_msgs_reset_at FROM users WHERE id=%s",
-        (user_id,),
+        "UPDATE users SET "
+        "  free_msgs_used_today = CASE WHEN free_msgs_reset_at IS DISTINCT FROM %(today)s "
+        "                              THEN 1 ELSE free_msgs_used_today + 1 END, "
+        "  free_msgs_reset_at = %(today)s "
+        "WHERE id = %(uid)s "
+        "  AND (free_msgs_reset_at IS DISTINCT FROM %(today)s OR free_msgs_used_today < %(limit)s) "
+        "RETURNING free_msgs_used_today",
+        {"today": today, "uid": user_id, "limit": daily_limit},
         fetch="one",
-    )
-    if row is None:
-        return False
-    used = row["free_msgs_used_today"]
-    reset_at = row["free_msgs_reset_at"]
-    if reset_at != today:
-        used = 0
-    if used >= daily_limit:
-        _query(
-            "UPDATE users SET free_msgs_used_today=%s, free_msgs_reset_at=%s WHERE id=%s",
-            (used, today, user_id),
-            fetch=None,
-            commit=True,
-        )
-        return False
-    _query(
-        "UPDATE users SET free_msgs_used_today=%s, free_msgs_reset_at=%s WHERE id=%s",
-        (used + 1, today, user_id),
-        fetch=None,
         commit=True,
     )
-    return True
+    return row is not None
 
 
 # ── Telegram linking helpers (utils/telegram_link.py) ─────────────────────────
@@ -642,13 +621,14 @@ def telegram_link_code_create(user_id: int, code: str, expires_at) -> None:
 def telegram_link_code_resolve(code: str):
     """Returns the owning user_id if `code` exists and hasn't expired, else
     None. Deletes the code either way (single-use) so a stale/guessed code
-    can't be retried."""
+    can't be retried. DELETE ... RETURNING claims it atomically — the old
+    SELECT-then-DELETE let two concurrent /start messages both link."""
     row = _query(
-        "SELECT user_id, expires_at FROM telegram_link_codes WHERE code=%s",
+        "DELETE FROM telegram_link_codes WHERE code=%s RETURNING user_id, expires_at",
         (code,),
         fetch="one",
+        commit=True,
     )
-    _query("DELETE FROM telegram_link_codes WHERE code=%s", (code,), fetch=None, commit=True)
     if row is None:
         return None
     from datetime import datetime

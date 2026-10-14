@@ -83,9 +83,18 @@ def test_legacy_database_upgrades_in_place_keeping_data(scratch_db):
         "INSERT INTO chat_history (user_id, session_id, tab, role, content) VALUES (%s, %s, 'chat', 'user', 'hi')",
         (uid, sid),
     )
+    # The pre-0003 bug: NULL periods never conflicted, so refetches piled up.
+    for text in ("old", "newer"):
+        cur.execute(
+            "INSERT INTO pdf_cache (symbol, doc_type, period, text_content) VALUES ('TCS', 'annual_report', NULL, %s)",
+            (text,),
+        )
     assert migrations.current_revision(conn) is None  # pre-Alembic, like production
 
     migrations.upgrade(scratch_db)
+
+    cur.execute("SELECT period, text_content FROM pdf_cache WHERE symbol='TCS'")
+    assert cur.fetchall() == [{"period": "", "text_content": "newer"}]
 
     assert migrations.current_revision(conn) == migrations.head_revision()
     cur.execute("SELECT count(*) AS n FROM alerts WHERE user_id=%s", (uid,))
