@@ -1,3 +1,4 @@
+import contextlib
 from unittest.mock import MagicMock, patch
 
 from agents.graph_orchestrator import GraphOrchestrator
@@ -354,3 +355,39 @@ class TestTurnDeadline:
         text = list(orch.process_stream("TCS price and news"))[-1][0]
         assert text.startswith("TCS trades at 4000.")
         assert "news for TCS (timed out)" in text
+
+
+class TestTurnRecords:
+    """OBS-02: every process_stream call writes exactly one turns row, with a
+    status that says how the turn ended."""
+
+    def _statuses(self, fake_graph, messages, quota_exceeded=False):
+        orch = _build_orchestrator(fake_graph)
+        if quota_exceeded:
+            orch._trial_quota_exceeded = lambda: True
+        with patch("utils.db.turn_record") as row:
+            for m in messages:
+                with contextlib.suppress(RuntimeError):
+                    list(orch.process_stream(m))
+        return [c.kwargs["status"] for c in row.call_args_list]
+
+    def test_ok_and_partial(self):
+        g = MagicMock()
+        g.invoke.side_effect = [
+            {"final_report": "fine", "intent": "equity", "tasks": [{"tool": "fetch_info", "status": "done"}]},
+            {"final_report": "half", "tasks": [{"tool": "fetch_news", "entity": "TCS", "status": "failed"}]},
+        ]
+        assert self._statuses(g, ["a", "b"]) == ["ok", "partial"]
+
+    def test_gated_then_resumed(self):
+        g = MagicMock()
+        interrupt = MagicMock()
+        interrupt.value = {"message": "Proceed?"}
+        g.invoke.side_effect = [{"__interrupt__": [interrupt]}, {"final_report": "done"}]
+        assert self._statuses(g, ["compare", "yes"]) == ["gated", "ok"]
+
+    def test_quota_and_unexpected_error(self):
+        assert self._statuses(MagicMock(), ["hi"], quota_exceeded=True) == ["quota"]
+        g = MagicMock()
+        g.invoke.side_effect = RuntimeError("graph blew up")
+        assert self._statuses(g, ["hi"]) == ["error"]

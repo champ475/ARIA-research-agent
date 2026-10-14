@@ -134,6 +134,60 @@ def test_trial_quota_resets_on_a_new_day(db, two_users):
     assert db.trial_quota_check_and_increment(999_999, 2, d2) is False  # no such user
 
 
+# ── OBS-02 turns ──────────────────────────────────────────────────────────────
+
+
+def _turn_kwargs(turn_id, user_id, **over):
+    base = dict(
+        turn_id=turn_id,
+        user_id=user_id,
+        session_id="12",
+        intent="equity",
+        complexity="moderate",
+        status="ok",
+        error_id=turn_id.replace("-", "")[:8],
+        latency_ms=1234,
+        ttft_ms=456,
+        llm_calls=3,
+        tokens_in=900,
+        tokens_out=120,
+        tokens_estimated=False,
+        providers=["Groq"],
+        prompt_versions={"ab12cd34": 3},
+        tool_calls=4,
+        cache_hits=1,
+        node_ms={"Planner": 300},
+        data_gaps=0,
+        grounding={"unsupported": []},
+    )
+    base.update(over)
+    return base
+
+
+def test_turn_record_round_trip_and_error_id_lookup(db, two_users):
+    import uuid
+
+    a, _ = two_users
+    tid = uuid.uuid4().hex
+    db.turn_record(**_turn_kwargs(tid, a))
+    db.turn_record(**_turn_kwargs(tid, a, status="error"))  # replay is ignored, not duplicated
+    (row,) = db.turns_by_error_id(tid[:8].upper())
+    assert row["status"] == "ok" and row["providers"] == ["Groq"]
+    assert row["prompt_versions"] == {"ab12cd34": 3} and row["grounding"] == {"unsupported": []}
+    db.turn_set_trace_url(tid, "https://smith.example/r/1")
+    assert db.turns_by_error_id(tid[:8])[0]["trace_url"] == "https://smith.example/r/1"
+    assert db.turns_by_error_id("ffffffff") == []
+
+
+def test_turns_are_deleted_with_their_user(db, two_users):
+    import uuid
+
+    a, _ = two_users
+    db.turn_record(**_turn_kwargs(uuid.uuid4().hex, a))
+    db._query("DELETE FROM users WHERE id=%s", (a,), fetch=None, commit=True)
+    assert db._query("SELECT count(*) AS n FROM turns")[0]["n"] == 0
+
+
 # ── coverage meta-test ────────────────────────────────────────────────────────
 
 # Public functions covered in this file (user-scoped ones are in ISOLATION_COVERED).
@@ -147,6 +201,8 @@ COVERED = {
     "auth_attempt_count": test_auth_attempts_count_window_and_clear,
     "auth_attempt_clear": test_auth_attempts_count_window_and_clear,
     "telegram_link_code_resolve": test_link_code_race_links_exactly_once,
+    "turn_set_trace_url": test_turn_record_round_trip_and_error_id_lookup,
+    "turns_by_error_id": test_turn_record_round_trip_and_error_id_lookup,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 INFRASTRUCTURE = {"get_conn", "release_conn", "ensure_schema"}

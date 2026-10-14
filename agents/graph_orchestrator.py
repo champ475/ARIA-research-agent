@@ -348,6 +348,28 @@ class GraphOrchestrator:
         return result
 
     def process_stream(self, message: str):
+        """OBS-02 wrapper: runs the turn inside a utils/tracing TurnRecord
+        (one `turns` row per turn, plus a LangSmith trace when enabled). The
+        turn's id comes from the logging context app.py's run_in_turn set, so
+        log lines, the turns row and the user-facing error ID all agree."""
+        from utils import tracing
+        from utils.logging_setup import session_id_var, turn_id_var
+
+        turn_id = turn_id_var.get() or uuid.uuid4().hex
+        with tracing.turn(turn_id, self._user_id, session_id_var.get() or None, message) as rec:
+            try:
+                for out in self._process_stream(message, rec):
+                    if out[0]:
+                        rec.first_output()
+                    yield out
+            except GeneratorExit:
+                rec.status = "cancelled"
+                raise
+            except Exception:
+                rec.status = "error"
+                raise
+
+    def _process_stream(self, message: str, rec):
         """Yields (text, chart, pdf_path, md_path, csv_path, tab_used), text
         growing on each yield for equity/chat turns (CommunicationLayer
         deferred its LLM call to `pending_synthesis_prompt` — see that
@@ -374,6 +396,7 @@ class GraphOrchestrator:
                 result = self._graph.invoke(Command(resume=approved, update=new_deadline()), config=config)
             else:
                 if self._trial_quota_exceeded():
+                    rec.status = "quota"
                     self._memory.add_user(message)
                     self._memory.add_assistant(_TRIAL_EXHAUSTED_MESSAGE)
                     yield _TRIAL_EXHAUSTED_MESSAGE, None, None, None, None, "equity"
@@ -398,7 +421,10 @@ class GraphOrchestrator:
                     config=config,
                 )
 
+            rec.intent = result.get("intent") or rec.intent
+            rec.complexity = result.get("complexity") or rec.complexity
             if result.get("__interrupt__"):
+                rec.status = "gated"
                 self._awaiting_confirmation = True
                 prompt = result["__interrupt__"][0].value.get("message", "Proceed?")
                 reply = f"{prompt} (reply yes/no)"
@@ -422,6 +448,10 @@ class GraphOrchestrator:
             tab_used = "+".join([intent] + [s for s in secondary if s != intent])
 
             gaps_note = data_gaps_note(result.get("tasks"))
+            rec.data_gaps = sum(
+                1 for t in result.get("tasks") or [] if t.get("status") in ("failed", "skipped")
+            )
+            rec.status = "partial" if rec.data_gaps else "ok"
             pending_prompt = result.get("pending_synthesis_prompt")
             if pending_prompt:
                 from agents.llm_client import LLMClient
@@ -450,6 +480,7 @@ class GraphOrchestrator:
         except LLMProvidersExhausted as e:
             from agents.llm_client import format_exhausted_message
 
+            rec.status = "llm_unavailable"
             text = format_exhausted_message(e)
             self._memory.add_assistant(text)
             yield text, None, None, None, None, "equity"

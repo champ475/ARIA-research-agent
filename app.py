@@ -22,12 +22,16 @@ from utils.helpers import IST as IST_TZ
 from utils.helpers import now_ist
 from utils.input_guard import CleanMessage, InputRejected, clean_message
 from utils.telegram_link import start_polling_thread
+from utils.tracing import warn_if_auto_tracing_on
 from utils.url_safety import UnsafeURLError
 
 log = logging.getLogger(__name__)
 
 # ── Schema check on startup (migrations run as a release step, ARCH-01) ───────
 ensure_schema()
+
+# OBS-02: refuse silently-unredacted tracing setups loudly.
+warn_if_auto_tracing_on()
 
 # ── Start the Telegram /start-code listener (no-ops if no bot token set) ──────
 start_polling_thread()
@@ -285,9 +289,18 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
             "GEMINI_API_KEY=your_key    # free at aistudio.google.com/apikey\n```\n"
             "Then restart: `python app.py`"
         )
-    except Exception as e:
-        log.exception("[respond] turn failed")
-        text = f"⚠️ Error: `{str(e)}`\n\nPlease try again."
+    except Exception:
+        # OBS-02: the error ID is the turn's id prefix — it finds the `turns`
+        # row and the trace (scripts/find_turn.py). Raw exception text is
+        # logged, never shown (it can carry internals).
+        from utils.logging_setup import turn_id_var
+
+        error_id = turn_id_var.get().replace("-", "")[:8] or "unknown"
+        log.exception(f"[respond] turn failed (error_id={error_id})")
+        text = (
+            "⚠️ Something went wrong on our side while answering that.\n\n"
+            f"Please try again. If it keeps happening, report **Error ID `{error_id}`**."
+        )
 
     # A save failure here (e.g. a Neon connection dropped for being idle —
     # utils/db.py now retries once, but a second failure is still possible)

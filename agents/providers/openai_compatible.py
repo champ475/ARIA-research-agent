@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from agents.conversation_memory import ConversationMemory
 from config import LLM_STREAM_TIMEOUT_SECONDS, LLM_TIMEOUT_SECONDS, TOKENS_FAST
+from utils.tracing import usage_from_response
 
 _SUMMARY_PROMPT = (
     "Existing summary of earlier conversation (may be empty):\n{old}\n\n"
@@ -78,6 +79,7 @@ class OpenAICompatibleProvider:
             temperature=0.2,
             max_tokens=TOKENS_FAST,
         )
+        self.last_usage = usage_from_response(r)
         return r.choices[0].message.content.strip()
 
     def ask(
@@ -95,6 +97,7 @@ class OpenAICompatibleProvider:
             max_tokens=max_tokens,
             timeout=self._request_timeout,
         )
+        self.last_usage = usage_from_response(r)
         return r.choices[0].message.content.strip()
 
     def chat(
@@ -109,6 +112,7 @@ class OpenAICompatibleProvider:
             max_tokens=max_tokens,
             timeout=self._request_timeout,
         )
+        self.last_usage = usage_from_response(r)
         reply = r.choices[0].message.content.strip()
         self._memory.add_assistant(reply)
         return reply

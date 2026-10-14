@@ -685,3 +685,75 @@ def report_get(user_id: int, report_id: int) -> dict | None:
         (report_id, user_id),
         fetch="one",
     )
+
+
+# ── Per-turn records (OBS-02, written by utils/tracing.py) ───────────────────
+
+
+def turn_record(
+    *,
+    turn_id: str,
+    user_id: int | None,
+    session_id: str | None,
+    intent: str | None,
+    complexity: str | None,
+    status: str,
+    error_id: str,
+    latency_ms: int,
+    ttft_ms: int | None,
+    llm_calls: int,
+    tokens_in: int,
+    tokens_out: int,
+    tokens_estimated: bool,
+    providers: list[str],
+    prompt_versions: dict,
+    tool_calls: int,
+    cache_hits: int,
+    node_ms: dict,
+    data_gaps: int,
+    grounding: dict | None,
+) -> None:
+    _query(
+        "INSERT INTO turns (turn_id, user_id, session_id, intent, complexity, status, error_id, latency_ms, "
+        "ttft_ms, llm_calls, tokens_in, tokens_out, tokens_estimated, providers, prompt_versions, tool_calls, "
+        "cache_hits, node_ms, data_gaps, grounding) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (turn_id) DO NOTHING",
+        (
+            turn_id,
+            user_id,
+            None if session_id is None else str(session_id),
+            intent,
+            complexity,
+            status,
+            error_id,
+            latency_ms,
+            ttft_ms,
+            llm_calls,
+            tokens_in,
+            tokens_out,
+            tokens_estimated,
+            providers,
+            json.dumps(prompt_versions),
+            tool_calls,
+            cache_hits,
+            json.dumps(node_ms),
+            data_gaps,
+            None if grounding is None else json.dumps(grounding, default=str),
+        ),
+        fetch=None,
+        commit=True,
+    )
+
+
+def turn_set_trace_url(turn_id: str, url: str) -> None:
+    _query("UPDATE turns SET trace_url=%s WHERE turn_id=%s", (url, turn_id), fetch=None, commit=True)
+
+
+def turns_by_error_id(error_id: str) -> list[dict]:
+    """Support lookup (scripts/find_turn.py): every turn whose error ID
+    matches — operator-only, deliberately not user-scoped."""
+    return _query(
+        "SELECT * FROM turns WHERE error_id=%s ORDER BY created_at DESC",
+        ((error_id or "").strip().lower(),),
+    )

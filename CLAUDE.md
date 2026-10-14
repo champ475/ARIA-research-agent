@@ -75,6 +75,7 @@ Maps common aliases to NSE symbols (e.g. `"SBI"` → `"SBIN"`, `"HUL"` → `"HIN
 - **User input**: chat text goes through `utils/input_guard.py::clean_message` first; user-supplied URLs through `utils/url_safety.py`.
 - **Tenant isolation**: every new `utils/db.py` function taking `user_id` needs a case in `tests/integration/test_tenant_isolation.py::COVERED` (a meta-test fails otherwise).
 - **External calls** (REL-02): HTTP goes through `utils/http.py` (default timeouts, retry with jitter, per-source circuit breaker); libraries without a timeout (yfinance) go through `utils/resilience.py::guarded_call`. Never add a bare `requests.get` / `yf.Ticker(...).info` in app code. Each turn has a deadline (`graph/deadline.py`): research stops at 70% of `TURN_DEADLINE_SECONDS` and the answer names missing data.
+- **Tracing** (OBS-02): each turn runs inside `utils/tracing.turn` (opened by `GraphOrchestrator.process_stream`) and writes one `turns` row; LLM calls, tools and graph nodes are counted/spanned automatically. Only `utils/tracing.py` talks to LangSmith, and only redacted data (`redact_for_trace`). User-facing errors show `Error ID` = turn id prefix (`scripts/find_turn.py`).
 - **Schema** (ARCH-01): schema changes are new Alembic revisions in `migrations/versions/`; app code never runs DDL.
 - **Concurrency**: chat turns run concurrently (`CHAT_CONCURRENCY`), one per user (`respond_exclusive`); module-level mutable state must be thread-safe.
 

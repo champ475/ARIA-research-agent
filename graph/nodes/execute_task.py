@@ -34,6 +34,7 @@ from graph.state import Evidence, Task
 from graph.tool_catalogue import get_tool
 from graph.write_policy import write_allowed
 from tools.data import evidence_cache
+from utils import tracing
 from utils.resilience import CallTimeout, CircuitOpen, call_with_timeout
 
 log = logging.getLogger(__name__)
@@ -146,6 +147,9 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
         if spec.cacheable
         else None
     )
+    rec = tracing.current()
+    if rec is not None:
+        rec.add_tool_call(cache_hit=cached is not None)
     if cached is not None:
         cacheable_payload = cached["payload"]
         confidence = cached["confidence"]

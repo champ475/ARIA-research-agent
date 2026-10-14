@@ -144,6 +144,22 @@ def test_accept_terms(db, two_users):
     assert rows[b]["accepted_terms_at"] is not None
 
 
+def test_turns(db, two_users):
+    """A turn row belongs to the user who took the turn; recording B's turns
+    never touches A's rows."""
+    import uuid
+
+    from tests.integration.test_db_functions import _turn_kwargs
+
+    a, b = two_users
+    ta, tb = uuid.uuid4().hex, uuid.uuid4().hex
+    db.turn_record(**_turn_kwargs(ta, a))
+    db.turn_record(**_turn_kwargs(tb, b, status="error"))
+    assert db.turns_by_error_id(ta[:8])[0]["user_id"] == a
+    assert db.turns_by_error_id(ta[:8])[0]["status"] == "ok"
+    assert db.turns_by_error_id(tb[:8])[0]["user_id"] == b
+
+
 COVERED = {
     "portfolio_add": test_portfolio,
     "portfolio_remove": test_portfolio,
@@ -182,6 +198,7 @@ COVERED = {
     "telegram_chat_id_set": test_telegram_linking,
     "telegram_chat_id_get": test_telegram_linking,
     "accept_terms": test_accept_terms,
+    "turn_record": test_turns,
 }
 
 

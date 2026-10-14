@@ -16,6 +16,69 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Per-turn records in Postgres, optional redacted LangSmith traces (OBS-02)
+
+**Problem.** When an answer was wrong or slow, nothing showed which node,
+prompt, tool or provider caused it. `research_journal` was never persisted,
+and an error showed users raw exception text with no way to find the turn
+behind it.
+
+**Alternatives considered.**
+- *Self-hosted Langfuse.* Its stack (ClickHouse, Redis, S3, Postgres) needs
+  about 8 GB of RAM, more than the dev machine has.
+- *OpenTelemetry only.* No UI until we run a backend.
+- *LangSmith via LangChain auto-tracing (`LANGSMITH_TRACING=true`).* This
+  uploads LangGraph's full state, including chat history and financial
+  profiles, unredacted. Rejected.
+- *LangSmith via our own spans.* Chosen, with the user's agreement.
+
+**Final decision.**
+- **`utils/tracing.py` is the only LangSmith-aware module.**
+- **Turn record.** Each turn opens a `TurnRecord` (a contextvar, so worker
+  threads see it). It accumulates:
+  - LLM calls, tokens (provider usage, or estimates flagged as such),
+    providers, and prompt versions (content hashes of system prompts, so
+    there is nothing to bump);
+  - tool calls and cache hits;
+  - per-node wall time and data gaps;
+  - later, the LLM-03 grounding result.
+- **Turns row.** Migration `0004_turns` adds the table, and every turn
+  writes one row (ok / partial / gated / quota / llm_unavailable / error /
+  cancelled). This happens even on exceptions, and DB failures never break
+  a turn.
+- **Error IDs.** User-facing errors show the turn id prefix as an Error ID.
+  `scripts/find_turn.py` finds the row, then the trace link: 2 clicks.
+- **LangSmith** (opt-in: `ARIA_TRACING=langsmith` plus `LANGSMITH_API_KEY`):
+  - Spans are explicit RunTrees whose parents we track ourselves. We never
+    make a run "current" in LangSmith's context, so LangChain auto-tracing
+    stays off; a test asserts this.
+  - Inputs and outputs pass through `redact_for_trace` (secrets, emails,
+    length caps). Node spans record counts and routing facts, never raw
+    state.
+  - The startup check warns if `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2`
+    are set.
+
+**Trade-offs.**
+- **Coarser tree.** Our own spans give a coarser tree than LangChain's
+  automatic one: no per-step LangGraph internals.
+- **Estimated stream tokens.** Streamed calls estimate tokens (characters
+  ÷ 4) because providers report usage only on non-streaming calls here.
+- **The trace URL arrives later.** A background thread resolves it after
+  the row is written.
+- **Not verified live.** LangSmith hasn't been exercised against a real
+  account: there is no key yet. The adapter is tested against the
+  installed `RunTree` API with a mocked client.
+- **Data leaves India.** LangSmith stores traces in the US or EU. Before
+  enabling it in production, the processor goes in the COMP-03 register.
+
+**Future improvements.**
+- Put turns-table metrics on the OBS-03 dashboard.
+- Request usage on streams (`stream_options.include_usage`) where every
+  provider supports it.
+- Sample full prompts in staging only.
+
+---
+
 ## 2026-10-14 — Every external call is bounded; turns have a deadline (REL-02)
 
 **Problem.** yfinance's `.info` / `.financials` and `feedparser.parse(url)` take
