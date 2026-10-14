@@ -3,6 +3,7 @@
 _fernet is cached module-level (see utils/crypto.py), so every test resets
 it via monkeypatch to avoid leaking state between cases.
 """
+
 import pytest
 
 import config

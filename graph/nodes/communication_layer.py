@@ -51,10 +51,12 @@ text." See ARCHITECTURE.md's 2026-07-24 "Planning domain on the graph" entry
 for why the 3rd HITL gate (capital-allocation confirmation) is deliberately
 NOT implemented yet — it needs more than this node can safely provide.
 """
+
 from __future__ import annotations
 
+import logging
 import re
-from typing import Callable
+from collections.abc import Callable
 
 import pandas as pd
 
@@ -62,35 +64,50 @@ from agents.llm_client import LLMClient
 from config import TOKENS_SYNTHESIS
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
+from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
 from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
-from utils.db import report_save, report_list, report_get, profile_get, profile_upsert, profile_clear
+from utils.db import profile_clear, profile_get, profile_upsert, report_get, report_list, report_save
 from utils.helpers import detect_report_type
-from utils.report_files import render_report
-from utils.screener_files import save_screener_csv
+from utils.planning_logic import (
+    BUILD_TRIGGER_KW as _PLANNING_BUILD_TRIGGER_KW,
+)
 from utils.planning_logic import (
     REQUIRED_FIELDS as _PLANNING_REQUIRED,
-    BUILD_TRIGGER_KW as _PLANNING_BUILD_TRIGGER_KW,
-    intake_turn as _planning_intake_turn,
+)
+from utils.planning_logic import (
     build_strategy as _planning_build_strategy,
 )
+from utils.planning_logic import (
+    intake_turn as _planning_intake_turn,
+)
+from utils.report_files import render_report
+from utils.screener_files import save_screener_csv
 
 _PLANNING_SHOW_KW = ["show my profile", "my financial profile", "what do you know about me"]
-_PLANNING_RESET_KW = ["start over", "reset my plan", "reset my profile", "forget my profile", "clear my profile"]
+_PLANNING_RESET_KW = [
+    "start over",
+    "reset my plan",
+    "reset my profile",
+    "forget my profile",
+    "clear my profile",
+]
 
 _CANONICAL_RATIO_KEYS = {"pe", "pb", "roce", "de", "cr"}
+
+log = logging.getLogger(__name__)
 
 _SYSTEM = (
     "You are ARIA, an autonomous financial research engine for Indian equity "
     "markets (NSE/BSE). You are given a list of pre-verified conclusions — "
     "facts already decided and checked, not raw data. Write a clear, direct "
     "answer to the user's objective using ONLY these conclusions. State each "
-    'ratio using its exact [^key] marker where one is given, right after the '
+    "ratio using its exact [^key] marker where one is given, right after the "
     'number (e.g. "P/E of 24.3 [^pe]") — never invent a marker, never attach '
     "one to a value that has none. Do not introduce any number that isn't in "
     "the conclusions list. If the conclusions don't fully cover the "
-    "objective, say so plainly rather than filling the gap."
+    "objective, say so plainly rather than filling the gap." + UNTRUSTED_NOTICE
 )
 
 
@@ -105,11 +122,10 @@ def _render_history(history: list[dict]) -> str:
     used to behave."""
     if not history:
         return ""
-    lines = ["Recent conversation (oldest first):"]
+    lines = []
     for msg in history[-_HISTORY_TURNS_IN_PROMPT:]:
         lines.append(f"{msg.get('role', 'user')}: {msg.get('content', '')[:500]}")
-    lines.append("")
-    return "\n".join(lines)
+    return "Recent conversation (oldest first):\n" + wrap_untrusted("history", "\n".join(lines)) + "\n"
 
 
 def _build_prompt(objective: str, conclusions: list[Conclusion], history: list[dict]) -> str:
@@ -187,13 +203,20 @@ def _is_streamable(intent: str, intents: set[str]) -> bool:
     return intent in ("equity", "chat") and "report" not in intents and "screener" not in intents
 
 
-_REPORT_LIST_KW = ["list reports", "list my reports", "saved reports", "my reports", "show reports", "show my reports"]
+_REPORT_LIST_KW = [
+    "list reports",
+    "list my reports",
+    "saved reports",
+    "my reports",
+    "show reports",
+    "show my reports",
+]
 _REPORT_DOWNLOAD_KW = ["download", "regenerate", "resend", "re-download", "redownload"]
 _REPORT_ID_RE = re.compile(r"#?(\d+)")
 
 
 def _handle_report_management(state: GraphState) -> dict | None:
-    """"Show my reports" / "download report #N" bypass the Evidence/
+    """ "Show my reports" / "download report #N" bypass the Evidence/
     Conclusion pipeline entirely, same reasoning as _handle_planning below —
     there's no tool-selection/evidence-gathering step useful for a DB read
     and a re-render. Returns None (not handled) for anything else, so a
@@ -207,16 +230,19 @@ def _handle_report_management(state: GraphState) -> dict | None:
         if user_id is None:
             return _empty_result(
                 "I need to know who you are to show your reports — please sign in again.",
-                "report: missing user_id", "cannot read reports without a user_id",
+                "report: missing user_id",
+                "cannot read reports without a user_id",
             )
         reports = report_list(user_id)
         if not reports:
-            text = "You have no saved reports yet. Try \"generate an IC report for TCS\"."
+            text = 'You have no saved reports yet. Try "generate an IC report for TCS".'
         else:
             lines = ["## Your Reports\n", "| # | Type | Title | Date |", "|---|------|-------|------|"]
             for r in reports:
-                lines.append(f"| {r['id']} | {r['report_type']} | {r['title']} | {r['created_at'].strftime('%Y-%m-%d')} |")
-            lines.append("\nSay \"download report #<id>\" to get the PDF/Markdown again.")
+                lines.append(
+                    f"| {r['id']} | {r['report_type']} | {r['title']} | {r['created_at'].strftime('%Y-%m-%d')} |"
+                )
+            lines.append('\nSay "download report #<id>" to get the PDF/Markdown again.')
             text = "\n".join(lines)
         return _empty_result(text, "report: listed saved reports", f"user_id={user_id}")
 
@@ -228,8 +254,9 @@ def _handle_report_management(state: GraphState) -> dict | None:
         row = report_get(user_id, report_id)
         if row is None:
             return _empty_result(
-                f"Couldn't find report #{report_id} — try \"show my reports\" to see the list.",
-                "report: download target not found", f"user_id={user_id}, report_id={report_id}",
+                f'Couldn\'t find report #{report_id} — try "show my reports" to see the list.',
+                "report: download target not found",
+                f"user_id={user_id}, report_id={report_id}",
             )
         # Re-renders from the durably stored text (reports.content) — the
         # file from whenever this report was first generated is long gone
@@ -237,7 +264,8 @@ def _handle_report_management(state: GraphState) -> dict | None:
         md_path, pdf_path = render_report(row["symbol"] or "report", row["report_type"], row["content"])
         result = _empty_result(
             f"Here's report #{report_id} — **{row['title']}**.",
-            "report: regenerated from history", f"user_id={user_id}, report_id={report_id}",
+            "report: regenerated from history",
+            f"user_id={user_id}, report_id={report_id}",
         )
         result["md_path"] = md_path
         result["pdf_path"] = pdf_path
@@ -254,7 +282,8 @@ def _handle_planning(client: LLMClient, state: GraphState) -> dict:
     if user_id is None:
         return _empty_result(
             "I need to know who you are to track a financial profile — please sign in again.",
-            "planning: missing user_id", "cannot read/write financial_profiles without a user_id",
+            "planning: missing user_id",
+            "cannot read/write financial_profiles without a user_id",
         )
 
     if any(k in lower for k in _PLANNING_SHOW_KW):
@@ -264,7 +293,7 @@ def _handle_planning(client: LLMClient, state: GraphState) -> dict:
         else:
             lines = ["## Your Financial Profile\n", "| Field | Value |", "|---|---|"]
             for k, v in profile.items():
-                lines.append(f"| {k.replace('_',' ').title()} | {v} |")
+                lines.append(f"| {k.replace('_', ' ').title()} | {v} |")
             text = "\n".join(lines)
         return _empty_result(text, "planning: showed profile", f"user_id={user_id}")
 
@@ -272,7 +301,8 @@ def _handle_planning(client: LLMClient, state: GraphState) -> dict:
         profile_clear(user_id)
         return _empty_result(
             "🗑️ Profile cleared. Tell me about yourself again whenever you're ready — age, capital, time horizon, and goal are the essentials.",
-            "planning: cleared profile", f"user_id={user_id}",
+            "planning: cleared profile",
+            f"user_id={user_id}",
         )
 
     profile = profile_get(user_id)
@@ -284,7 +314,9 @@ def _handle_planning(client: LLMClient, state: GraphState) -> dict:
     wants_build = any(k in lower for k in _PLANNING_BUILD_TRIGGER_KW)
 
     if not minimum_complete:
-        return _empty_result(reply, "planning: intake incomplete", f"user_id={user_id}, updates={list(updates)}")
+        return _empty_result(
+            reply, "planning: intake incomplete", f"user_id={user_id}, updates={list(updates)}"
+        )
 
     if updates or wants_build or not was_already_complete:
         strategy = _planning_build_strategy(client, profile)
@@ -293,7 +325,8 @@ def _handle_planning(client: LLMClient, state: GraphState) -> dict:
 
 
 def build_communication_layer_node(
-    client: LLMClient | None = None, provider_config: dict | None = None,
+    client: LLMClient | None = None,
+    provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
     client = client or LLMClient(_SYSTEM, provider_config)
 
@@ -399,8 +432,9 @@ def build_communication_layer_node(
             if user_id is not None:
                 try:
                     report_save(user_id, primary_entity, rtype, f"{rtype} — {primary_entity}", report)
-                except Exception:
-                    pass  # persistence failure shouldn't block returning the report itself
+                except Exception as e:
+                    # Persistence failure shouldn't block returning the report itself.
+                    log.warning(f"[CommunicationLayer] report_save failed: {e}")
 
         csv_path = None
         if "screener" in intents:

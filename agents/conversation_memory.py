@@ -10,16 +10,17 @@ whatever falls out of that window into a running summary via one cheap LLM
 call per overflow, and prepends that summary as a system message so older
 context isn't lost outright.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
 
 class ConversationMemory:
-    def __init__(self, cap: int = 20, summarizer: Optional[Callable[[str, str], str]] = None):
+    def __init__(self, cap: int = 20, summarizer: Callable[[str, str], str] | None = None):
         self.cap = cap
         self._history: list[dict] = []
         self._summary = ""
@@ -55,7 +56,7 @@ class ConversationMemory:
         overflow_end = len(self._history) - self.cap
         if overflow_end <= self._summarized_upto:
             return
-        new_chunk = self._history[self._summarized_upto:overflow_end]
+        new_chunk = self._history[self._summarized_upto : overflow_end]
         if self._summarizer is None:
             # No summarizer wired — still advance the cursor so we don't retry
             # every call; overflow is silently dropped (old behavior).
@@ -74,9 +75,11 @@ class ConversationMemory:
         (only when older turns have actually fallen out of the window) + the
         most recent `cap` raw messages."""
         self._fold_overflow()
-        recent = self._history[-self.cap:]
+        recent = self._history[-self.cap :]
         if self._summary:
-            return [{"role": "system", "content": f"[Summary of earlier conversation]: {self._summary}"}] + recent
+            return [
+                {"role": "system", "content": f"[Summary of earlier conversation]: {self._summary}"}
+            ] + recent
         return recent
 
     def __len__(self):

@@ -58,6 +58,7 @@ process's TCS conclusions. A random UUID component per turn has no such
 collision, costs nothing extra (Postgres checkpoint rows are cheap either
 way), and needs no cross-process counter coordination.
 """
+
 from __future__ import annotations
 
 import logging
@@ -93,40 +94,123 @@ _TRIAL_EXHAUSTED_MESSAGE = (
 # self-contained here (no import of the deleted legacy orchestrator module)
 # since classify() must survive its removal. ──────────────────────────────
 _REPORT_KW = [
-    "ic report", "initiating coverage", "result update", "quarterly results",
-    "sector thematic", "thematic report", "quick note", "flash report",
-    "generate report", "write report", "create report", "full report",
-    "list reports", "saved reports", "my reports", "show reports",
+    "ic report",
+    "initiating coverage",
+    "result update",
+    "quarterly results",
+    "sector thematic",
+    "thematic report",
+    "quick note",
+    "flash report",
+    "generate report",
+    "write report",
+    "create report",
+    "full report",
+    "list reports",
+    "saved reports",
+    "my reports",
+    "show reports",
 ]
 _SCREENER_KW = [
-    "screen", "screener", "top gainer", "top loser", "biggest mover", "volume spike",
-    "52 week high", "52 week low", "bulk deal", "block deal", "fii buying", "dii selling",
-    "promoter selling", "insider", "momentum", "value screen", "quality screen",
-    "pe below", "pe above", "roe above", "roce above", "de below", "undervalued",
-    "overvalued", "stocks with", "which stocks", "save screener", "saved screener",
-    "list screener", "my screeners",
+    "screen",
+    "screener",
+    "top gainer",
+    "top loser",
+    "biggest mover",
+    "volume spike",
+    "52 week high",
+    "52 week low",
+    "bulk deal",
+    "block deal",
+    "fii buying",
+    "dii selling",
+    "promoter selling",
+    "insider",
+    "momentum",
+    "value screen",
+    "quality screen",
+    "pe below",
+    "pe above",
+    "roe above",
+    "roce above",
+    "de below",
+    "undervalued",
+    "overvalued",
+    "stocks with",
+    "which stocks",
+    "save screener",
+    "saved screener",
+    "list screener",
+    "my screeners",
 ]
 _MF_KW = [
-    "mutual fund", " sip ", "sip ", "elss", "nav of", "expense ratio",
-    "flexi cap fund", "flexicap fund", "large cap fund", "mid cap fund",
-    "small cap fund", "debt fund", "hybrid fund", "index fund", "lumpsum",
-    "fund manager", "amc ", "direct plan", "regular plan",
+    "mutual fund",
+    " sip ",
+    "sip ",
+    "elss",
+    "nav of",
+    "expense ratio",
+    "flexi cap fund",
+    "flexicap fund",
+    "large cap fund",
+    "mid cap fund",
+    "small cap fund",
+    "debt fund",
+    "hybrid fund",
+    "index fund",
+    "lumpsum",
+    "fund manager",
+    "amc ",
+    "direct plan",
+    "regular plan",
 ]
 _ALERT_KW = [
-    "alert me", "notify me", "let me know if", "ping me", "stop loss",
-    "stoploss", "stop-loss", "target price", "drops below", "goes above",
-    "my alerts", "my alert", "cancel my alert", "cancel alert",
-    "pause alert", "resume alert", "delete alert", "set an alert",
+    "alert me",
+    "notify me",
+    "let me know if",
+    "ping me",
+    "stop loss",
+    "stoploss",
+    "stop-loss",
+    "target price",
+    "drops below",
+    "goes above",
+    "my alerts",
+    "my alert",
+    "cancel my alert",
+    "cancel alert",
+    "pause alert",
+    "resume alert",
+    "delete alert",
+    "set an alert",
     "create an alert",
 ]
-_ALERT_CRUD_RE = re.compile(r"\b(cancel|delete|remove|pause|resume|reactivate|unpause)\b.{0,30}\balerts?\b", re.I)
+_ALERT_CRUD_RE = re.compile(
+    r"\b(cancel|delete|remove|pause|resume|reactivate|unpause)\b.{0,30}\balerts?\b", re.I
+)
 _PLANNING_KW = [
-    "investment strategy", "financial plan", "financial planning", "asset allocation",
-    "how should i invest", "how do i invest", "retirement plan", "plan for retirement",
-    "diversified portfolio", "diversify my portfolio", "build my portfolio",
-    "long term goal", "long-term goal", "my financial goal", "invest for my goal",
-    "invest for retirement", "wealth plan", "financial profile", "my risk tolerance",
-    "build my plan", "build my strategy", "investment plan",
+    "investment strategy",
+    "financial plan",
+    "financial planning",
+    "asset allocation",
+    "how should i invest",
+    "how do i invest",
+    "retirement plan",
+    "plan for retirement",
+    "diversified portfolio",
+    "diversify my portfolio",
+    "build my portfolio",
+    "long term goal",
+    "long-term goal",
+    "my financial goal",
+    "invest for my goal",
+    "invest for retirement",
+    "wealth plan",
+    "financial profile",
+    "my risk tolerance",
+    "build my plan",
+    "build my strategy",
+    "investment plan",
 ]
 
 
@@ -137,16 +221,14 @@ def _keyword_route(message: str) -> str:
     check) never had that context either."""
     q = f" {message.lower().strip()} "
     scores = {
-        "report":   sum(1 for kw in _REPORT_KW   if kw in q),
+        "report": sum(1 for kw in _REPORT_KW if kw in q),
         "screener": sum(1 for kw in _SCREENER_KW if kw in q),
-        "mf":       sum(1 for kw in _MF_KW       if kw in q),
-        "alert":    sum(1 for kw in _ALERT_KW    if kw in q) + (1 if _ALERT_CRUD_RE.search(q) else 0),
+        "mf": sum(1 for kw in _MF_KW if kw in q),
+        "alert": sum(1 for kw in _ALERT_KW if kw in q) + (1 if _ALERT_CRUD_RE.search(q) else 0),
         "planning": sum(1 for kw in _PLANNING_KW if kw in q),
     }
     best_tab = max(scores, key=scores.get)
     return best_tab if scores[best_tab] > 0 else "equity"
-
-
 
 
 class GraphOrchestrator:
@@ -161,7 +243,9 @@ class GraphOrchestrator:
         # existed, rather than rebuilding it (and re-binding every node's
         # LLMClient) on every single turn for a value that rarely changes.
         self._provider_config = self._resolve_byo_config()
-        self._graph = build_graph(checkpointer=get_postgres_checkpointer(), provider_config=self._provider_config)
+        self._graph = build_graph(
+            checkpointer=get_postgres_checkpointer(), provider_config=self._provider_config
+        )
         self._awaiting_confirmation = False
         # Cross-turn conversation memory the graph itself has none of (each
         # turn mints a fresh thread_id — see module docstring). Owned here,
@@ -182,19 +266,25 @@ class GraphOrchestrator:
         — e.g. SECRET_KEY was unset/changed since the key was saved — same
         graceful-degrade philosophy as the rest of this constructor."""
         from utils.db import llm_config_get
+
         row = llm_config_get(self._user_id)
         if row is None:
             return None
         from utils.crypto import decrypt
+
         try:
             api_key = decrypt(row["api_key_encrypted"])
         except ValueError as e:
-            log.error(f"[GraphOrchestrator] BYO key decrypt failed for user {self._user_id}, "
-                      f"falling back to trial path: {e}")
+            log.error(
+                f"[GraphOrchestrator] BYO key decrypt failed for user {self._user_id}, "
+                f"falling back to trial path: {e}"
+            )
             return None
         return {
-            "provider": row["provider"], "base_url": row["base_url"],
-            "model": row["model"], "api_key": api_key,
+            "provider": row["provider"],
+            "base_url": row["base_url"],
+            "model": row["model"],
+            "api_key": api_key,
         }
 
     def _trial_quota_exceeded(self) -> bool:
@@ -204,10 +294,14 @@ class GraphOrchestrator:
         if self._provider_config is not None:
             return False
         from datetime import datetime
+
         from utils.db import trial_quota_check_and_increment
         from utils.helpers import IST
+
         allowed = trial_quota_check_and_increment(
-            self._user_id, _FREE_TRIAL_DAILY_LIMIT, datetime.now(IST).date(),
+            self._user_id,
+            _FREE_TRIAL_DAILY_LIMIT,
+            datetime.now(IST).date(),
         )
         return not allowed
 
@@ -218,6 +312,7 @@ class GraphOrchestrator:
         own key/cost, not the app's trial quota."""
         from agents.llm_client import LLMClient
         from config import TOKENS_FAST
+
         prompt = (
             f"Existing summary of earlier conversation (may be empty):\n{old_summary or '(none)'}\n\n"
             f"New older messages to fold in:\n{chunk_text}\n\n"
@@ -225,7 +320,9 @@ class GraphOrchestrator:
             "tickers, and decisions mentioned, so later replies stay consistent with this history. "
             "Return only the summary text."
         )
-        client = LLMClient(system_prompt="Summarize conversation history concisely.", provider_config=self._provider_config)
+        client = LLMClient(
+            system_prompt="Summarize conversation history concisely.", provider_config=self._provider_config
+        )
         return client.ask(prompt, temperature=0.2, max_tokens=TOKENS_FAST)
 
     def classify(self, message: str) -> str:
@@ -245,7 +342,7 @@ class GraphOrchestrator:
     def process(self, message: str) -> tuple[str, object, str | None, str | None, str | None, str]:
         """Returns (text, chart, pdf_path, md_path, csv_path, tab_used) — the final result of process_stream()."""
         result = None
-        for result in self.process_stream(message):
+        for result in self.process_stream(message):  # noqa: B007 — keep only the final yield
             pass
         return result
 
@@ -288,8 +385,11 @@ class GraphOrchestrator:
                 self._memory.add_user(message)
                 result = self._graph.invoke(
                     {
-                        "query": message, "max_loops": _DEFAULT_MAX_LOOPS, "user_id": self._user_id,
-                        "history": self._memory.context(), "llm_config": self._provider_config,
+                        "query": message,
+                        "max_loops": _DEFAULT_MAX_LOOPS,
+                        "user_id": self._user_id,
+                        "history": self._memory.context(),
+                        "llm_config": self._provider_config,
                     },
                     config=config,
                 )
@@ -322,7 +422,10 @@ class GraphOrchestrator:
                 from agents.llm_client import LLMClient
                 from graph.nodes.communication_layer import _SYSTEM as _COMM_SYSTEM
                 from tools.analysis.fundamental import cited_footnotes
-                synthesis_client = LLMClient(system_prompt=_COMM_SYSTEM, provider_config=self._provider_config)
+
+                synthesis_client = LLMClient(
+                    system_prompt=_COMM_SYSTEM, provider_config=self._provider_config
+                )
                 chunks: list[str] = []
                 for delta in synthesis_client.stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
                     chunks.append(delta)
@@ -340,6 +443,7 @@ class GraphOrchestrator:
             yield text, chart, pdf_path, md_path, csv_path, tab_used
         except LLMProvidersExhausted as e:
             from agents.llm_client import format_exhausted_message
+
             text = format_exhausted_message(e)
             self._memory.add_assistant(text)
             yield text, None, None, None, None, "equity"
@@ -352,21 +456,28 @@ class GraphOrchestrator:
         whichever provider the last-resolved turn used (BYO or trial) —
         never a separate hardcoded client."""
         import json
+
         from agents.llm_client import LLMClient
         from config import GROQ_MODEL_FAST, TOKENS_FAST
+
         prompt = (
             f'User asked: "{last_query[:80]}". Response was about Indian stocks/funds/'
-            f'reports/alerts/planning.\n'
-            f'Return a JSON array of exactly 4 short follow-up questions (max 7 words each) '
-            f'a user would ask next. Only the JSON array, nothing else.'
+            f"reports/alerts/planning.\n"
+            f"Return a JSON array of exactly 4 short follow-up questions (max 7 words each) "
+            f"a user would ask next. Only the JSON array, nothing else."
         )
         try:
-            client = LLMClient(system_prompt="Generate short follow-up question suggestions.", provider_config=self._provider_config)
+            client = LLMClient(
+                system_prompt="Generate short follow-up question suggestions.",
+                provider_config=self._provider_config,
+            )
             # GROQ_MODEL_FAST is a Groq-only concept (see LLMClient providers'
             # own model-override handling) — only meaningful on the trial path.
             model_override = GROQ_MODEL_FAST if self._provider_config is None else None
             raw = client.ask(prompt, model=model_override, temperature=0.8, max_tokens=TOKENS_FAST)
-            raw = raw.strip().strip("```json").strip("```").strip()
+            from utils.helpers import strip_code_fence
+
+            raw = strip_code_fence(raw)
             sug = json.loads(raw)
             if isinstance(sug, list):
                 return [str(s) for s in sug[:4]]

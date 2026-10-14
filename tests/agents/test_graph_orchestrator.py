@@ -10,9 +10,11 @@ def _build_orchestrator(fake_graph):
     DB-free (trial path, never blocked) without needing its own patch —
     process_stream() re-checks this every fresh turn, so it must survive
     past the `with` block construction happens in."""
-    with patch("agents.graph_orchestrator.build_graph", return_value=fake_graph), \
-         patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None), \
-         patch.object(GraphOrchestrator, "_resolve_byo_config", return_value=None):
+    with (
+        patch("agents.graph_orchestrator.build_graph", return_value=fake_graph),
+        patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None),
+        patch.object(GraphOrchestrator, "_resolve_byo_config", return_value=None),
+    ):
         orch = GraphOrchestrator(user_id=1)
     orch._trial_quota_exceeded = lambda: False
     return orch
@@ -96,6 +98,7 @@ class TestGraphOrchestratorHumanInTheLoop:
 
         assert result[0] == "Comparison complete."
         from langgraph.types import Command
+
         _, kwargs = fake_graph.invoke.call_args_list[1]
         resume_arg = fake_graph.invoke.call_args_list[1][0][0]
         assert isinstance(resume_arg, Command)
@@ -206,7 +209,10 @@ class TestGraphOrchestratorTabUsed:
     def test_secondary_intents_joined_with_plus(self):
         fake_graph = MagicMock()
         fake_graph.invoke.return_value = {
-            "final_report": "x", "chart_html": None, "intent": "report", "secondary_intents": ["alert"],
+            "final_report": "x",
+            "chart_html": None,
+            "intent": "report",
+            "secondary_intents": ["alert"],
         }
         orch = _build_orchestrator(fake_graph)
         _, _, _, _, _, tab = list(orch.process_stream("report + alert"))[0]
@@ -246,26 +252,40 @@ class TestGraphOrchestratorResolveByoConfig:
     rest of __init__."""
 
     def test_decrypt_failure_falls_back_to_trial_path(self):
-        fake_row = {"provider": "openai_compatible", "base_url": None,
-                    "model": "gpt-4o-mini", "api_key_encrypted": "bogus-ciphertext"}
-        with patch("agents.graph_orchestrator.build_graph", return_value=MagicMock()), \
-             patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None), \
-             patch("utils.db.llm_config_get", return_value=fake_row), \
-             patch("utils.crypto.decrypt", side_effect=ValueError("Stored API key could not be decrypted")):
+        fake_row = {
+            "provider": "openai_compatible",
+            "base_url": None,
+            "model": "gpt-4o-mini",
+            "api_key_encrypted": "bogus-ciphertext",
+        }
+        with (
+            patch("agents.graph_orchestrator.build_graph", return_value=MagicMock()),
+            patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None),
+            patch("utils.db.llm_config_get", return_value=fake_row),
+            patch("utils.crypto.decrypt", side_effect=ValueError("Stored API key could not be decrypted")),
+        ):
             orch = GraphOrchestrator(user_id=1)  # must not raise
         assert orch._provider_config is None
 
     def test_valid_byo_config_resolves_normally(self):
-        fake_row = {"provider": "openai_compatible", "base_url": "https://api.example.com",
-                    "model": "gpt-4o-mini", "api_key_encrypted": "ciphertext"}
-        with patch("agents.graph_orchestrator.build_graph", return_value=MagicMock()), \
-             patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None), \
-             patch("utils.db.llm_config_get", return_value=fake_row), \
-             patch("utils.crypto.decrypt", return_value="sk-real-key"):
+        fake_row = {
+            "provider": "openai_compatible",
+            "base_url": "https://api.example.com",
+            "model": "gpt-4o-mini",
+            "api_key_encrypted": "ciphertext",
+        }
+        with (
+            patch("agents.graph_orchestrator.build_graph", return_value=MagicMock()),
+            patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None),
+            patch("utils.db.llm_config_get", return_value=fake_row),
+            patch("utils.crypto.decrypt", return_value="sk-real-key"),
+        ):
             orch = GraphOrchestrator(user_id=1)
         assert orch._provider_config == {
-            "provider": "openai_compatible", "base_url": "https://api.example.com",
-            "model": "gpt-4o-mini", "api_key": "sk-real-key",
+            "provider": "openai_compatible",
+            "base_url": "https://api.example.com",
+            "model": "gpt-4o-mini",
+            "api_key": "sk-real-key",
         }
 
 
@@ -273,7 +293,9 @@ class TestGraphOrchestratorMisc:
     def test_generate_suggestions_parses_llm_json_array(self):
         orch = _build_orchestrator(MagicMock())
         fake_client = MagicMock()
-        fake_client.ask.return_value = '["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]'
+        fake_client.ask.return_value = (
+            '["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]'
+        )
         with patch("agents.llm_client.LLMClient", return_value=fake_client):
             result = orch.generate_suggestions("resp", "query")
         assert result == ["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]

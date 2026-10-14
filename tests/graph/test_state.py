@@ -1,5 +1,5 @@
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from graph.state import append_dedup, upsert_by_id
 
@@ -12,7 +12,7 @@ def _evidence(**overrides):
         "entity": "RELIANCE",
         "evidence_type": "fundamental_ratio",
         "payload": {"pe": 24.3},
-        "timestamp": datetime.now(timezone.utc),
+        "timestamp": datetime.now(UTC),
         "confidence": 0.9,
         "citation_key": "pe",
     }

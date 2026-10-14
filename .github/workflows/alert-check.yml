@@ -5,14 +5,22 @@ on:
     - cron: "*/5 * * * *"   # every 5 min, UTC — market-hours gating happens inside the script
   workflow_dispatch: {}       # manual "run once now" button, for testing
 
+# Never let two checker runs overlap: a slow run plus the next cron tick could
+# otherwise evaluate and deliver the same alert twice (DATA-08).
+concurrency:
+  group: alert-check
+  cancel-in-progress: false
+
 jobs:
   check-alerts:
     runs-on: ubuntu-latest
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
       - run: pip install -r requirements.txt
       - run: python scripts/check_alerts.py
         env:

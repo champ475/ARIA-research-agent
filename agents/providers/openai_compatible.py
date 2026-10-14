@@ -11,6 +11,7 @@ Mirrors agents/llm_client.py's _GroqProvider/_GeminiProvider shape exactly
 LLMClient can swap this in as `self._primary` without any caller-visible
 difference.
 """
+
 from __future__ import annotations
 
 from agents.conversation_memory import ConversationMemory
@@ -37,43 +38,66 @@ class OpenAICompatibleProvider:
             raise ValueError("No model configured for your chosen LLM provider — set one in Settings.")
         try:
             from openai import OpenAI as _OpenAI
-        except ImportError:
-            raise ImportError("Run: pip install openai")
-        self._client = _OpenAI(api_key=api_key, base_url=base_url or None)
-        self._model = model
-        self._system = system
-        self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
+        except ImportError as e:
+            raise ImportError("Run: pip install openai") from e
+        # SEC-01: a user-supplied base_url must be a public https endpoint —
+        # checked here (covers configs saved before validation existed) and
+        # again on every request by SafeEgressTransport (DNS rebinding).
+        from utils.url_safety import safe_http_client, validate_public_https_url
+
+        if base_url:
+            base_url = validate_public_https_url(base_url)
+        self._bind(
+            _OpenAI(api_key=api_key, base_url=base_url or None, http_client=safe_http_client()), model, system
+        )
         # Instance attribute (not the usual class-level `name`) since the
         # displayed provider name should reflect what the user configured.
         self.name = f"{model} ({base_url})" if base_url else model
 
+    def _bind(self, client, model: str, system: str) -> None:
+        """Shared tail of __init__, so a subclass that builds its client
+        differently (agents/providers/local_llm.py) reuses ask/chat/stream."""
+        self._client = client
+        self._model = model
+        self._system = system
+        self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
+
     def _summarize(self, old_summary: str, chunk_text: str) -> str:
         prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         r = self._client.chat.completions.create(
-            model=self._model, messages=[{"role": "user", "content": prompt}],
-            temperature=0.2, max_tokens=TOKENS_FAST,
+            model=self._model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=TOKENS_FAST,
         )
         return r.choices[0].message.content.strip()
 
-    def ask(self, prompt: str, temperature: float = 0.3, max_tokens: int = 2000, model: str | None = None) -> str:
+    def ask(
+        self, prompt: str, temperature: float = 0.3, max_tokens: int = 2000, model: str | None = None
+    ) -> str:
         # `model` override is a Groq-only concept (fast vs primary model,
         # see graph/nodes/{planner,query_analyzer,reflection,verification}.py)
         # — a BYO user's configured model is authoritative, same stance
         # agents/llm_client.py's _GeminiProvider already takes.
-        msgs = [{"role": "system", "content": self._system},
-                {"role": "user",   "content": prompt}]
+        msgs = [{"role": "system", "content": self._system}, {"role": "user", "content": prompt}]
         r = self._client.chat.completions.create(
-            model=self._model, messages=msgs,
-            temperature=temperature, max_tokens=max_tokens,
+            model=self._model,
+            messages=msgs,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
         return r.choices[0].message.content.strip()
 
-    def chat(self, msg: str, temperature: float = 0.3, max_tokens: int = 2000, model: str | None = None) -> str:
+    def chat(
+        self, msg: str, temperature: float = 0.3, max_tokens: int = 2000, model: str | None = None
+    ) -> str:
         self._memory.add_user(msg)
         msgs = [{"role": "system", "content": self._system}] + self._memory.context()
         r = self._client.chat.completions.create(
-            model=self._model, messages=msgs,
-            temperature=temperature, max_tokens=max_tokens,
+            model=self._model,
+            messages=msgs,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
         reply = r.choices[0].message.content.strip()
         self._memory.add_assistant(reply)
@@ -85,8 +109,11 @@ class OpenAICompatibleProvider:
         chunks: list[str] = []
         try:
             events = self._client.chat.completions.create(
-                model=self._model, messages=msgs,
-                temperature=temperature, max_tokens=max_tokens, stream=True,
+                model=self._model,
+                messages=msgs,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
             )
             for event in events:
                 delta = event.choices[0].delta.content

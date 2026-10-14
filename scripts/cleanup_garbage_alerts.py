@@ -54,9 +54,11 @@ def _delete_by_ids(conn, ids: list[int]) -> int:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--delete-confirmed", type=str, default=None,
+        "--delete-confirmed",
+        type=str,
+        default=None,
         help="Comma-separated alert IDs to delete, e.g. 75,76,77. "
-             "Only IDs you explicitly list here are ever deleted.",
+        "Only IDs you explicitly list here are ever deleted.",
     )
     args = parser.parse_args()
 
@@ -69,14 +71,17 @@ def main():
             print(f"Checked {len(rows)} alert rows — none look suspect.")
             return
 
-        print(f"Checked {len(rows)} alert rows — {len(suspect)} not in the curated "
-              f"universe/alias map (review before deleting; a legitimate ticker not "
-              f"yet curated can look suspect too):\n")
-        print(f"{'id':>5}  {'user_id':>7}  {'symbol':<12} {'alert_type':<18} "
-              f"{'threshold':>10}  created_at")
+        print(
+            f"Checked {len(rows)} alert rows — {len(suspect)} not in the curated "
+            f"universe/alias map (review before deleting; a legitimate ticker not "
+            f"yet curated can look suspect too):\n"
+        )
+        print(f"{'id':>5}  {'user_id':>7}  {'symbol':<12} {'alert_type':<18} {'threshold':>10}  created_at")
         for r in suspect:
-            print(f"{r['id']:>5}  {r['user_id']:>7}  {r['symbol']:<12} "
-                  f"{r['alert_type']:<18} {str(r['threshold']):>10}  {r['created_at']}")
+            print(
+                f"{r['id']:>5}  {r['user_id']:>7}  {r['symbol']:<12} "
+                f"{r['alert_type']:<18} {str(r['threshold']):>10}  {r['created_at']}"
+            )
 
         if args.delete_confirmed:
             ids = [int(x) for x in args.delete_confirmed.split(",") if x.strip()]
@@ -87,11 +92,16 @@ def main():
             deleted = _delete_by_ids(conn, ids)
             print(f"\nDeleted {deleted} row(s): {ids}")
         else:
-            print("\nNo deletion performed. Re-run with "
-                  "--delete-confirmed <id1,id2,...> to remove specific rows above.")
+            print(
+                "\nNo deletion performed. Re-run with "
+                "--delete-confirmed <id1,id2,...> to remove specific rows above."
+            )
     finally:
         conn.close()
 
 
 if __name__ == "__main__":
+    from utils.logging_setup import configure_logging
+
+    configure_logging()
     main()

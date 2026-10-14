@@ -13,23 +13,26 @@ the chat_id — no webhook/public HTTPS endpoint needed, which matters since
 this app may run behind no public URL at all (local dev) or one that
 doesn't warrant standing up a webhook route.
 """
+
 from __future__ import annotations
 
 import logging
 import secrets
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import requests
 
 from config import TELEGRAM_BOT_TOKEN
-from utils.db import telegram_link_code_resolve, telegram_chat_id_set
+from utils.db import telegram_chat_id_set, telegram_link_code_resolve
 
 log = logging.getLogger(__name__)
 
 _LINK_CODE_TTL_MINUTES = 15
-_POLL_TIMEOUT_S = 20  # Telegram long-poll — server holds the request open until an update arrives or this elapses
+_POLL_TIMEOUT_S = (
+    20  # Telegram long-poll — server holds the request open until an update arrives or this elapses
+)
 _POLL_ERROR_BACKOFF_S = 5
 
 _state_lock = threading.Lock()
@@ -44,8 +47,9 @@ def generate_link_code(user_id: int) -> str:
     key, so a collision would just fail the insert — acceptable to let that
     surface as an error rather than defend against it)."""
     from utils.db import telegram_link_code_create
+
     code = secrets.token_urlsafe(12)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=_LINK_CODE_TTL_MINUTES)
+    expires_at = datetime.now(UTC) + timedelta(minutes=_LINK_CODE_TTL_MINUTES)
     telegram_link_code_create(user_id, code, expires_at)
     return code
 
@@ -54,7 +58,8 @@ def _send(chat_id, text: str):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": text}, timeout=10,
+            json={"chat_id": chat_id, "text": text},
+            timeout=10,
         )
     except Exception as e:
         log.warning(f"[telegram_link] confirmation send failed: {e}")
@@ -63,7 +68,9 @@ def _send(chat_id, text: str):
 def _poll_once():
     global _offset
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    resp = requests.get(url, params={"offset": _offset, "timeout": _POLL_TIMEOUT_S}, timeout=_POLL_TIMEOUT_S + 10)
+    resp = requests.get(  # timeout passed below  # nosec B113
+        url, params={"offset": _offset, "timeout": _POLL_TIMEOUT_S}, timeout=_POLL_TIMEOUT_S + 10
+    )
     resp.raise_for_status()
     for update in resp.json().get("result", []):
         _offset = update["update_id"] + 1
@@ -74,11 +81,17 @@ def _poll_once():
             continue
         parts = text.split(maxsplit=1)
         if len(parts) != 2:
-            _send(chat_id, "Open this link from the ARIA app's Settings tab to connect — a bare /start isn't enough on its own.")
+            _send(
+                chat_id,
+                "Open this link from the ARIA app's Settings tab to connect — a bare /start isn't enough on its own.",
+            )
             continue
         user_id = telegram_link_code_resolve(parts[1].strip())
         if user_id is None:
-            _send(chat_id, "That link has expired or was already used — generate a new one in ARIA's Settings tab.")
+            _send(
+                chat_id,
+                "That link has expired or was already used — generate a new one in ARIA's Settings tab.",
+            )
             continue
         telegram_chat_id_set(user_id, str(chat_id))
         _send(chat_id, "✅ Connected! ARIA will send your alerts to this chat from now on.")

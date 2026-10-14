@@ -18,6 +18,93 @@ packages = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: needs a real Postgres (TEST_DATABASE_URL or Docker); skipped otherwise",
+]
+
+# ── Quality gates (TEST-01) — CI runs exactly these; see .github/workflows/ci.yml ──
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+extend-exclude = ["venv", "data", "docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "T20", "SIM"]
+ignore = [
+    "E501",   # long string literals/SQL/prompts; the formatter handles code layout
+    "S110",   # try/except/pass: used deliberately where a best-effort side path must never fail a user turn
+    "S112",   # try/except/continue: same rationale, per-item loops over external data
+    "SIM108", # ternary rewrites hurt readability of the multi-line branches used here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "T20", "B011", "E741"]
+"scripts/**" = ["T20", "E402"]       # CLI output; sys.path bootstrap before imports
+"app.py" = ["E402", "T201"]          # logging must be configured before other imports; T201: the __main__
+                                     # startup banner (tests/test_logging_setup.py forbids print elsewhere)
+
+[tool.ruff.lint.isort]
+known-first-party = ["agents", "graph", "tools", "utils", "config", "app", "scripts", "tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["graph", "utils", "agents"]
+ignore_missing_imports = true
+check_untyped_defs = true
+disallow_incomplete_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+# tools/ isn't in `files` yet; don't report its errors when it's imported.
+[[tool.mypy.overrides]]
+module = ["tools.*"]
+follow_imports = "silent"
+
+# Ratchet toward the PRD's --strict (TEST-01). Every module NOT listed here is
+# type-checked in CI; these legacy modules had errors when the gate was added
+# (2026-10-14: 169 errors, mostly missing annotations and Optional misuse).
+# Fix a module, delete its line, and CI keeps it clean from then on.
+[[tool.mypy.overrides]]
+module = [
+    "agents.conversation_memory",
+    "agents.graph_orchestrator",
+    "agents.llm_client",
+    "agents.providers.openai_compatible",
+    "graph.checkpointer",
+    "graph.graph",
+    "graph.nodes.communication_layer",
+    "graph.nodes.conclusion_builder",
+    "graph.nodes.evidence_summarizer",
+    "graph.nodes.planner",
+    "graph.nodes.reflection",
+    "graph.nodes.research_executor",
+    "graph.nodes.verification",
+    "graph.tool_catalogue",
+    "utils.auth",
+    "utils.db",
+    "utils.helpers",
+    "utils.planning_logic",
+    "utils.telegram_link",
+]
+ignore_errors = true
+
+[tool.coverage.run]
+source = ["agents", "graph", "tools", "utils"]
+branch = true
+
+[tool.coverage.report]
+# Ratchet: set to the measured baseline (rounded down); raise it as tests are
+# added. PRD target is 85.
+fail_under = 64  # measured 65% on 2026-10-14 (unit + integration)
+show_missing = false
+skip_covered = true
+
+[tool.bandit]
+exclude_dirs = ["tests", "venv", "scripts/load_test.py"]
+# Reviewed findings are annotated inline with `# nosec <id>` and a reason.
+# B110/B112 try-except-pass/continue: deliberate best-effort paths (same as ruff S110/S112).
+skips = ["B101", "B110", "B112"]
 
 [build-system]
 requires = ["setuptools>=68"]

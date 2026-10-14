@@ -1,4 +1,5 @@
 """Shared fixtures for tools/analysis test suite."""
+
 import numpy as np
 import pandas as pd
 import pytest

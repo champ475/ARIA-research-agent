@@ -1,6 +1,6 @@
 """Tests for tools/analysis/technical.py — indicator correctness and edge cases."""
+
 import pandas as pd
-import pytest
 
 from tools.analysis import technical
 
@@ -19,8 +19,19 @@ class TestComputeAll:
 
     def test_adds_expected_columns(self, ohlcv_df):
         out = technical.compute_all(ohlcv_df)
-        for col in ["SMA_20", "EMA_20", "RSI", "MACD", "MACD_Signal", "BB_Upper",
-                    "BB_Lower", "ATR", "VWAP", "Volume_SMA20", "Supertrend"]:
+        for col in [
+            "SMA_20",
+            "EMA_20",
+            "RSI",
+            "MACD",
+            "MACD_Signal",
+            "BB_Upper",
+            "BB_Lower",
+            "ATR",
+            "VWAP",
+            "Volume_SMA20",
+            "Supertrend",
+        ]:
             assert col in out.columns
 
     def test_rsi_bounded_0_100(self, ohlcv_df):
@@ -122,6 +133,6 @@ class TestSnapshot:
     def test_snapshot_no_nan_leak(self, ohlcv_df):
         out = technical.compute_all(ohlcv_df)
         snap = technical.snapshot(out)
-        for k, v in snap.items():
+        for _k, v in snap.items():
             if isinstance(v, float):
                 assert v == v  # not NaN

@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from agents.llm_client import LLMProvidersExhausted
 from graph.nodes.verification import build_verification_node
@@ -31,7 +31,7 @@ def _evidence(**overrides):
         "entity": "RELIANCE",
         "evidence_type": "quote_info",
         "payload": {"pe": 24.3},
-        "timestamp": datetime.now(timezone.utc),
+        "timestamp": datetime.now(UTC),
         "confidence": 0.9,
         "citation_key": "quote_info",
     }
@@ -41,8 +41,13 @@ def _evidence(**overrides):
 
 def _task(**overrides):
     base = {
-        "id": "fetch_info:RELIANCE", "description": "x", "tool": "fetch_info",
-        "entity": "RELIANCE", "depends_on": [], "status": "done", "result_evidence_ids": ["ev-1"],
+        "id": "fetch_info:RELIANCE",
+        "description": "x",
+        "tool": "fetch_info",
+        "entity": "RELIANCE",
+        "depends_on": [],
+        "status": "done",
+        "result_evidence_ids": ["ev-1"],
     }
     base.update(overrides)
     return base
@@ -94,6 +99,7 @@ class TestDeterministicStage:
         # any DataFrame-payload evidence (fetch_ohlcv, fetch_nav,
         # fetch_category_funds) reached Verification. See _is_missing().
         import pandas as pd
+
         stub = _StubClient(json.dumps({"issues": []}))
         ev = _evidence(evidence_type="price_ohlcv", payload=pd.DataFrame({"Close": [1, 2, 3]}))
         node = build_verification_node(stub)
@@ -133,31 +139,53 @@ class TestLLMJudgeStage:
     def test_reached_only_when_earlier_stages_clean(self):
         stub = _StubClient(json.dumps({"issues": []}))
         node = build_verification_node(stub)
-        result = node({"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}})
+        result = node(
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
+        )
         assert stub.call_count == 1
         assert result["verification_issues"] == []
 
     def test_parses_llm_reported_issues(self):
-        stub = _StubClient(json.dumps({
-            "issues": [{"claim": "verdict not supported by evidence", "issue_type": "unsupported", "evidence_ids": ["ev-1"]}],
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "issues": [
+                        {
+                            "claim": "verdict not supported by evidence",
+                            "issue_type": "unsupported",
+                            "evidence_ids": ["ev-1"],
+                        }
+                    ],
+                }
+            )
+        )
         node = build_verification_node(stub)
-        result = node({"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}})
+        result = node(
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
+        )
         assert result["verification_issues"][0]["stage"] == "llm_judge"
         assert result["verification_issues"][0]["issue_type"] == "unsupported"
 
     def test_falls_back_to_no_issues_on_unparseable_output(self):
         stub = _StubClient("not json")
         node = build_verification_node(stub)
-        result = node({"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}})
+        result = node(
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
+        )
         assert result["verification_issues"] == []
 
     def test_invalid_issue_type_normalized_to_unsupported(self):
-        stub = _StubClient(json.dumps({
-            "issues": [{"claim": "x", "issue_type": "made_up_type", "evidence_ids": []}],
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "issues": [{"claim": "x", "issue_type": "made_up_type", "evidence_ids": []}],
+                }
+            )
+        )
         node = build_verification_node(stub)
-        result = node({"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}})
+        result = node(
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
+        )
         assert result["verification_issues"][0]["issue_type"] == "unsupported"
 
 
@@ -176,17 +204,25 @@ class TestVerificationProviderExhaustion:
 
     def test_returns_without_raising_and_reports_synthetic_issue(self):
         node = build_verification_node(_ExhaustedClient())
-        result = node({"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}})
+        result = node(
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
+        )
         assert len(result["verification_issues"]) == 1
         assert result["verification_issues"][0]["stage"] == "llm_judge"
         assert "unavailable" in result["verification_issues"][0]["claim"].lower()
 
     def test_forces_loop_count_to_max_loops(self):
         node = build_verification_node(_ExhaustedClient())
-        result = node({
-            "evidence": [_evidence()], "tasks": [_task()], "objective": "x",
-            "evidence_summary": {}, "loop_count": 0, "max_loops": 2,
-        })
+        result = node(
+            {
+                "evidence": [_evidence()],
+                "tasks": [_task()],
+                "objective": "x",
+                "evidence_summary": {},
+                "loop_count": 0,
+                "max_loops": 2,
+            }
+        )
         assert result["loop_count"] == 2
 
     def test_deterministic_and_semantic_stages_still_run_first(self):
@@ -214,15 +250,23 @@ class TestVerificationLoopCount:
         assert result["loop_count"] == 1
 
     def test_llm_judge_issue_increments_loop_count(self):
-        stub = _StubClient(json.dumps({
-            "issues": [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}],
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "issues": [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}],
+                }
+            )
+        )
         node = build_verification_node(stub)
-        result = node({"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}})
+        result = node(
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
+        )
         assert result["loop_count"] == 1
 
     def test_clean_verification_does_not_increment_loop_count(self):
         stub = _StubClient(json.dumps({"issues": []}))
         node = build_verification_node(stub)
-        result = node({"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}})
+        result = node(
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
+        )
         assert "loop_count" not in result

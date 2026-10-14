@@ -71,7 +71,9 @@ class TestPlannerTaskGeneration:
     def test_generates_tasks_for_selected_tools(self):
         stub = _StubClient(json.dumps({"tools": ["compute_fundamentals"]}))
         node = build_planner_node(stub)
-        result = node({"objective": "analyse RELIANCE fundamentals", "entities": ["RELIANCE"], "complexity": "moderate"})
+        result = node(
+            {"objective": "analyse RELIANCE fundamentals", "entities": ["RELIANCE"], "complexity": "moderate"}
+        )
         tool_names = {t["tool"] for t in result["tasks"]}
         # compute_fundamentals depends on fetch_info + fetch_financials — must be auto-included
         assert tool_names == {"compute_fundamentals", "fetch_info", "fetch_financials"}
@@ -108,6 +110,7 @@ class TestPlannerTaskGeneration:
 
     def test_routes_through_fast_model(self):
         from config import GROQ_MODEL_FAST
+
         stub = _StubClient(json.dumps({"tools": ["fetch_info"]}))
         node = build_planner_node(stub)
         node({"objective": "x", "entities": ["RELIANCE"], "complexity": "moderate"})

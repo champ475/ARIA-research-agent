@@ -16,8 +16,9 @@ class TestLogDecision:
         assert entry["timestamp"] is not None
 
     def test_entries_from_multiple_nodes_accumulate_via_reducer(self):
-        from graph.state import GraphState  # noqa: F401 — ensures reducer import path is valid
         import operator
+
+        from graph.state import GraphState  # noqa: F401 — ensures reducer import path is valid
 
         first = log_decision("QueryAnalyzer", "classified intent=equity", "keyword+entity match")
         second = log_decision("Planner", "generated 3 tasks", "objective needs fundamentals+technicals+news")

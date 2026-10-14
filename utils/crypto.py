@@ -5,6 +5,7 @@ string, set once, never rotated without losing access to stored keys) is
 stretched into a valid Fernet key via SHA-256 so users don't have to
 generate/paste a base64 Fernet key themselves.
 """
+
 from __future__ import annotations
 
 import base64
@@ -39,5 +40,5 @@ def encrypt(plaintext: str) -> str:
 def decrypt(ciphertext: str) -> str:
     try:
         return _get_fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
-    except InvalidToken:
-        raise ValueError("Stored API key could not be decrypted — SECRET_KEY may have changed.")
+    except InvalidToken as e:
+        raise ValueError("Stored API key could not be decrypted — SECRET_KEY may have changed.") from e

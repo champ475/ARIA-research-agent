@@ -1,18 +1,102 @@
 name: CI
 
+# Quality gates (PRD TEST-01). Every job must pass before merging to main.
+# Run the same checks locally with:  pip install -r requirements-dev.txt && pre-commit run --all-files
+#   ruff check . && ruff format --check . && mypy && pytest --cov
 on:
   push:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
-      - run: pip install -r requirements.txt
-      - run: python -m pytest tests/ -q
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install "ruff==0.17.0"
+      - run: ruff check . --output-format=github
+      - run: ruff format --check .
+
+  types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: mypy
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: aria
+          POSTGRES_PASSWORD: aria
+          POSTGRES_DB: aria_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aria" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Integration tests (tests/integration) run against this throwaway DB.
+      TEST_DATABASE_URL: postgresql://aria:aria@localhost:5432/aria_test
+      SECRET_KEY: ci-only-not-a-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      # Pango for WeasyPrint, so the real-render PDF security test (SEC-02) runs.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpango-1.0-0 libpangoft2-1.0-0
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest tests/ -q --cov --cov-report=term --cov-report=xml
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # gitleaks scans the full history
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install "bandit[toml]>=1.7.9" "pip-audit>=2.7.0"
+      - name: bandit (static security scan)
+        run: bandit -c pyproject.toml -r agents graph tools utils app.py scripts -q
+      - name: pip-audit (known-vulnerable dependencies)
+        run: pip-audit -r requirements.txt --progress-spinner off
+      - name: gitleaks (committed secrets)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

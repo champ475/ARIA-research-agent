@@ -4,9 +4,10 @@ appends one JournalEntry on exit via log_decision(). Write-only from the
 graph's perspective — no node reads it back; it exists for debugging and
 replaying why a past run behaved a certain way given a thread_id.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from graph.state import JournalEntry
 
@@ -21,6 +22,6 @@ def log_decision(node: str, decision: str, reason: str) -> dict:
         "node": node,
         "decision": decision,
         "reason": reason,
-        "timestamp": datetime.now(timezone.utc),
+        "timestamp": datetime.now(UTC),
     }
     return {"research_journal": [entry]}

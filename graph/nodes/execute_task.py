@@ -17,10 +17,12 @@ DataFrame back (research_executor.py's context-building for
 compute_technicals, communication_layer.py's chart lookup) call
 `_from_cacheable()` themselves at the point of use — see those modules.
 """
+
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
@@ -28,7 +30,10 @@ import pandas as pd
 from graph.journal import log_decision
 from graph.state import Evidence, Task
 from graph.tool_catalogue import get_tool
+from graph.write_policy import write_allowed
 from tools.data import evidence_cache
+
+log = logging.getLogger(__name__)
 
 
 _INDEX_COL_FALLBACK = "index"  # pandas' own default name for reset_index() on an unnamed index
@@ -51,8 +56,10 @@ def _to_cacheable(payload: Any) -> Any:
                 if isinstance(value, (pd.Timestamp, datetime)):
                     record[key] = value.isoformat()
         return {
-            "__dataframe__": True, "records": records,
-            "index_name": index_name, "index_had_no_name": orig_index_name is None,
+            "__dataframe__": True,
+            "records": records,
+            "index_name": index_name,
+            "index_had_no_name": orig_index_name is None,
             "index_is_datetime": index_is_datetime,
         }
     return payload
@@ -76,8 +83,23 @@ def from_cacheable(payload: Any) -> Any:
 
 
 def _evidence_id(tool_name: str, entity: str, evidence_type: str) -> str:
-    blob = f"{tool_name}:{entity}:{evidence_type}:{datetime.now(timezone.utc).isoformat()}"
+    blob = f"{tool_name}:{entity}:{evidence_type}:{datetime.now(UTC).isoformat()}"
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _blocked_evidence(task: Task, evidence_type: str, reason: str) -> Evidence:
+    action = task["tool"].split("_", 1)[1] if task["tool"].startswith("alert_") else "save"
+    return {
+        "id": _evidence_id(task["tool"], task["entity"], evidence_type),
+        "source": task["tool"],
+        "tool": task["tool"],
+        "entity": task["entity"],
+        "evidence_type": evidence_type,
+        "payload": {"action": action, "symbol": task["entity"], "result": "blocked", "reason": reason},
+        "timestamp": datetime.now(UTC),
+        "confidence": 1.0,
+        "citation_key": evidence_type,
+    }
 
 
 def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
@@ -88,7 +110,24 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
     for marking the Task failed, RFC Sec11) rather than being swallowed here.
     """
     spec = get_tool(task["tool"])
-    cached = evidence_cache.get(task["tool"], task["entity"], spec.evidence_type)
+    if spec.side_effect:
+        # SEC-03 last line of defence: even if a write task got planned, it
+        # only runs when the turn's intent owns it and the user's own message
+        # explicitly asked for it.
+        ok, reason = write_allowed(
+            task["tool"], context.get("_intent"), context.get("_secondary_intents"), context.get("_query")
+        )
+        if not ok:
+            log.warning(f"[execute_task] blocked write tool {task['tool']}: {reason}")
+            return _blocked_evidence(task, spec.evidence_type, reason)
+    # DATA-01: write tools and user-scoped reads bypass the shared cache
+    # entirely; cacheable tools key on every input that changes their output.
+    key_parts = spec.cache_key(task["entity"], context) if (spec.cacheable and spec.cache_key) else {}
+    cached = (
+        evidence_cache.get(task["tool"], task["entity"], spec.evidence_type, **key_parts)
+        if spec.cacheable
+        else None
+    )
     if cached is not None:
         cacheable_payload = cached["payload"]
         confidence = cached["confidence"]
@@ -96,7 +135,10 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
         raw_payload = spec.fn(task["entity"], context)
         confidence = 1.0
         cacheable_payload = _to_cacheable(raw_payload)
-        evidence_cache.put(task["tool"], task["entity"], spec.evidence_type, cacheable_payload, confidence)
+        if spec.cacheable:
+            evidence_cache.put(
+                task["tool"], task["entity"], spec.evidence_type, cacheable_payload, confidence, **key_parts
+            )
 
     evidence: Evidence = {
         "id": _evidence_id(task["tool"], task["entity"], spec.evidence_type),
@@ -107,7 +149,7 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
         # Kept in checkpoint-safe form here (not the raw DataFrame) — see
         # module docstring. Callers needing the real object use from_cacheable().
         "payload": cacheable_payload,
-        "timestamp": datetime.now(timezone.utc),
+        "timestamp": datetime.now(UTC),
         "confidence": confidence,
         # Fine-grained per-ratio citation keys (matching fundamental.py's
         # [^pe]/[^roce] convention) are assigned by ConclusionBuilder (Phase 5),
@@ -140,5 +182,7 @@ def execute_task_node(send_state: dict) -> dict:
     return {
         "tasks": [done_task],
         "evidence": [evidence],
-        **log_decision("execute_task", f"completed: {task['id']}", f"tool={task['tool']}, entity={task['entity']}"),
+        **log_decision(
+            "execute_task", f"completed: {task['id']}", f"tool={task['tool']}, entity={task['entity']}"
+        ),
     }

@@ -23,6 +23,7 @@ the serde with `pickle_fallback=True` covers both today and any future type
 neither side anticipated, instead of hand-listing every non-native type as
 it's discovered.
 """
+
 from __future__ import annotations
 
 import threading
@@ -46,9 +47,9 @@ def get_postgres_checkpointer():
         if _checkpointer is not None:
             return _checkpointer
 
-        from psycopg_pool import ConnectionPool
         from langgraph.checkpoint.postgres import PostgresSaver
         from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+        from psycopg_pool import ConnectionPool
 
         _pool = ConnectionPool(conninfo=DATABASE_URL, max_size=5, kwargs={"autocommit": True})
         checkpointer = PostgresSaver(_pool, serde=JsonPlusSerializer(pickle_fallback=True))

@@ -14,6 +14,7 @@ Requires GROQ_API_KEY_1 (or GEMINI_API_KEY) configured in .env, same as the app.
 Usage:
     python scripts/measure_graph_latency.py
 """
+
 from __future__ import annotations
 
 import statistics
@@ -29,7 +30,10 @@ from graph.graph import build_graph
 # rows in RFC §19's table stay directly comparable across re-measurements.
 _QUERIES = [
     ("simple", "what is the current price of TCS"),
-    ("complex", "give me a full analysis of Reliance Industries — trend, valuation, risk, and a buy/sell/hold call"),
+    (
+        "complex",
+        "give me a full analysis of Reliance Industries — trend, valuation, risk, and a buy/sell/hold call",
+    ),
 ]
 
 
@@ -46,23 +50,29 @@ class _CallCounter:
         def wrapper(client_self, *args, **kwargs):
             self.count += 1
             return original(client_self, *args, **kwargs)
+
         return wrapper
 
     def make_stream_wrapper(self, original):
         def wrapper(client_self, *args, **kwargs):
             self.count += 1
             yield from original(client_self, *args, **kwargs)
+
         return wrapper
 
 
 def _run_one(query: str) -> tuple[int, float]:
     counter = _CallCounter()
-    with patch.object(LLMClient, "ask", counter.make_wrapper(LLMClient.ask)), \
-         patch.object(LLMClient, "chat", counter.make_wrapper(LLMClient.chat)), \
-         patch.object(LLMClient, "stream", counter.make_stream_wrapper(LLMClient.stream)):
+    with (
+        patch.object(LLMClient, "ask", counter.make_wrapper(LLMClient.ask)),
+        patch.object(LLMClient, "chat", counter.make_wrapper(LLMClient.chat)),
+        patch.object(LLMClient, "stream", counter.make_stream_wrapper(LLMClient.stream)),
+    ):
         graph = build_graph(checkpointer=None)
         start = time.monotonic()
-        graph.invoke({"query": query, "max_loops": 2}, config={"configurable": {"thread_id": "measure-graph-latency"}})
+        graph.invoke(
+            {"query": query, "max_loops": 2}, config={"configurable": {"thread_id": "measure-graph-latency"}}
+        )
         elapsed = time.monotonic() - start
     return counter.count, elapsed
 
@@ -87,4 +97,7 @@ def main():
 
 
 if __name__ == "__main__":
+    from utils.logging_setup import configure_logging
+
+    configure_logging()
     main()

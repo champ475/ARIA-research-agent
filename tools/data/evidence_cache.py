@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from utils.db import evidence_cache_get, evidence_cache_put
+
+log = logging.getLogger(__name__)
 
 # Per RFC Sec8: OHLCV 15 min, fundamentals 1 day, news 1 hr, macro 1 hr.
 # Other evidence types get a conservative default rather than an arbitrary guess.
@@ -31,12 +34,17 @@ TTL_SECONDS: dict[str, int] = {
 }
 _DEFAULT_TTL_SECONDS = 900
 
+# Bumped whenever the key scheme changes, so rows written under an old (and
+# possibly under-specified) scheme can never be served again. v2 = DATA-01:
+# query-driven tools started adding their parsed inputs to the key.
+_KEY_VERSION = 2
+
 
 def compute_args_hash(entity: str, **kwargs: Any) -> str:
     """Deterministic hash of everything that identifies a specific fetch —
     same entity + same extra args always produces the same key regardless of
     dict ordering."""
-    payload = {"entity": entity, **kwargs}
+    payload = {"_v": _KEY_VERSION, "entity": entity, **kwargs}
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -63,5 +71,10 @@ def get(tool: str, entity: str, evidence_type: str, **kwargs: Any) -> dict | Non
 
 
 def put(tool: str, entity: str, evidence_type: str, payload: dict, confidence: float = 1.0, **kwargs: Any) -> None:
+    """Best-effort, like get(): a failed cache write must never turn a tool
+    call that already succeeded into a failed task."""
     key = compute_args_hash(entity, **kwargs)
-    evidence_cache_put(tool, key, entity, evidence_type, payload, confidence)
+    try:
+        evidence_cache_put(tool, key, entity, evidence_type, payload, confidence)
+    except Exception as e:
+        log.warning(f"[evidence_cache] put failed for {tool}: {e}")

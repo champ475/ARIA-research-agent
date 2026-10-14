@@ -5,8 +5,13 @@ from graph.nodes.human_review import research_confirmation, verification_gate
 
 def _task(**overrides):
     base = {
-        "id": "t1", "description": "x", "tool": "fetch_info", "entity": "RELIANCE",
-        "depends_on": [], "status": "pending", "result_evidence_ids": [],
+        "id": "t1",
+        "description": "x",
+        "tool": "fetch_info",
+        "entity": "RELIANCE",
+        "depends_on": [],
+        "status": "pending",
+        "result_evidence_ids": [],
     }
     base.update(overrides)
     return base
@@ -23,7 +28,7 @@ class TestResearchConfirmation:
     def test_skips_confirmation_when_not_complex(self):
         tasks = [_task(id=str(i)) for i in range(10)]
         with patch("graph.nodes.human_review.interrupt") as mock_interrupt:
-            result = research_confirmation({"tasks": tasks, "complexity": "moderate"})
+            research_confirmation({"tasks": tasks, "complexity": "moderate"})
         mock_interrupt.assert_not_called()
 
     def test_asks_when_complex_and_over_threshold(self):
@@ -48,7 +53,9 @@ class TestResearchConfirmation:
 
     def test_writes_journal_entry(self):
         with patch("graph.nodes.human_review.interrupt", return_value=True):
-            result = research_confirmation({"tasks": [_task(id=str(i)) for i in range(10)], "complexity": "complex"})
+            result = research_confirmation(
+                {"tasks": [_task(id=str(i)) for i in range(10)], "complexity": "complex"}
+            )
         assert result["research_journal"][0]["node"] == "ResearchConfirmation"
 
 
@@ -81,5 +88,7 @@ class TestVerificationGate:
 
     def test_writes_journal_entry(self):
         with patch("graph.nodes.human_review.interrupt", return_value=True):
-            result = verification_gate({"verification_issues": [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}]})
+            result = verification_gate(
+                {"verification_issues": [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}]}
+            )
         assert result["research_journal"][0]["node"] == "VerificationGate"

@@ -16,6 +16,309 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Inbox-delivered alerts stay pending until read (supersedes part of "Alert delivery contract")
+
+**Problem.** The first DATA-08 implementation (entry below) wrote the inbox
+row and immediately marked the alert triggered: a one-shot alert was
+deactivated before anyone had seen it. The PRD's Done-when says an unlinked
+user's alert "stays active with pending_delivery and shows in-app".
+
+**Alternatives considered.**
+- *Keep it triggered on insert.* Rejected: an unread row is not proof of
+  delivery, which is the whole point of DATA-08.
+- *Leave it active and re-evaluate it every run.* Rejected: a condition that
+  stays true would add a duplicate inbox row every 5 minutes.
+
+**Final decision.**
+- **Queuing.** When `scripts/check_alerts.py` queues an alert in the inbox, it
+  sets `delivery_status='pending_delivery'` and leaves `active` and
+  `triggered_at` untouched.
+- **No duplicates.** Each run's SELECT skips alerts that are already pending.
+- **Consuming.** `utils/db.py::notifications_mark_read` consumes them. One
+  statement (a data-modifying CTE) marks the notifications read and, for the
+  same user's pending alerts they point to, does what Telegram delivery does:
+  a one-shot alert is deactivated; a recurring one gets `triggered_at=now()`
+  and starts its cooldown.
+- **Tests.** `tests/integration/test_alert_delivery.py` proves the whole cycle
+  on real Postgres, including that another user's mark-read can't consume
+  them.
+
+**Trade-offs.**
+- **Unread means never consumed.** A user who never opens the inbox keeps a
+  pending alert indefinitely. It is never re-sent, but it never expires
+  either.
+- **Linking later doesn't re-send.** If Telegram is linked while an alert is
+  pending, the alert is not re-sent there; it stays in the inbox.
+
+**Future improvements.**
+- Expire pending alerts after N days.
+- Deliver pending inbox items over Telegram once the user links it.
+
+---
+
+## 2026-10-14 — A local LLM is the last fallback tier, behind trial and BYO keys
+
+**Problem.** When the shared Groq/Gemini keys are rate-limited, revoked or
+misconfigured, every chat turn fails. On 2026-10-14 that was the live state:
+Groq returned `model_not_found` for both models and the Gemini key was
+invalid. The operator already runs a llama.cpp server (Qwen2.5-3B, CPU, about
+5 tokens/s) that speaks the OpenAI API.
+
+**Alternatives considered.**
+- *Local first, cloud as fallback.* Rejected: a 3B CPU model is much weaker
+  and slower than Llama 3.3 70B, so it should only answer when nothing better
+  can.
+- *Route through the BYO path (`OpenAICompatibleProvider`).* Rejected: that
+  adapter enforces the SEC-01 public-https rule, which correctly rejects
+  `127.0.0.1`. The local URL comes from the operator's environment, not from
+  a user, so it is trusted config and gets its own provider.
+- *LiteLLM proxy in front of every provider.* Rejected for now: it is another
+  service to run, and it would bypass `_KeyRotator`.
+
+**Final decision.** `agents/providers/local_llm.py::LocalLLMProvider`
+subclasses the OpenAI-compatible adapter (shared `_bind`). `LLMClient` adds it
+as a third tier (`_chain()` = primary, secondary, local) when
+`LOCAL_LLM_BASE_URL` is set. It is off by default.
+- **Order.** It is used in both `_call` and `stream`, only after the cloud
+  providers fail.
+- **Retries.** It is tried at most once per call. A refused connection, a
+  timeout or a context overflow will not be fixed by retrying.
+- **Limits.** The SDK's own retries are off. Output is capped at
+  `LOCAL_LLM_MAX_TOKENS` (default 1024) and each call is bounded by
+  `LOCAL_LLM_TIMEOUT_SECONDS` (default 300).
+- **Errors.** llama.cpp's `exceed_context_size_error` is classified as
+  `too_large`.
+- **No cloud keys.** With neither Groq nor Gemini configured, the trial path
+  runs on the local model alone.
+
+It also backs **BYO** clients. This partly supersedes the 2026-10 "BYO has no
+fallback chain" stance. That rule existed so a user's failure never spends
+the operator's cloud quota, and a local model spends no quota. The Settings
+"Test connection" button still builds the BYO provider directly, so a bad
+user key is still reported there.
+
+**Trade-offs.**
+- **Quality.** Answers from the fallback are much weaker: a 3B model with a
+  4–8k context.
+- **Speed.** One server slot (`-np 1`) serialises the graph's parallel LLM
+  calls, so a fallback turn can take minutes.
+- **Visibility.** A BYO user with a broken key gets local answers in chat
+  instead of an error, unless they press "Test connection".
+- **Deployment.** On a host without the server, every exhausted call makes
+  one extra fast-failing connection attempt and logs one warning.
+
+**Future improvements.**
+- Mark the reply when it came from the fallback ("answered by local model").
+- Route Groq's fast-model calls to a separate `local-tiny` endpoint.
+- Add a short health-cache TTL so a down server is skipped without trying to
+  connect.
+- Trim prompts to fit the local context window.
+
+---
+
+## 2026-10-14 — Tenant isolation is proven by a real-Postgres test suite with a coverage meta-test
+
+**Problem.** Every user-scoped query relies on a hand-written `WHERE user_id=%s`;
+unit tests mock the database, so nothing proved the clauses exist or work, and
+the shared-cache bug (DATA-01) and two unchecked session writes showed it had
+already broken.
+
+**Alternatives considered.** Postgres Row-Level Security now (the strongest
+backstop, but every connection would need `SET app.user_id` plumbed through the
+pool, the checkpointer and the alert script — a larger change than Phase 0
+allows); an in-memory SQLite stand-in (different SQL dialect: `ON CONFLICT`,
+`ANY(%s)`, JSONB and partial indexes would diverge from production); mock-based
+tests of the SQL strings (proves text, not behaviour).
+
+**Final decision.** An integration suite on a real Postgres (CI service
+container, or testcontainers locally) where user B acts on user A's ids through
+every user-scoped db function and graph tool. A meta-test introspects
+`utils.db` for functions taking `user_id` and fails if any lacks an entry in the
+suite's coverage map. The fixture refuses to run against the app's own
+`DATABASE_URL`.
+
+**Trade-offs.** Coverage is by function, not by every parameter combination;
+functions that are deliberately cross-user (`alert_get_active_all`, caches,
+auth rate limits) are outside the meta-test. Local runs need Docker.
+
+**Future improvements.** Enable Row-Level Security with a per-connection
+`app.user_id` as a database-level backstop; extend the meta-test to the app's
+Gradio handlers.
+
+## 2026-10-14 — Alert delivery contract: consumed only after delivery, with an in-app inbox fallback
+
+**Problem.** The alert checker marked an alert triggered as soon as its condition
+held, regardless of whether the notification reached anyone. Users without a
+linked Telegram chat, or whose send failed, silently lost one-shot alerts, and
+recurring alerts went quiet for their cooldown.
+
+**Alternatives considered.** Keep firing the alert every run until Telegram
+succeeds (spams once it recovers and never helps unlinked users); require
+Telegram linking before an alert can be created (blocks a common first-use
+flow); a full outbox/worker with exponential backoff (right at scale, more
+infrastructure than one cron script needs today).
+
+**Final decision.** Triggering is tied to delivery in one transaction. Telegram
+counts only on a confirmed `ok: true`; transient failures are counted on the
+alert and retried next run; permanent failures (not linked, no bot) and
+repeated failures go to an in-app `notifications` inbox shown in Settings.
+Market data is memoised per run, and the workflow can't overlap itself.
+
+**Trade-offs.** A retried alert is re-evaluated, so if the condition stops
+holding before Telegram recovers, nothing is sent (the alert stays active,
+which is the honest outcome). The inbox is only visible inside the app, and
+there's no email channel. Schema changes are still applied with idempotent
+`ALTER TABLE` statements, not migrations.
+
+**Future improvements.** Alembic migrations (ARCH-01); an email channel and an
+Alerts tab with the inbox (UX-06); a delivery-failure metric and alert (OBS-03/04).
+
+## 2026-10-14 — Concurrency model: N concurrent chat turns server-wide, one per user
+
+**Problem.** Gradio's default concurrency limit of 1 per event serialised all
+users behind whichever turn was running (reports take 30 s+). Raising it
+exposes two shared-state hazards: the per-user `GraphOrchestrator` (memory,
+pending HITL state) isn't safe to drive from two threads, and psycopg2's
+`ThreadedConnectionPool` raises instead of waiting when exhausted.
+
+**Alternatives considered.** Async handlers end to end (the graph, LLM SDKs and
+yfinance are synchronous; a big rewrite for this phase); one process per user
+or a job queue with workers (right for scale, REL-05/OPS-02 territory);
+per-user queuing that waits instead of rejecting (hides a stuck turn and ties
+up a worker slot doing nothing).
+
+**Final decision.** Gradio queue with a shared "chat" concurrency pool sized by
+`CHAT_CONCURRENCY` (default 8). A per-user lock allows one in-flight turn per
+user; a second message is answered immediately with a "still working" reply.
+The DB pool is sized by `DB_POOL_MAX` and fronted by a semaphore so callers
+wait up to a timeout for a connection.
+
+**Trade-offs.** Threads, not processes: CPU-heavy work (PDF render, indicator
+maths) still contends for the GIL, and the in-memory orchestrator cache keeps
+the app single-replica. Rate-limit backoff in `LLMClient._call` still uses
+`time.sleep`, holding a worker slot while it waits (REL-02). The PRD's
+load-test acceptance (p95 TTFT ≤ 1.5× single-user) has a script but has not
+been run against a staging deployment yet.
+
+**Future improvements.** Deadline-aware retries (REL-02); move orchestrator
+state out of process (OPS-02) so the app can run multiple replicas; run
+`scripts/load_test.py` in a staging pipeline (TEST-06).
+
+## 2026-10-14 — BYO LLM egress policy: public https only, checked at save, load and every request
+
+**Problem.** The bring-your-own-key feature lets a user choose the URL the
+server calls. Unchecked, that is server-side request forgery: cloud metadata,
+the database port or any internal service is reachable, and the raw upstream
+error was echoed back to the user, turning it into a read primitive.
+
+**Alternatives considered.** A fixed allowlist of known providers (safest, but
+blocks the many OpenAI-compatible hosts users legitimately use); validating
+only at save time (defeated by DNS rebinding and by configs saved before the
+check); running BYO calls through an egress proxy with network-level deny
+rules (best defence in depth, but needs infrastructure the app doesn't have yet).
+
+**Final decision.** `utils/url_safety.py` enforces "https, and every resolved
+address is globally routable". It runs when the URL is saved, when the provider
+is constructed from a stored config, and on every HTTP request via a custom
+httpx transport; redirects aren't followed. Users see only a coarse error class,
+never upstream response text. An operator flag (`BYO_ALLOW_PRIVATE_HOSTS`)
+relaxes it for self-hosted deployments.
+
+**Trade-offs.** The per-request check resolves the name and httpx resolves it
+again to connect, so a resolver flipping between the two lookups could still
+win (small window). Each BYO request pays one extra DNS lookup.
+
+**Future improvements.** Pin the connection to the checked IP (custom
+connection pool) or route BYO traffic through an egress proxy with
+network-level rules; add a DAST check in CI.
+
+## 2026-10-14 — Write-tool trust boundary: deterministic intent + verb gate, enforced in three places
+
+**Problem.** The research graph lets an LLM choose tools, and five tools write
+user data. The LLM's inputs include text the user didn't write (news, filing
+PDFs, earlier turns), so a prompt injection or a plain misread could create,
+cancel, pause or resume alerts or save screens without the user asking.
+
+**Alternatives considered.** A human-in-the-loop confirmation before every
+write (safest, but adds a round-trip to the most common alert flow and the
+current HITL gate is typed yes/no only — revisit with UX-02 buttons); an LLM
+"is this write intended?" judge (itself injectable and non-deterministic);
+removing writes from the graph entirely and routing them through dedicated UI
+(right long-term for management actions, but a larger UX change).
+
+**Final decision.** `graph/write_policy.py` owns a deterministic rule: a write
+tool runs only when the classified intent owns it and the user's own message
+contains an explicit action verb for it. Planner hides/drops disallowed write
+tools, Reflection can never add one, and `execute_task` re-checks immediately
+before the call and records a "blocked" result. Untrusted text is fenced in
+`<untrusted>` blocks with a system notice as defence in depth.
+
+**Trade-offs.** Depends on QueryAnalyzer's intent being right; a user whose
+phrasing lacks a recognised verb ("TCS alert below 3500") now gets no alert.
+A user who *does* type "cancel my alerts" inside an alert-intent message is
+trusted — the gate stops third-party text, not the user.
+
+**Future improvements.** ID-based alert management with confirmation buttons
+(VAL-04, UX-02); log blocked writes as a metric (OBS-03) to tune the verb list.
+
+## 2026-10-14 — Evidence-cache contract: a tool is cacheable only if its key covers every input
+
+**Problem.** The shared evidence cache keyed every tool on (tool, entity) for all
+users. Tools whose output depends on the user (alerts) or the free-text query
+(screener, top movers) — and tools with side effects — were served from cache,
+so writes were silently skipped and one user's results answered another's.
+
+**Alternatives considered.** Per-user cache partitions (would still skip writes
+and lose the cross-user sharing that makes the cache worth having for
+market data); dropping the cache for all `market`-sentinel tools (simple, but
+throws away legitimate sharing for movers and screens); adding a generic
+`args` hash of the whole context (dependency payloads include DataFrames and
+large blobs, so the key would be expensive and unstable).
+
+**Final decision.** Each `ToolSpec` declares `side_effect`, `cacheable` and an
+optional `cache_key(entity, context)` returning the extra inputs that change
+its output. Write tools and user-scoped reads are `cacheable=False`;
+query-driven tools key on their parsed input. A key version is part of the hash
+so a scheme change orphans old rows, and a catalogue invariant test fails CI if
+a write tool is cacheable or a tool reading `_query`/`_user_id` is cached
+without keying on it.
+
+**Trade-offs.** The invariant test detects context reads by source inspection,
+so a tool that reaches `_query` indirectly through a helper relies on review.
+Old orphaned rows stay in the table until a retention job (DATA-10) clears them.
+
+**Future improvements.** Typed task args (instead of context keys) so cache keys
+derive from declared inputs automatically; a retention sweep for stale rows.
+
+## 2026-10-14 — Logs are JSON lines with a per-turn correlation id
+
+**Problem.** No logging was configured at all, so library and app warnings
+went to Python's last-resort stderr handler as bare text, debug traces used
+`print()` (one dumped full LLM prompts), and nothing linked a log line to the
+user turn that produced it. Debugging a bad answer meant guessing.
+
+**Alternatives considered.** `structlog` (nicer API, but a new dependency and
+every module would need converting to its logger); plain-text logs with a
+`%(turn_id)s` format field (not machine-parseable by a hosted sink);
+OpenTelemetry logging now (right long-term answer, but OBS-02 tracing is the
+place to introduce it).
+
+**Final decision.** Stdlib `logging` with a custom `JsonFormatter`
+(`utils/logging_setup.py`), so existing `logging.getLogger(__name__)` calls
+work unchanged. Turn fields live in `contextvars`; `run_in_turn()` runs the
+whole chat generator in one persistent Context because Gradio resumes each
+generator step in a freshly copied context. The user id is logged only as a
+keyed HMAC pseudonym, and a redaction pass masks known secret shapes in
+messages and tracebacks.
+
+**Trade-offs.** Redaction is pattern-based, so a secret in an unknown shape
+can still leak; logs go to stderr only (no hosted sink is wired, which needs
+an account decision). The pseudonym changes if SECRET_KEY rotates.
+
+**Future improvements.** Ship logs to a hosted sink (Loki/Better Stack/Axiom),
+add OpenTelemetry trace/span ids (OBS-02), and a ruff T20 rule in CI (TEST-01)
+to keep `print()` out.
+
 ## 2026-08-10 — LLMClient's exhaustion contract changed from a string return to a raised exception
 
 **Problem.** Live E2E testing found `LLMClient.ask()`/`.stream()` returning a

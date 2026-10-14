@@ -23,12 +23,22 @@ python app.py
 # Opens at http://localhost:7860
 ```
 
-No build step required. `pytest` test suite exists under `tests/` (unit tests for `tools/analysis/*` and the `graph/` LangGraph nodes) — run with `python -m pytest tests/ -q`. UI-level flows are still verified manually via Gradio.
+No build step required. Tests live under `tests/` (unit tests for `tools/`, `graph/`, `agents/`, `utils/`, plus `tests/integration/` on a real Postgres). UI-level flows are still verified manually via Gradio.
+
+```bash
+pip install -r requirements-dev.txt     # app deps + ruff, mypy, pytest-cov, hypothesis, testcontainers, bandit, pip-audit
+python -m pytest tests/ -q              # integration tests use TEST_DATABASE_URL, else a Docker Postgres, else skip
+ruff check . && ruff format --check .   # lint + format (ruff pinned to 0.17.0)
+mypy                                    # type check (legacy modules ratcheted in pyproject.toml)
+pre-commit install                      # optional: run the same gates on every commit
+```
+
+CI (`.github/workflows/ci.yml`) runs lint, types, tests with coverage (floor in `pyproject.toml`, against a Postgres service container) and security (bandit, pip-audit, gitleaks). Never point tests at the `.env` `DATABASE_URL`.
 
 ## Architecture
 
 ### Entry Point & UI
-`app.py` builds a 2-tab Gradio interface (Chat, Watchlist) with an auth gate (`utils/auth.py`). All specialist domains (equity, reports, mutual funds, screener, alerts, planning) are routed through the single Chat tab via the LangGraph research engine (`graph/`), not per-domain tabs. One `GraphOrchestrator` (`agents/graph_orchestrator.py`) is lazily initialized per user session (`get_orchestrator(user_id)`), each with its own conversation memory.
+`app.py` builds a 3-tab Gradio interface (Chat, Watchlist, Settings — BYO LLM key, Telegram linking, alert inbox) with an auth gate (`utils/auth.py`). All specialist domains (equity, reports, mutual funds, screener, alerts, planning) are routed through the single Chat tab via the LangGraph research engine (`graph/`), not per-domain tabs. One `GraphOrchestrator` (`agents/graph_orchestrator.py`) is lazily initialized per user session (`get_orchestrator(user_id)`), each with its own conversation memory.
 
 ### Orchestration (`agents/graph_orchestrator.py`, `graph/`)
 A LangGraph `StateGraph` (see `docs/RFC_AGENTIC_RESEARCH_GRAPH.md`) is the sole orchestration path: QueryAnalyzer (intent/entity/complexity) → Planner (LLM-driven tool selection over `graph/tool_catalogue.py`) → parallel ResearchExecutor/execute_task fan-out → EvidenceSummarizer → Reflection/Verification self-correction loop (with human-in-the-loop gates) → ConclusionBuilder → CommunicationLayer (the only node allowed to call the primary LLM). Equity/chat turns stream token-by-token (`GraphOrchestrator` makes the deferred LLM call itself, see `communication_layer.py::_is_streamable`); report/mf/screener/alert/planning intents return their finished text in one yield.
@@ -38,8 +48,9 @@ A LangGraph `StateGraph` (see `docs/RFC_AGENTIC_RESEARCH_GRAPH.md`) is the sole 
 - Thread-safe round-robin key rotation across up to 5 Groq API keys (enables scaling free tier)
 - Automatic fallback to Gemini 2.0 Flash on Groq 429 errors
 - Per-instance conversation history (capped at 20 messages)
+- Optional last-resort local LLM (`agents/providers/local_llm.py`) when `LOCAL_LLM_BASE_URL` is set — any OpenAI-compatible server (e.g. llama.cpp from `..\local-llm`, `.\start-server.ps1` → `http://127.0.0.1:8080/v1`). Tried after Groq/Gemini (or a BYO key) fail, once per call, output capped by `LOCAL_LLM_MAX_TOKENS`. Tests disable it via an autouse fixture in `tests/conftest.py`.
 
-Primary model: `llama-3.3-70b-versatile`. Fast model: `gemma2-9b-it`. Fallback: `gemini-2.0-flash`.
+Primary model: `llama-3.3-70b-versatile`. Fast model: `llama-3.1-8b-instant`. Fallback: `gemini-2.0-flash`.
 
 ### Tools Layer (`tools/`)
 - `tools/data/` — Data fetchers: `fetcher.py` (yfinance wrapper), `nse_scraper.py` (bhavcopy, bulk/block deals), `news_fetcher.py` (RSS + Google News), `amfi.py` (mutual fund NAV), `cache.py` (Parquet caching to reduce API calls)
@@ -54,6 +65,15 @@ Postgres (Neon), via `psycopg2.pool.ThreadedConnectionPool`. Tables: `users`, `s
 
 ### Ticker Resolution (`utils/helpers.py`)
 Maps common aliases to NSE symbols (e.g. `"SBI"` → `"SBIN"`, `"HUL"` → `"HINDUNILVR"`). All tickers must be suffixed with `.NS` for NSE or `.BO` for BSE when passed to yfinance.
+
+## Production-readiness contracts (Phase 0, see ARCHITECTURE.md)
+
+- **Logging**: use `logging.getLogger(__name__)`, never `print()` in app code (ruff T20 + a test enforce it). `utils/logging_setup.py` emits JSON with a per-turn `turn_id`; chat turns run inside `run_in_turn`.
+- **Evidence cache**: a tool in `graph/tool_catalogue.py` may be `cacheable` only if `entity + cache_key(...)` covers every input that changes its output; write tools are `side_effect=True, cacheable=False` (invariant tests in `tests/graph/test_cache_contract.py`).
+- **Write tools**: run only when `graph/write_policy.py::write_allowed` passes (intent owns the tool AND the user's message has an explicit verb). Wrap third-party text in prompts with `graph/prompt_safety.py::wrap_untrusted`.
+- **User input**: chat text goes through `utils/input_guard.py::clean_message` first; user-supplied URLs through `utils/url_safety.py`.
+- **Tenant isolation**: every new `utils/db.py` function taking `user_id` needs a case in `tests/integration/test_tenant_isolation.py::COVERED` (a meta-test fails otherwise).
+- **Concurrency**: chat turns run concurrently (`CHAT_CONCURRENCY`), one per user (`respond_exclusive`); module-level mutable state must be thread-safe.
 
 ## Changelog
 

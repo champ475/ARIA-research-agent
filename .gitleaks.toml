@@ -1,0 +1,9 @@
+# gitleaks config (used by CI's gitleaks-action and the pre-commit hook).
+# Default rules, plus an allowlist for the fake credentials that the
+# log-redaction tests feed in on purpose (OBS-01).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake credentials used to test log redaction"
+paths = ['''tests/test_logging_setup\.py''']

@@ -1,7 +1,7 @@
 import json
+from unittest.mock import patch
 
 from graph.nodes.query_analyzer import build_query_analyzer_node
-from unittest.mock import patch
 
 
 class _StubClient:
@@ -16,13 +16,19 @@ class _StubClient:
 
 class TestQueryAnalyzer:
     def test_extracts_entities_deterministically(self):
-        stub = _StubClient(json.dumps({"intent": "equity", "objective": "analyse RELIANCE", "complexity": "moderate"}))
+        stub = _StubClient(
+            json.dumps({"intent": "equity", "objective": "analyse RELIANCE", "complexity": "moderate"})
+        )
         node = build_query_analyzer_node(stub)
         result = node({"query": "what's the outlook on RELIANCE"})
         assert "RELIANCE" in result["entities"]
 
     def test_parses_intent_objective_complexity_from_llm_json(self):
-        stub = _StubClient(json.dumps({"intent": "equity", "objective": "analyse RELIANCE fundamentals", "complexity": "moderate"}))
+        stub = _StubClient(
+            json.dumps(
+                {"intent": "equity", "objective": "analyse RELIANCE fundamentals", "complexity": "moderate"}
+            )
+        )
         node = build_query_analyzer_node(stub)
         result = node({"query": "how are RELIANCE fundamentals looking"})
         assert result["intent"] == "equity"
@@ -37,13 +43,18 @@ class TestQueryAnalyzer:
         assert result["complexity"] == "simple"
 
     def test_handles_markdown_fenced_json(self):
-        stub = _StubClient("```json\n" + json.dumps({"intent": "mf", "objective": "compare funds", "complexity": "simple"}) + "\n```")
+        stub = _StubClient(
+            "```json\n"
+            + json.dumps({"intent": "mf", "objective": "compare funds", "complexity": "simple"})
+            + "\n```"
+        )
         node = build_query_analyzer_node(stub)
         result = node({"query": "compare two mutual funds"})
         assert result["intent"] == "mf"
 
     def test_routes_through_fast_model(self):
         from config import GROQ_MODEL_FAST
+
         stub = _StubClient(json.dumps({"intent": "chat", "objective": "", "complexity": "simple"}))
         node = build_query_analyzer_node(stub)
         node({"query": "hi"})
@@ -63,13 +74,21 @@ class TestQueryAnalyzerEntityFiltering:
     garbage tokens must never survive to become Planner tasks."""
 
     def test_garbage_tokens_are_filtered_out(self):
-        stub = _StubClient(json.dumps({
-            "intent": "report", "secondary_intents": ["alert"],
-            "objective": "x", "complexity": "complex",
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "intent": "report",
+                    "secondary_intents": ["alert"],
+                    "objective": "x",
+                    "complexity": "complex",
+                }
+            )
+        )
         node = build_query_analyzer_node(stub)
         with patch("graph.nodes.query_analyzer.filter_valid_entities", return_value=["INFY"]) as mock_filter:
-            result = node({"query": "Give me an IC report for INFY and also set an alert if it drops below 1400"})
+            result = node(
+                {"query": "Give me an IC report for INFY and also set an alert if it drops below 1400"}
+            )
         mock_filter.assert_called_once()
         assert result["entities"] == ["INFY"]
 
@@ -91,37 +110,62 @@ class TestQueryAnalyzerMultiIntent:
         assert result["secondary_intents"] == []
 
     def test_parses_secondary_intents_list(self):
-        stub = _StubClient(json.dumps({
-            "intent": "report", "secondary_intents": ["alert"],
-            "objective": "report + alert", "complexity": "complex",
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "intent": "report",
+                    "secondary_intents": ["alert"],
+                    "objective": "report + alert",
+                    "complexity": "complex",
+                }
+            )
+        )
         node = build_query_analyzer_node(stub)
         result = node({"query": "generate a report on TCS and alert me if it drops 5%"})
         assert result["intent"] == "report"
         assert result["secondary_intents"] == ["alert"]
 
     def test_secondary_intents_never_duplicates_primary(self):
-        stub = _StubClient(json.dumps({
-            "intent": "report", "secondary_intents": ["report", "alert"],
-            "objective": "x", "complexity": "complex",
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "intent": "report",
+                    "secondary_intents": ["report", "alert"],
+                    "objective": "x",
+                    "complexity": "complex",
+                }
+            )
+        )
         node = build_query_analyzer_node(stub)
         result = node({"query": "x"})
         assert result["secondary_intents"] == ["alert"]
 
     def test_invalid_secondary_intent_labels_are_dropped(self):
-        stub = _StubClient(json.dumps({
-            "intent": "report", "secondary_intents": ["alert", "not-a-real-domain"],
-            "objective": "x", "complexity": "complex",
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "intent": "report",
+                    "secondary_intents": ["alert", "not-a-real-domain"],
+                    "objective": "x",
+                    "complexity": "complex",
+                }
+            )
+        )
         node = build_query_analyzer_node(stub)
         result = node({"query": "x"})
         assert result["secondary_intents"] == ["alert"]
 
     def test_non_list_secondary_intents_falls_back_to_empty(self):
-        stub = _StubClient(json.dumps({
-            "intent": "equity", "secondary_intents": "alert", "objective": "x", "complexity": "moderate",
-        }))
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "intent": "equity",
+                    "secondary_intents": "alert",
+                    "objective": "x",
+                    "complexity": "moderate",
+                }
+            )
+        )
         node = build_query_analyzer_node(stub)
         result = node({"query": "x"})
         assert result["secondary_intents"] == []

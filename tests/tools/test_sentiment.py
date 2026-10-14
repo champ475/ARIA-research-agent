@@ -1,4 +1,5 @@
 """Tests for tools/analysis/sentiment.py."""
+
 from tools.analysis import sentiment
 
 
