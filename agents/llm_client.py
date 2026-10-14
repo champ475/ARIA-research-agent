@@ -118,6 +118,39 @@ class LLMProvidersExhausted(RuntimeError):
         super().__init__(str(last_err))
 
 
+def _error_class(exc: LLMProvidersExhausted) -> str:
+    """Coarse, user-safe description of why the provider failed. The raw
+    upstream error is logged, never shown: for a BYO base_url it would echo
+    whatever the endpoint returned (SEC-01), and provider errors can carry
+    request ids, account names or key prefixes."""
+    if exc.too_large:
+        return "too_large"
+    msg = str(exc.last_err or "").lower()
+    if any(m in msg for m in _TOO_LARGE_MARKERS):
+        return "too_large"
+    if any(m in msg for m in ("401", "403", "unauthorized", "forbidden", "invalid api key",
+                              "incorrect api key", "authentication", "permission")):
+        return "auth"
+    if any(m in msg for m in ("404", "model_not_found", "does not exist", "not found")):
+        return "model"
+    if any(m in msg for m in ("connection", "timed out", "timeout", "resolve", "unreachable",
+                              "private or internal", "only https")):
+        return "unreachable"
+    if any(m in msg for m in _RATE_LIMIT_MARKERS) or any(m in msg for m in _ZERO_QUOTA_MARKERS):
+        return "rate_limited"
+    return "other"
+
+
+_ERROR_CLASS_TEXT = {
+    "too_large": "Your message (plus the research context) is too long for this model.",
+    "auth": "The provider rejected the API key (authentication failed).",
+    "model": "The provider doesn't recognise the configured model name.",
+    "unreachable": "The provider couldn't be reached.",
+    "rate_limited": "The provider is rate-limiting requests right now.",
+    "other": "The provider returned an unexpected error.",
+}
+
+
 def format_exhausted_message(exc: LLMProvidersExhausted) -> str:
     """Free function (no LLMClient instance required) so callers outside
     LLMClient — agents/graph_orchestrator.py's top-level catch — can format
@@ -126,20 +159,25 @@ def format_exhausted_message(exc: LLMProvidersExhausted) -> str:
     keys, likely just rate-limited) or a BYO key (their own provider, more
     likely a bad key/model/base_url than a rate limit — telling a BYO user
     to "wait for Gemini's daily quota to reset" would be actively wrong)."""
+    kind = _error_class(exc)
+    log.warning(f"[LLMClient] providers exhausted (byo={exc.is_byo}, kind={kind}): {exc.last_err}")
+    if kind == "too_large":
+        return (
+            "⚠️ That request is too long for the model.\n\n"
+            "Try a shorter message, or ask about fewer companies at once."
+        )
     if exc.is_byo:
         return (
-            f"⚠️ Your configured LLM provider failed.\n\n"
+            f"⚠️ Your configured LLM provider failed: {_ERROR_CLASS_TEXT[kind]}\n\n"
             f"Check your API key, model name, and base URL in Settings — "
             f"this is usually a bad key, an unavailable model, or a provider outage, "
-            f"not a rate limit.\n\n"
-            f"Last error: `{exc.last_err}`"
+            f"not a rate limit."
         )
     return (
         f"⚠️ All LLM providers are currently rate-limited.\n\n"
         f"**What to do:**\n"
         f"- Groq: wait ~30 min for token quota to reset, or add more keys (GROQ_API_KEY_2, _3) to `.env`\n"
-        f"- Gemini: wait for daily quota reset\n\n"
-        f"Last error: `{exc.last_err}`"
+        f"- Gemini: wait for daily quota reset"
     )
 
 

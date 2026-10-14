@@ -16,6 +16,7 @@ from utils.db    import init_db
 from utils.helpers import now_ist
 from utils.auth import signup, login, AuthError
 from utils.telegram_link import start_polling_thread
+from utils.url_safety import UnsafeURLError
 
 log = logging.getLogger(__name__)
 
@@ -186,6 +187,9 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
             md_update = gr.update(value=md_path,  label=f"⬇ {os.path.basename(md_path)}",  visible=True)
         if csv_path:
             csv_update = gr.update(value=csv_path, label="⬇ Export Results CSV", visible=True)
+    except UnsafeURLError as e:
+        # A saved BYO base URL that fails the egress policy (SEC-01).
+        text = f"### ⚠️ Settings need attention\n\n{e}\n\nUpdate or remove the base URL in the **Settings** tab."
     except ValueError as e:
         text = (
             f"### ⚠️ API Key Required\n\n{e}\n\n"
@@ -888,6 +892,7 @@ def _build_settings_tab(user_state: gr.State):
 
     with gr.Row():
         save_btn = gr.Button("💾 Save key", variant="primary")
+        test_btn = gr.Button("🔌 Test connection", variant="secondary")
         clear_btn = gr.Button("🗑️ Remove my key", variant="secondary")
 
     def _refresh_status(user_id):
@@ -903,6 +908,13 @@ def _build_settings_tab(user_state: gr.State):
         base_url = (base_url or "").strip() or None
         if not model or not api_key:
             return "⚠️ Model and API key are both required.", model, base_url or "", api_key
+        if base_url:
+            # SEC-01: only public https endpoints — never internal hosts.
+            from utils.url_safety import UnsafeURLError, validate_public_https_url
+            try:
+                base_url = validate_public_https_url(base_url)
+            except UnsafeURLError as e:
+                return f"⚠️ {e}", model, base_url, api_key
         from utils.crypto import encrypt
         from utils.db import llm_config_set
         try:
@@ -924,6 +936,44 @@ def _build_settings_tab(user_state: gr.State):
         _orchestrators.pop(user_id, None)
         return _settings_status_md(user_id), model, base_url or "", ""  # clear the key field, never echo it back
 
+    def _test(user_id, model, base_url, api_key):
+        """One 1-token call with the typed (or, if the key box is empty, the
+        saved) config. Reports a coarse error class, never the raw upstream
+        text — that would turn this button into a way to read responses from
+        arbitrary endpoints (SEC-01)."""
+        if not user_id:
+            return ""
+        from agents.llm_client import LLMProvidersExhausted, _ERROR_CLASS_TEXT, _error_class
+        from agents.providers.openai_compatible import OpenAICompatibleProvider
+        from utils.url_safety import UnsafeURLError
+        model = (model or "").strip()
+        base_url = (base_url or "").strip() or None
+        api_key = (api_key or "").strip()
+        if not api_key:
+            from utils.crypto import decrypt
+            from utils.db import llm_config_get
+            row = llm_config_get(user_id)
+            if row is None:
+                return "⚠️ Enter a model and API key (or save one) first."
+            try:
+                api_key = decrypt(row["api_key_encrypted"])
+            except ValueError:
+                return "⚠️ Your saved key can't be read any more — please enter it again."
+            model = model or row["model"]
+            base_url = base_url or row["base_url"]
+        if not model:
+            return "⚠️ Model is required."
+        try:
+            provider = OpenAICompatibleProvider("Reply with OK.", api_key, model, base_url)
+            provider.ask("ping", temperature=0.0, max_tokens=1)
+        except UnsafeURLError as e:
+            return f"⚠️ {e}"
+        except Exception as e:
+            kind = _error_class(LLMProvidersExhausted(e, is_byo=True))
+            log.warning(f"[Settings] connection test failed ({kind}): {e}")
+            return f"⚠️ Connection test failed: {_ERROR_CLASS_TEXT[kind]}"
+        return "✅ Connection works — the provider answered."
+
     def _clear(user_id):
         if not user_id:
             return "", "", "", ""
@@ -934,6 +984,7 @@ def _build_settings_tab(user_state: gr.State):
 
     save_btn.click(_save, inputs=[user_state, model_box, base_url_box, api_key_box],
                     outputs=[status, model_box, base_url_box, api_key_box])
+    test_btn.click(_test, inputs=[user_state, model_box, base_url_box, api_key_box], outputs=[status])
     clear_btn.click(_clear, inputs=[user_state],
                      outputs=[status, model_box, base_url_box, api_key_box])
     user_state.change(_refresh_status, inputs=[user_state], outputs=[status])

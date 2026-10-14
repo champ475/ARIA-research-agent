@@ -39,7 +39,13 @@ class OpenAICompatibleProvider:
             from openai import OpenAI as _OpenAI
         except ImportError:
             raise ImportError("Run: pip install openai")
-        self._client = _OpenAI(api_key=api_key, base_url=base_url or None)
+        # SEC-01: a user-supplied base_url must be a public https endpoint —
+        # checked here (covers configs saved before validation existed) and
+        # again on every request by SafeEgressTransport (DNS rebinding).
+        from utils.url_safety import safe_http_client, validate_public_https_url
+        if base_url:
+            base_url = validate_public_https_url(base_url)
+        self._client = _OpenAI(api_key=api_key, base_url=base_url or None, http_client=safe_http_client())
         self._model = model
         self._system = system
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize)

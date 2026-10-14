@@ -16,6 +16,34 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — BYO LLM egress policy: public https only, checked at save, load and every request
+
+**Problem.** The bring-your-own-key feature lets a user choose the URL the
+server calls. Unchecked, that is server-side request forgery: cloud metadata,
+the database port or any internal service is reachable, and the raw upstream
+error was echoed back to the user, turning it into a read primitive.
+
+**Alternatives considered.** A fixed allowlist of known providers (safest, but
+blocks the many OpenAI-compatible hosts users legitimately use); validating
+only at save time (defeated by DNS rebinding and by configs saved before the
+check); running BYO calls through an egress proxy with network-level deny
+rules (best defence in depth, but needs infrastructure the app doesn't have yet).
+
+**Final decision.** `utils/url_safety.py` enforces "https, and every resolved
+address is globally routable". It runs when the URL is saved, when the provider
+is constructed from a stored config, and on every HTTP request via a custom
+httpx transport; redirects aren't followed. Users see only a coarse error class,
+never upstream response text. An operator flag (`BYO_ALLOW_PRIVATE_HOSTS`)
+relaxes it for self-hosted deployments.
+
+**Trade-offs.** The per-request check resolves the name and httpx resolves it
+again to connect, so a resolver flipping between the two lookups could still
+win (small window). Each BYO request pays one extra DNS lookup.
+
+**Future improvements.** Pin the connection to the checked IP (custom
+connection pool) or route BYO traffic through an egress proxy with
+network-level rules; add a DAST check in CI.
+
 ## 2026-10-14 — Write-tool trust boundary: deterministic intent + verb gate, enforced in three places
 
 **Problem.** The research graph lets an LLM choose tools, and five tools write
