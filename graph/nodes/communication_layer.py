@@ -79,6 +79,7 @@ from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
 from utils.audit import audit
 from utils.db import profile_clear, profile_get, profile_upsert, report_get, report_list, report_save
+from utils.escaping import md_cell
 from utils.financial_profile import is_complete as _profile_complete
 from utils.financial_profile import profile_summary as _profile_summary
 from utils.financial_profile import sanitize_profile as _sanitize_profile
@@ -274,7 +275,8 @@ def _handle_report_management(state: GraphState) -> dict | None:
             lines = ["## Your Reports\n", "| # | Type | Title | Date |", "|---|------|-------|------|"]
             for r in reports:
                 lines.append(
-                    f"| {r['id']} | {r['report_type']} | {r['title']} | {r['created_at'].strftime('%Y-%m-%d')} |"
+                    f"| {r['id']} | {md_cell(r['report_type'])} | {md_cell(r['title'])} | "
+                    f"{r['created_at'].strftime('%Y-%m-%d')} |"
                 )
             lines.append('\nSay "download report #<id>" to get the PDF/Markdown again.')
             text = "\n".join(lines)

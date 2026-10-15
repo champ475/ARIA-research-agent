@@ -3,7 +3,6 @@ app.py — Gradio front end for ARIA, an autonomous financial research engine.
 Gradio 6 compatible. show_api=False fixes the proxy/launch error.
 """
 
-import html
 import logging
 import os
 import threading
@@ -20,6 +19,7 @@ from config import CHAT_CONCURRENCY, MAX_CHAT_CHARS, QUEUE_MAX_SIZE, TRIAL_DAILY
 from utils import lifecycle
 from utils.db import ensure_schema
 from utils.errors import AriaError, ConfigurationError, UserInputError, error_id_from_turn, render_error
+from utils.escaping import html_text, md_cell
 from utils.helpers import IST as IST_TZ
 from utils.helpers import now_ist
 from utils.input_guard import CleanMessage, InputRejected, clean_message
@@ -815,6 +815,9 @@ def _build_chat_tab(user_state: gr.State):
             chatbot = gr.Chatbot(
                 label="",
                 show_label=False,
+                # SEC-10: stated explicitly so a Gradio default change can't
+                # turn off sanitising of LLM- and user-supplied markup.
+                sanitize_html=True,
                 height=480,
                 render_markdown=True,
                 elem_id=f"chatbot-{tab_id}",
@@ -1034,8 +1037,9 @@ def _watchlist_table_html(rows: list[list]) -> str:
     """
     if not rows:
         return "<p class='wl-empty'>No symbols yet — add one below.</p>"
-    head = "".join(f"<th>{c}</th>" for c in WATCHLIST_COLS)
-    body = "".join("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows)
+    # SEC-10: every cell is escaped — symbols come from users, names from yfinance.
+    head = "".join(f"<th>{html_text(c)}</th>" for c in WATCHLIST_COLS)
+    body = "".join("<tr>" + "".join(f"<td>{html_text(cell)}</td>" for cell in row) + "</tr>" for row in rows)
     return f"<table class='wl-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
 
@@ -1433,7 +1437,7 @@ def _sessions_md(rows: list[dict]) -> str:
         return "_No active sessions._"
     lines = ["| Device | Last active (IST) |", "|---|---|"]
     for r in rows:
-        ua = html.escape((r.get("user_agent") or "Unknown device")[:60]).replace("|", "&#124;")
+        ua = md_cell(r.get("user_agent") or "Unknown device", max_len=60)
         seen = (
             r["last_seen_at"].astimezone(IST_TZ).strftime("%d %b %Y, %H:%M") if r.get("last_seen_at") else "—"
         )
