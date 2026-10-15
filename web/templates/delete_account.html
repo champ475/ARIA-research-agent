@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin-top:0;font-size:20px">Delete your account</h2>
+  {% if error %}<div class="msg error" role="alert">{{ error }}</div>{% endif %}
+  <p>This permanently deletes your account and everything in it: chats, alerts, watchlist, portfolio,
+     saved screens, reports, your financial profile and any saved API key. It can't be undone.</p>
+  <p style="font-size:14px;color:var(--muted)">A minimal security log of account actions (no chat content) is kept
+     as described in the Privacy Notice.</p>
+  <form method="post" action="/account/delete" novalidate>
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="password">Your password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <label for="confirm">Type DELETE to confirm</label>
+    <input id="confirm" name="confirm" type="text" autocomplete="off" required>
+    <button type="submit" style="background:#cf222e;color:#fff">Delete my account</button>
+  </form>
+  <p class="alt"><a href="/">Cancel</a></p>
+</div>
+{% endblock %}

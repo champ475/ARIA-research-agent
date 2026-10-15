@@ -42,7 +42,8 @@ _PBKDF2_ITERATIONS = 260_000
 _RATE_LIMIT_WINDOW_S = 5 * 60
 _RATE_LIMIT_MAX_ATTEMPTS = 5
 
-_cache: TTLCache[str, int] = TTLCache(maxsize=10_000, ttl=SESSION_CACHE_SECONDS)
+# token hash -> (user_id, email verified)
+_cache: TTLCache[str, tuple[int, bool]] = TTLCache(maxsize=10_000, ttl=SESSION_CACHE_SECONDS)
 _last_touch: TTLCache[str, float] = TTLCache(maxsize=10_000, ttl=_TOUCH_INTERVAL_SECONDS * 2)
 _cache_lock = threading.Lock()
 
@@ -90,8 +91,7 @@ def signup(email: str, password: str) -> int:
     email = email.strip().lower()
     if not _EMAIL_RE.match(email):
         raise AuthError("Enter a valid email address.")
-    if len(password) < 8:
-        raise AuthError("Password must be at least 8 characters.")
+    check_new_password(password)
     _check_rate_limit(f"signup:{email}")
 
     conn = get_conn()
@@ -144,9 +144,9 @@ def login(email: str, password: str, ip: str | None = None, user_agent: str | No
     return create_session(authenticate(email, password), ip=ip, user_agent=user_agent)
 
 
-def resolve_session(token: str | None) -> int | None:
-    """The user id behind a session cookie, or None if missing, unknown,
-    expired or logged out."""
+def session_info(token: str | None) -> tuple[int, bool] | None:
+    """(user_id, email_verified) behind a session cookie, or None if missing,
+    unknown, expired or logged out."""
     if not token:
         return None
     th = hash_token(token)
@@ -157,15 +157,22 @@ def resolve_session(token: str | None) -> int | None:
     row = db.auth_session_lookup(th)
     if row is None:
         return None
-    user_id = int(row["user_id"])
+    info = (int(row["user_id"]), bool(row.get("verified", True)))
     with _cache_lock:
-        _cache[th] = user_id
+        _cache[th] = info
         touch = th not in _last_touch
         if touch:
             _last_touch[th] = time.monotonic()
     if touch:
         db.auth_session_touch(th)
-    return user_id
+    return info
+
+
+def resolve_session(token: str | None) -> int | None:
+    """The user id behind a session cookie, or None if missing, unknown,
+    expired or logged out."""
+    info = session_info(token)
+    return info[0] if info else None
 
 
 def get_user_id(token: str) -> int | None:
@@ -192,10 +199,14 @@ def logout_other_devices(user_id: int, current_token: str | None) -> int:
     """Revoke every session of `user_id` except the current one."""
     keep = hash_token(current_token) if current_token else None
     n = db.auth_sessions_revoke_others(user_id, keep)
-    with _cache_lock:
-        for th in [k for k, uid in _cache.items() if uid == user_id and k != keep]:
-            _cache.pop(th, None)
+    _forget_user(user_id, keep=keep)
     return n
+
+
+def _forget_user(user_id: int, keep: str | None = None) -> None:
+    with _cache_lock:
+        for th in [k for k, (uid, _v) in _cache.items() if uid == user_id and k != keep]:
+            _cache.pop(th, None)
 
 
 def clear_session_cache() -> None:
@@ -203,3 +214,76 @@ def clear_session_cache() -> None:
     with _cache_lock:
         _cache.clear()
         _last_touch.clear()
+
+
+# ── Email verification, password reset, account deletion (SEC-06) ────────────
+
+VERIFY_TOKEN_TTL = timedelta(hours=24)
+RESET_TOKEN_TTL = timedelta(minutes=30)
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 128
+
+
+def _issue_token(user_id: int, purpose: str, ttl: timedelta) -> str:
+    token = secrets.token_urlsafe(32)
+    db.auth_token_create(user_id, purpose, hash_token(token), datetime.now(UTC) + ttl)
+    return token
+
+
+def start_email_verification(user_id: int, email: str) -> bool:
+    """Email a single-use verification link. False if sending failed."""
+    from utils import mailer
+
+    return mailer.send_verification(email, _issue_token(user_id, "verify", VERIFY_TOKEN_TTL))
+
+
+def verify_email(token: str) -> int | None:
+    """Consume a verification token; the verified user's id, or None for an
+    unknown, used or expired token."""
+    user_id = db.auth_token_consume("verify", hash_token(token or ""))
+    if user_id is None:
+        return None
+    db.user_mark_verified(user_id)
+    _forget_user(user_id)  # cached sessions pick up "verified" immediately
+    return user_id
+
+
+def request_password_reset(email: str) -> None:
+    """Email a reset link if the address has an account. Says nothing either
+    way (no account enumeration); the caller shows one generic message."""
+    from utils import mailer
+
+    user = db.user_by_email(email)
+    if user is None:
+        return
+    mailer.send_password_reset(user["email"], _issue_token(user["id"], "reset", RESET_TOKEN_TTL))
+
+
+def check_new_password(password: str) -> None:
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise AuthError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters.")
+    if len(password) > PASSWORD_MAX_LENGTH:
+        raise AuthError(f"Password must be at most {PASSWORD_MAX_LENGTH} characters.")
+
+
+def reset_password(token: str, new_password: str) -> int:
+    """Set a new password with a reset token. Every existing session of the
+    account is revoked. Raises AuthError for a bad password or token."""
+    check_new_password(new_password)
+    user_id = db.auth_token_consume("reset", hash_token(token or ""))
+    if user_id is None:
+        raise AuthError("This reset link is invalid, already used or expired. Ask for a new one.")
+    db.user_set_password(user_id, _hash_password(new_password))
+    db.user_mark_verified(user_id)  # they proved they read the inbox
+    _forget_user(user_id)
+    return user_id
+
+
+def delete_account(user_id: int, password: str) -> None:
+    """Self-serve deletion after re-entering the password. Removes the user
+    and every row they own (one transaction); sessions go with them."""
+    stored = db.user_password_hash(user_id)
+    if stored is None or not _verify_password(password[: PASSWORD_MAX_LENGTH * 8], stored):
+        raise AuthError("That password is not correct.")
+    db.user_delete(user_id)
+    _forget_user(user_id)

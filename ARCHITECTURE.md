@@ -16,6 +16,33 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — Email verification, reset tokens and hard account deletion (SEC-06)
+**Problem.**
+- Anyone could sign up with someone else's email address.
+- A forgotten password meant a lost account.
+- Users could not delete their accounts, which India's DPDP Act requires.
+
+**Alternatives considered.**
+- *A transactional email API (Resend, Postmark).* Rejected for now: each needs a verified domain or a paid plan. The user chose the least-setup free option. SMTP works with a Gmail app password, and later with any provider.
+- *Magic links instead of passwords.* That would be a bigger change to the login model, and SEC-07 keeps passwords.
+- *Soft delete.* Rejected: DPDP erasure means the data is actually gone.
+
+**Final decision.**
+- Mail goes through `utils/mailer.py`: a console backend for dev/test, SMTP everywhere else (enforced at boot).
+- Tokens are single-use and hashed, in `auth_tokens`. Verification links last 24 h and reset links 30 min. A new token voids older unused ones.
+- Verification gates the app at the auth dependency.
+- Reset revokes all sessions.
+- Deletion is one transaction that relies on the `ON DELETE CASCADE` foreign keys from migration 0002. The audit trail (no FK) is kept.
+
+**Trade-offs.**
+- Gmail SMTP has sending limits (about 500 a day) and may land in spam. It is fine for a project and not for a launched product.
+- Kept after deletion: the user id in `audit_log` and the operator's backups (REL-08). The privacy notice must say so (COMP-03).
+
+**Future improvements.**
+- A domain-verified email provider.
+- An email change flow.
+- A deletion grace period with "undo" if counsel wants one.
+
 ## 2026-10-15 — Append-only audit log enforced by the database (COMP-04)
 **Problem.** There was no tamper-evident record of who did what. That record is needed for security investigations, for disputes ("I never set that alert"), and for any regulated posture.
 

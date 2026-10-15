@@ -26,8 +26,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 import config
 from utils import lifecycle
-from web import auth_routes, ops_routes
-from web.session import COOKIE_NAME, gradio_auth_dependency
+from web import account_routes, auth_routes, ops_routes
+from web.session import COOKIE_NAME, current_session, gradio_auth_dependency
 
 log = logging.getLogger(__name__)
 
@@ -50,9 +50,13 @@ class LoginRedirectMiddleware:
 
             request = Request(scope)
             if gradio_auth_dependency(request) is None:
-                response = RedirectResponse("/login", status_code=303)
-                if request.cookies.get(COOKIE_NAME):
-                    response.delete_cookie(COOKIE_NAME, path="/")  # expired or revoked
+                if current_session(request) is not None:
+                    # Logged in, email not confirmed yet (SEC-06).
+                    response = RedirectResponse("/auth/verify-pending", status_code=303)
+                else:
+                    response = RedirectResponse("/login", status_code=303)
+                    if request.cookies.get(COOKIE_NAME):
+                        response.delete_cookie(COOKIE_NAME, path="/")  # expired or revoked
                 await response(scope, receive, send)
                 return
 
@@ -92,6 +96,7 @@ def create_app(demo: gr.Blocks | None = None) -> FastAPI:
     api = FastAPI(title="ARIA", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
     api.include_router(ops_routes.router)
     api.include_router(auth_routes.router)
+    api.include_router(account_routes.router)
     api.add_middleware(LoginRedirectMiddleware)
     demo = demo if demo is not None else build_ui()
     kwargs: dict[str, Any] = {

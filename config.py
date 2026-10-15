@@ -103,6 +103,18 @@ class Settings(BaseSettings):
     PORT: int = Field(7860, ge=1, le=65535)
     # Session cookie `Secure` flag (SEC-04); unset = on everywhere except dev/test.
     COOKIE_SECURE: bool | None = None
+    # Public URL users reach the app at — links in emails point here (SEC-06).
+    APP_BASE_URL: str = "http://localhost:7860"
+    # Email (SEC-06): "console" logs messages (dev/test only); "smtp" sends them.
+    MAIL_BACKEND: Literal["console", "smtp"] = "console"
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = Field(587, ge=1, le=65535)
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""
+    SMTP_STARTTLS: bool = True
+    # Block the app until the email address is verified; unset = on except dev/test.
+    REQUIRE_EMAIL_VERIFICATION: bool | None = None
 
     # ── Tracing (OBS-02) ──────────────────────────────────────────────────────
     ARIA_TRACING: str = ""
@@ -136,6 +148,12 @@ class Settings(BaseSettings):
     def cookie_secure(self) -> bool:
         if self.COOKIE_SECURE is not None:
             return self.COOKIE_SECURE
+        return self.APP_ENV not in ("dev", "test")
+
+    @property
+    def require_email_verification(self) -> bool:
+        if self.REQUIRE_EMAIL_VERIFICATION is not None:
+            return self.REQUIRE_EMAIL_VERIFICATION
         return self.APP_ENV not in ("dev", "test")
 
     @property
@@ -194,6 +212,15 @@ def boot_problems(s: Settings | None = None, *, serving: bool = True) -> list[st
         problems.append("DATABASE_URL must look like postgresql://user:pass@host/dbname.")
     if serving and s.APP_ENV != "test":
         problems.extend(secret_key_problems(s.SECRET_KEY))
+    if serving and s.APP_ENV in ("staging", "prod"):
+        if s.MAIL_BACKEND == "console":
+            problems.append(
+                "MAIL_BACKEND=console only logs emails; set MAIL_BACKEND=smtp and SMTP_* outside dev/test."
+            )
+        elif not (s.SMTP_HOST and s.SMTP_FROM):
+            problems.append("MAIL_BACKEND=smtp needs SMTP_HOST and SMTP_FROM.")
+        if not s.APP_BASE_URL.startswith("https://"):
+            problems.append("APP_BASE_URL must be the public https:// address (links in emails use it).")
     if serving and s.APP_ENV == "prod" and not (s.groq_api_keys or s.GEMINI_API_KEY or s.LOCAL_LLM_BASE_URL):
         problems.append(
             "APP_ENV=prod needs at least one LLM provider (GROQ_API_KEY_1, GEMINI_API_KEY or LOCAL_LLM_BASE_URL)."
@@ -274,6 +301,15 @@ QUEUE_MAX_SIZE = settings.QUEUE_MAX_SIZE
 HOST = settings.HOST
 PORT = settings.PORT
 COOKIE_SECURE = settings.cookie_secure
+APP_BASE_URL = settings.APP_BASE_URL.rstrip("/")
+MAIL_BACKEND = settings.MAIL_BACKEND
+SMTP_HOST = settings.SMTP_HOST
+SMTP_PORT = settings.SMTP_PORT
+SMTP_USER = settings.SMTP_USER
+SMTP_PASSWORD = settings.SMTP_PASSWORD
+SMTP_FROM = settings.SMTP_FROM
+SMTP_STARTTLS = settings.SMTP_STARTTLS
+REQUIRE_EMAIL_VERIFICATION = settings.require_email_verification
 TRIAL_DAILY_LIMIT = settings.TRIAL_DAILY_LIMIT  # free messages/day on the operator's keys
 
 # ── Data ──────────────────────────────────────────────────────────────────────

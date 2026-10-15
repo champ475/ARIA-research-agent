@@ -32,7 +32,7 @@ _env = Environment(
     autoescape=select_autoescape(["html"]),
 )
 
-_CSRF_FAILED = "Your form expired. Please try again."
+CSRF_FAILED = "Your form expired. Please try again."
 
 
 def render(request: Request, template: str, status_code: int = 200, **ctx: Any) -> HTMLResponse:
@@ -59,11 +59,19 @@ def _to_app(token: str) -> RedirectResponse:
     return response
 
 
+# Fixed notices for /login?n=<code> — never echo query text into the page.
+_NOTICES = {
+    "verified": "Email confirmed. Log in to continue.",
+    "reset": "Password changed. Log in with your new password.",
+    "deleted": "Your account and its data have been deleted.",
+}
+
+
 @router.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, notice: str | None = None) -> Response:
+def login_page(request: Request, n: str = "") -> Response:
     if current_user_id(request) is not None:
         return RedirectResponse("/", status_code=303)
-    return render(request, "login.html", title="Log in", notice=notice)
+    return render(request, "login.html", title="Log in", notice=_NOTICES.get(n))
 
 
 @router.post("/login", response_class=HTMLResponse)
@@ -74,7 +82,7 @@ def login_submit(
     csrf_token: str = Form("", alias="csrf"),
 ) -> Response:
     if not csrf.valid(request, csrf_token):
-        return render(request, "login.html", 400, title="Log in", error=_CSRF_FAILED, email=email)
+        return render(request, "login.html", 400, title="Log in", error=CSRF_FAILED, email=email)
     ip, ua = client_ip(request), request.headers.get("user-agent")
     try:
         user_id = auth.authenticate(email[:320], password[:1024])
@@ -102,7 +110,7 @@ def signup_submit(
     csrf_token: str = Form("", alias="csrf"),
 ) -> Response:
     if not csrf.valid(request, csrf_token):
-        return render(request, "signup.html", 400, title="Sign up", error=_CSRF_FAILED, email=email)
+        return render(request, "signup.html", 400, title="Sign up", error=CSRF_FAILED, email=email)
     if agree != "yes":
         return render(
             request,
@@ -122,6 +130,9 @@ def signup_submit(
     accept_terms(user_id)
     audit("auth.signup", actor_user_id=user_id, ip=ip, user_agent=ua)
     audit("auth.terms_accepted", actor_user_id=user_id, ip=ip, user_agent=ua)
+    # SEC-06: confirm the address; the app stays locked (verify-pending page)
+    # until the link is used, when verification is required.
+    auth.start_email_verification(user_id, email.strip().lower())
     token = auth.create_session(user_id, ip=ip, user_agent=ua)
     return _to_app(token)
 

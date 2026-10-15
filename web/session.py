@@ -15,7 +15,7 @@ import logging
 from fastapi import Request, Response
 
 import config
-from utils.auth import SESSION_TTL_HOURS, resolve_session
+from utils.auth import SESSION_TTL_HOURS, session_info
 
 log = logging.getLogger(__name__)
 
@@ -26,20 +26,39 @@ def session_token(request: Request) -> str | None:
     return request.cookies.get(COOKIE_NAME) or None
 
 
-def current_user_id(request: Request) -> int | None:
-    """The logged-in user for this request, or None. A database outage reads
-    as logged out (the request is refused), never as someone else."""
+def current_session(request: Request) -> tuple[int, bool] | None:
+    """(user_id, email_verified) for this request's cookie, or None. A
+    database outage reads as logged out (the request is refused), never as
+    someone else."""
     try:
-        return resolve_session(session_token(request))
+        return session_info(session_token(request))
     except Exception:
         log.exception("[session] could not resolve the session cookie")
         return None
 
 
+def current_user_id(request: Request) -> int | None:
+    """The logged-in user for this request (verified or not), or None."""
+    info = current_session(request)
+    return info[0] if info else None
+
+
+def app_user_id(request: Request) -> int | None:
+    """The user allowed into the app: logged in, and — when verification is
+    required (SEC-06) — with a confirmed email address."""
+    info = current_session(request)
+    if info is None:
+        return None
+    user_id, verified = info
+    if config.REQUIRE_EMAIL_VERIFICATION and not verified:
+        return None
+    return user_id
+
+
 def gradio_auth_dependency(request: Request) -> str | None:
     """mount_gradio_app(auth_dependency=...): the user id as a string (it
     becomes gr.Request.username), or None to refuse the request with 401."""
-    uid = current_user_id(request)
+    uid = app_user_id(request)
     return str(uid) if uid is not None else None
 
 

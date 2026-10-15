@@ -134,6 +134,26 @@ def test_auth_sessions(db, two_users):
     assert len(db.auth_sessions_list(a)) == 1
 
 
+def test_account_lifecycle_functions(db, two_users):
+    """SEC-06: tokens, password and deletion act only on the named user."""
+    from datetime import UTC, datetime, timedelta
+
+    a, b = two_users
+    later = datetime.now(UTC) + timedelta(minutes=30)
+    db.auth_token_create(a, "reset", "tok-a", later)
+    db.auth_token_create(b, "reset", "tok-b", later)  # B's new token doesn't void A's
+    assert db.auth_token_consume("reset", "tok-a") == a
+    a_hash = db.user_password_hash(a)
+    db.user_set_password(b, "new-hash-b")
+    assert db.user_password_hash(a) == a_hash and db.user_password_hash(b) == "new-hash-b"
+    db._query("UPDATE users SET email_verified_at=NULL", fetch=None, commit=True)
+    db.user_mark_verified(b)
+    assert db.user_by_email(db.user_email(a))["email_verified_at"] is None
+    db.watchlist_add(a, "TCS")
+    assert db.user_delete(b) is True
+    assert db.user_email(b) is None and db.watchlist_all(a) == ["TCS"]
+
+
 def test_trial_quota(db, two_users):
     a, b = two_users
     today = date(2026, 10, 14)
@@ -214,6 +234,12 @@ COVERED = {
     "auth_session_create": test_auth_sessions,
     "auth_sessions_list": test_auth_sessions,
     "auth_sessions_revoke_others": test_auth_sessions,
+    "auth_token_create": test_account_lifecycle_functions,
+    "user_email": test_account_lifecycle_functions,
+    "user_password_hash": test_account_lifecycle_functions,
+    "user_mark_verified": test_account_lifecycle_functions,
+    "user_set_password": test_account_lifecycle_functions,
+    "user_delete": test_account_lifecycle_functions,
     "trial_quota_check_and_increment": test_trial_quota,
     "telegram_link_code_create": test_telegram_linking,
     "telegram_chat_id_set": test_telegram_linking,

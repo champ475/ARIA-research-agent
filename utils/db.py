@@ -804,6 +804,101 @@ def audit_log_for(actor_user_id: int, limit: int = 1000) -> list[dict]:
     )
 
 
+# ── Accounts: verification, reset, deletion (SEC-06) ──────────────────────────
+
+
+def user_by_email(email: str) -> dict | None:
+    return _query(
+        "SELECT id, email, email_verified_at FROM users WHERE email=%s", (email.strip().lower(),), fetch="one"
+    )
+
+
+def user_email(user_id: int) -> str | None:
+    row = _query("SELECT email FROM users WHERE id=%s", (user_id,), fetch="one")
+    return row["email"] if row else None
+
+
+def user_password_hash(user_id: int) -> str | None:
+    row = _query("SELECT password_hash FROM users WHERE id=%s", (user_id,), fetch="one")
+    return row["password_hash"] if row else None
+
+
+def user_mark_verified(user_id: int) -> None:
+    _query(
+        "UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()) WHERE id=%s",
+        (user_id,),
+        fetch=None,
+        commit=True,
+    )
+
+
+def user_set_password(user_id: int, password_hash: str) -> None:
+    """New password; every login session of the user is revoked with it."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET password_hash=%s WHERE id=%s", (password_hash, user_id))
+        cur.execute("DELETE FROM sessions WHERE user_id=%s", (user_id,))
+        conn.commit()
+    finally:
+        release_conn(conn)
+
+
+def auth_token_create(user_id: int, purpose: str, token_hash: str, expires_at) -> None:
+    """Store a single-use token; any earlier unused token for the same
+    purpose is invalidated, so only the newest emailed link works."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE auth_tokens SET used_at=now() WHERE user_id=%s AND purpose=%s AND used_at IS NULL",
+            (user_id, purpose),
+        )
+        cur.execute(
+            "INSERT INTO auth_tokens (user_id, purpose, token_hash, expires_at) VALUES (%s,%s,%s,%s)",
+            (user_id, purpose, token_hash, expires_at),
+        )
+        conn.commit()
+    finally:
+        release_conn(conn)
+
+
+def auth_token_consume(purpose: str, token_hash: str) -> int | None:
+    """Atomically use a token: the user id if it exists, matches the purpose,
+    is unused and unexpired — else None. A second use returns None."""
+    row = _query(
+        "UPDATE auth_tokens SET used_at=now() "
+        "WHERE token_hash=%s AND purpose=%s AND used_at IS NULL AND expires_at > now() RETURNING user_id",
+        (token_hash, purpose),
+        fetch="one",
+        commit=True,
+    )
+    return row["user_id"] if row else None
+
+
+def user_delete(user_id: int) -> bool:
+    """Delete an account and everything it owns, in one transaction. Every
+    user-owned table cascades from users (migrations 0002+); rate-limit rows
+    keyed by the email are removed too. The audit trail (no FK) remains."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT email FROM users WHERE id=%s FOR UPDATE", (user_id,))
+        row = cur.fetchone()
+        if row is None:
+            conn.rollback()
+            return False
+        cur.execute(
+            "DELETE FROM auth_attempts WHERE key = ANY(%s)",
+            ([f"login:{row['email']}", f"signup:{row['email']}", f"reset:{row['email']}"],),
+        )
+        cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
+        conn.commit()
+        return True
+    finally:
+        release_conn(conn)
+
+
 # ── Login sessions (SEC-04: cookie sessions, only token hashes stored) ────────
 
 
@@ -820,9 +915,10 @@ def auth_session_create(
 
 def auth_session_lookup(token_hash: str) -> dict | None:
     """The live (unexpired) session for a token hash: user_id, expires_at,
-    last_seen_at — or None."""
+    last_seen_at, verified (email confirmed) — or None."""
     return _query(
-        "SELECT user_id, expires_at, last_seen_at FROM sessions WHERE token_hash=%s AND expires_at > now()",
+        "SELECT s.user_id, s.expires_at, s.last_seen_at, (u.email_verified_at IS NOT NULL) AS verified "
+        "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash=%s AND s.expires_at > now()",
         (token_hash,),
         fetch="one",
     )

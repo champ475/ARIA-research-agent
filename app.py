@@ -1406,6 +1406,11 @@ def _build_settings_tab(user_state: gr.State):
         audit("auth.logout_other_devices", actor_user_id=user_id, details={"revoked": n})
         return f"✅ Logged out {n} other session(s).\n\n" + _sessions(user_id)
 
+    gr.Markdown(
+        "**Delete account** — permanently remove your account and all its data: "
+        "[delete my account…](/account/delete)"
+    )
+
     logout_others_btn.click(_logout_others, inputs=[user_state], outputs=[sessions_md])
     logout_here_btn.click(None, js=LOGOUT_JS)
     user_state.change(_sessions, inputs=[user_state], outputs=[sessions_md])
