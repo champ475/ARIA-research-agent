@@ -17,6 +17,7 @@ from utils.logging_setup import configure_logging, run_in_turn
 configure_logging()
 
 from config import CHAT_CONCURRENCY, MAX_CHAT_CHARS, QUEUE_MAX_SIZE, TRIAL_DAILY_LIMIT, check_boot
+from utils import lifecycle
 from utils.db import ensure_schema
 from utils.errors import AriaError, ConfigurationError, UserInputError, error_id_from_turn, render_error
 from utils.helpers import IST as IST_TZ
@@ -332,6 +333,12 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
 def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
     """respond(), but at most one turn per user at a time (REL-01), with every
     log line of the turn tagged by run_in_turn (OBS-01)."""
+    if lifecycle.is_draining():
+        # OPS-04: this instance is shutting down; don't start work it would
+        # have to cut off. The message survives in the box for a resend.
+        log.info("[respond] rejected: server draining for shutdown")
+        yield _busy_outputs(message, history, suggestions, text=_DRAINING_TEXT)
+        return
     lock = _user_turn_lock(user_id)
     if not lock.acquire(blocking=False):
         log.info("[respond] rejected: user already has a turn in flight")
@@ -340,24 +347,26 @@ def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
     try:
         # run_in_turn keeps one turn_id on every log line of this turn, across
         # yields (Gradio resumes each generator step in a fresh context).
-        yield from run_in_turn(
-            respond(user_id, message, history, suggestions, session_id, tf), user_id, session_id
-        )
+        with lifecycle.track_turn():
+            yield from run_in_turn(
+                respond(user_id, message, history, suggestions, session_id, tf), user_id, session_id
+            )
     finally:
         lock.release()
 
 
-def _busy_outputs(message, history: list, suggestions: list) -> tuple:
-    """Reply for a second message from a user whose previous turn is still
-    running (e.g. from another browser tab). Keeps their text in the box."""
+_BUSY_TEXT = "⏳ Still working on your previous question — send this again once that answer arrives."
+_DRAINING_TEXT = "🔄 ARIA is restarting for an update. Please send this again in a minute."
+
+
+def _busy_outputs(message, history: list, suggestions: list, text: str = _BUSY_TEXT) -> tuple:
+    """Reply for a message that can't start now: the user's previous turn is
+    still running (e.g. another browser tab), or the server is draining for a
+    restart (OPS-04). Keeps their text in the box."""
     no_file = gr.update(value=None, visible=False)
     busy_hist = (history or []) + [
         {"role": "user", "content": (message or "")[:200]},
-        {
-            "role": "assistant",
-            "content": "⏳ Still working on your previous question — "
-            "send this again once that answer arrives.",
-        },
+        {"role": "assistant", "content": text},
     ]
     keep_text = gr.update(value=message or "", interactive=True)
     return (keep_text, _SEND_READY, busy_hist, gr.update(), suggestions, no_file, no_file, no_file) + tuple(

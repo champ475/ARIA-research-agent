@@ -104,3 +104,15 @@ def sample_task() -> dict:
         "status": "pending",
         "result_evidence_ids": [],
     }
+
+
+@pytest.fixture(autouse=True)
+def _not_draining():
+    """A TestClient leaving its `with` block runs the app's shutdown, which
+    puts the process-wide lifecycle into draining (OPS-04). Every test starts
+    from a serving state."""
+    from utils import lifecycle
+
+    lifecycle.reset()
+    yield
+    lifecycle.reset()

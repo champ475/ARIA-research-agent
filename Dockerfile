@@ -45,7 +45,7 @@ USER app
 EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/', timeout=4).status == 200 else 1)"]
+    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/healthz', timeout=4).status == 200 else 1)"]
 
 # Release step, then the app (ARCH-01): migrations run once per container
 # start, before the server accepts traffic. For several replicas, run

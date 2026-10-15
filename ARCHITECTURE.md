@@ -16,6 +16,27 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — Liveness, readiness and draining shutdown (OPS-04)
+**Problem.** The platform couldn't tell a hung app from a healthy one, and a deploy cut off answers mid-stream.
+
+**Alternatives considered.**
+- *A single `/health`.* Rejected: liveness (restart me) and readiness (route to me) need different answers. A database outage should stop traffic, but it shouldn't restart every replica.
+- *Rely on uvicorn's graceful shutdown alone.* Rejected: it waits for connections, but it keeps accepting new chat turns on existing keep-alive connections, and readiness stays green.
+
+**Final decision.**
+- `/healthz` for liveness. `/readyz` checks the database, schema head, an LLM provider, and that the instance isn't draining.
+- A process-wide lifecycle with an in-flight turn counter.
+- SIGTERM sets draining first. New turns get a polite refusal. Shutdown waits up to 30 s for running turns before closing the pools.
+
+**Trade-offs.**
+- A turn longer than 30 s (a local-LLM report) can still be cut off at shutdown.
+- Both endpoints are unauthenticated. They return only a pass/fail per check.
+
+**Future improvements.**
+- Make the grace period track `TURN_DEADLINE_SECONDS`.
+- Expose `in_flight` as a metric (OBS-03).
+- Add a pre-stop hook on the host (OPS-03 is skipped).
+
 ## 2026-10-15 — FastAPI wrapper with cookie sessions checked on every Gradio request (SEC-04)
 **Problem.** After login, the token was discarded and `gr.State` held the user id. A refresh logged the user out. There was no logout. Expiry was never checked after login. Tokens were stored in plaintext.
 
