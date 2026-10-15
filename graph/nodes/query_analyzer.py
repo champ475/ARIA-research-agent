@@ -39,6 +39,7 @@ from graph.data_questions import min_complexity
 from graph.entity_resolution import add_llm_mentions, history_entities, resolve_mentions
 from graph.journal import log_decision
 from graph.state import GraphState
+from utils.helpers import strip_code_fence
 
 log = logging.getLogger(__name__)
 
@@ -86,19 +87,9 @@ def _build_prompt(query: str, entities: list[str], history: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _strip_code_fence(raw: str) -> str:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text[3:]
-        if text.lower().startswith("json"):
-            text = text[4:]
-        text = text.rsplit("```", 1)[0]
-    return text.strip()
-
-
 def _parse(raw: str) -> dict:
     try:
-        parsed = json.loads(_strip_code_fence(raw))
+        parsed = json.loads(strip_code_fence(raw))
         intent = parsed.get("intent", _FALLBACK["intent"])
         secondary = parsed.get("secondary_intents") or []
         if not isinstance(secondary, list):

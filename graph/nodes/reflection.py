@@ -31,6 +31,7 @@ from graph.nodes.planner import _ALL_TOOL_NAMES, _build_tasks, _with_transitive_
 from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
 from graph.state import GraphState, MissingInfoItem, Task
 from graph.write_policy import WRITE_TOOLS
+from utils.helpers import strip_code_fence
 
 log = logging.getLogger(__name__)
 
@@ -63,19 +64,9 @@ def _build_prompt(query: str, objective: str, evidence_summary: dict) -> str:
     )
 
 
-def _strip_code_fence(raw: str) -> str:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text[3:]
-        if text.lower().startswith("json"):
-            text = text[4:]
-        text = text.rsplit("```", 1)[0]
-    return text.strip()
-
-
 def _parse(raw: str) -> list[MissingInfoItem]:
     try:
-        parsed = json.loads(_strip_code_fence(raw))
+        parsed = json.loads(strip_code_fence(raw))
         raw_items = parsed.get("missing", [])
     except (json.JSONDecodeError, AttributeError, TypeError):
         log.warning("Reflection: failed to parse LLM output as JSON: %r", raw)

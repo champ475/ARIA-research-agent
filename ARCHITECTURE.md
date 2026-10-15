@@ -16,6 +16,26 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — Typed, validated configuration (ARCH-03)
+**Problem.** Configuration was ~25 `os.getenv` calls with ad-hoc `int()`/`float()` casts spread over five modules. A typo'd value crashed on first use (or silently fell back), and shared constants had been copy-pasted and drifted: the trial limit lived in two places, and the user-facing message hard-coded "5".
+
+**Alternatives considered.**
+- *Keep `os.getenv` and add asserts.* No single place lists the settings, and errors still surface one at a time.
+- *dynaconf / hydra.* Heavier, and it adds its own file formats. We already depend on pydantic.
+
+**Final decision.**
+- `config.Settings` (pydantic-settings) is the one typed source of truth, loaded once by `get_settings()`.
+- Type and range errors exit at import with a readable list.
+- Deployment checks (`boot_problems`/`check_boot`) run at process start, not at import, so tests and scripts can import modules freely.
+- Module-level names remain as re-exports for compatibility.
+- `APP_ENV` (dev|test|staging|prod) is introduced here; OPS-01 builds on it.
+
+**Trade-offs.**
+- The re-exports are snapshots taken at import time. Tests that need a different value still monkeypatch the consuming module.
+- A few runtime-toggled values (`BYO_ALLOW_PRIVATE_HOSTS`, `ARIA_TRACING`, `RUN_MIGRATIONS_ON_START`) are still read dynamically. They are declared in `Settings` for documentation and validation.
+
+**Future improvements.** Inject `Settings` into the services layer once ARCH-02 splits `app.py`, and drop the re-exports.
+
 ## 2026-10-14 — Golden-set evaluation with record/replay LLM fixtures (LLM-01)
 
 **Problem.** Prompt, model and graph changes shipped with no measurement of

@@ -15,7 +15,7 @@ from utils.logging_setup import configure_logging, run_in_turn
 # Before anything else logs: JSON lines with turn ids + secret redaction (OBS-01).
 configure_logging()
 
-from config import MAX_CHAT_CHARS
+from config import CHAT_CONCURRENCY, MAX_CHAT_CHARS, QUEUE_MAX_SIZE, TRIAL_DAILY_LIMIT, check_boot
 from utils.auth import AuthError, login, signup
 from utils.db import ensure_schema
 from utils.helpers import IST as IST_TZ
@@ -27,14 +27,21 @@ from utils.url_safety import UnsafeURLError
 
 log = logging.getLogger(__name__)
 
-# ── Schema check on startup (migrations run as a release step, ARCH-01) ───────
-ensure_schema()
 
-# OBS-02: refuse silently-unredacted tracing setups loudly.
-warn_if_auto_tracing_on()
+def startup() -> None:
+    """Process start-up, run once before serving (not at import, so tests and
+    tools can import this module without touching a database).
 
-# ── Start the Telegram /start-code listener (no-ops if no bot token set) ──────
-start_polling_thread()
+    ARCH-03: every deployment problem (DATABASE_URL, secrets, providers) is
+    reported at once and the process exits non-zero. ARCH-01: the schema must
+    already be at head (migrations are a release step)."""
+    check_boot()
+    ensure_schema()
+    # OBS-02: refuse silently-unredacted tracing setups loudly.
+    warn_if_auto_tracing_on()
+    # The Telegram /start-code listener (no-ops if no bot token set).
+    start_polling_thread()
+
 
 # ── Loading indicator HTML (three bouncing dots, styled via global CSS) ──────
 LOADING_HTML = '<span class="aria-dot"></span><span class="aria-dot"></span><span class="aria-dot"></span>'
@@ -67,8 +74,6 @@ def get_orchestrator(user_id: int):
 # still gets at most ONE turn in flight, because their GraphOrchestrator (and
 # its conversation memory) is per-user state that isn't safe to drive from two
 # threads at once — a second tab's message gets a "still working" reply.
-CHAT_CONCURRENCY = int(os.getenv("CHAT_CONCURRENCY", "8"))
-QUEUE_MAX_SIZE = int(os.getenv("QUEUE_MAX_SIZE", "100"))
 WATCHLIST_CONCURRENCY = 4
 
 _user_turn_locks: dict[int, threading.Lock] = {}
@@ -1084,8 +1089,6 @@ def _build_watchlist_tab(user_state: gr.State):
 
 # ── Settings tab (bring-your-own LLM key) ──────────────────────────────────────
 
-_TRIAL_DAILY_LIMIT = 5
-
 
 def _settings_status_md(user_id: int) -> str:
     from utils.db import _query, llm_config_get
@@ -1107,8 +1110,8 @@ def _settings_status_md(user_id: int) -> str:
     today = datetime.now(IST).date()
     if urow and urow["free_msgs_reset_at"] != today:
         used = 0
-    remaining = max(0, _TRIAL_DAILY_LIMIT - used)
-    return f"🆓 **Free trial** — {remaining}/{_TRIAL_DAILY_LIMIT} messages left today. Add your own key below for unlimited use."
+    remaining = max(0, TRIAL_DAILY_LIMIT - used)
+    return f"🆓 **Free trial** — {remaining}/{TRIAL_DAILY_LIMIT} messages left today. Add your own key below for unlimited use."
 
 
 def _build_settings_tab(user_state: gr.State):
@@ -1519,12 +1522,7 @@ if __name__ == "__main__":
     if LOCAL_LLM_BASE_URL:
         print(f"  Local    : {LOCAL_LLM_MODEL} at {LOCAL_LLM_BASE_URL} (last resort)")
     print("=" * 62)
-    from config import SECRET_KEY
-
-    if not SECRET_KEY:
-        print("  ⚠️  SECRET_KEY is not set — BYO LLM key encryption (Settings tab)")
-        print("      will fail. Add SECRET_KEY=<any random string> to .env.")
-        print("=" * 62)
+    startup()
 
     os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,0.0.0.0")
     os.environ.setdefault("no_proxy", "localhost,127.0.0.1,0.0.0.0")

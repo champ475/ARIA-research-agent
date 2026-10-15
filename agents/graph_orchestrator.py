@@ -69,7 +69,7 @@ from langgraph.types import Command
 
 from agents.conversation_memory import ConversationMemory
 from agents.llm_client import LLMProvidersExhausted
-from config import TOKENS_SYNTHESIS
+from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT
 from graph.checkpointer import get_postgres_checkpointer
 from graph.deadline import data_gaps_note, new_deadline
 from graph.entity_resolution import entity_notes_text
@@ -83,13 +83,12 @@ log = logging.getLogger(__name__)
 
 _APPROVE_WORDS = {"y", "yes", "approve", "approved", "proceed", "confirm", "ok", "okay"}
 _DEFAULT_MAX_LOOPS = 2
-_FREE_TRIAL_DAILY_LIMIT = 5
 
 _TRIAL_EXHAUSTED_MESSAGE = (
-    "You've used today's 5 free messages. Add your own LLM API key in "
+    f"You've used today's {TRIAL_DAILY_LIMIT} free messages. Add your own LLM API key in "
     "Settings to keep chatting — any OpenAI-compatible provider works "
     "(OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...), or come "
-    "back tomorrow for another 5 free."
+    f"back tomorrow for another {TRIAL_DAILY_LIMIT} free."
 )
 
 # ── Cheap keyword pre-check for classify() (ported from the deleted
@@ -306,7 +305,7 @@ class GraphOrchestrator:
 
         allowed = trial_quota_check_and_increment(
             self._user_id,
-            _FREE_TRIAL_DAILY_LIMIT,
+            TRIAL_DAILY_LIMIT,
             datetime.now(IST).date(),
         )
         return not allowed
@@ -316,16 +315,11 @@ class GraphOrchestrator:
         provider this turn resolved (BYO or trial), never a separate
         hardcoded client, so a BYO user's summarization also runs on their
         own key/cost, not the app's trial quota."""
+        from agents.conversation_memory import SUMMARY_PROMPT
         from agents.llm_client import LLMClient
         from config import TOKENS_FAST
 
-        prompt = (
-            f"Existing summary of earlier conversation (may be empty):\n{old_summary or '(none)'}\n\n"
-            f"New older messages to fold in:\n{chunk_text}\n\n"
-            "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
-            "tickers, and decisions mentioned, so later replies stay consistent with this history. "
-            "Return only the summary text."
-        )
+        prompt = SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         client = LLMClient(
             system_prompt="Summarize conversation history concisely.", provider_config=self._provider_config
         )

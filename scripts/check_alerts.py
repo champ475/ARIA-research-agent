@@ -48,7 +48,7 @@ import psycopg2
 import requests
 from psycopg2.extras import RealDictCursor
 
-from config import DATABASE_URL, TELEGRAM_BOT_TOKEN
+from config import ALERT_MAX_DELIVERY_ATTEMPTS, DATABASE_URL, TELEGRAM_BOT_TOKEN, check_boot
 from tools.analysis.technical import compute_all
 from tools.data.fetcher import get_info, get_ohlcv
 from tools.data.nse_scraper import get_bulk_deals
@@ -57,7 +57,6 @@ from utils.logging_setup import configure_logging
 
 log = logging.getLogger("check_alerts")
 
-ALERT_MAX_DELIVERY_ATTEMPTS = int(os.getenv("ALERT_MAX_DELIVERY_ATTEMPTS", "5"))
 
 # Failures that retrying can't fix — go straight to the in-app inbox.
 _PERMANENT_DELIVERY_ERRORS = {"not_linked", "bot_not_configured"}
@@ -410,4 +409,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     configure_logging()
+    check_boot(serving=False)
     sys.exit(main())

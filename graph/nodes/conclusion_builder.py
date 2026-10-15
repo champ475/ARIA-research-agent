@@ -27,7 +27,7 @@ from graph.state import Conclusion, Evidence, GraphState
 from utils.helpers import trim_text
 
 # Matches tools/analysis/fundamental.py's _CITATION_FIELDS keys exactly.
-_CANONICAL_RATIO_KEYS = {"pe", "pb", "roce", "de", "cr"}
+CANONICAL_RATIO_KEYS = {"pe", "pb", "roce", "de", "cr"}
 
 # Evidence types whose numeric payload fields are worth a Conclusion each.
 _NUMERIC_EVIDENCE_TYPES = {"fundamental_ratio", "quote_info", "technical_indicator"}
@@ -81,7 +81,7 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
 
     if ev["evidence_type"] in _NUMERIC_EVIDENCE_TYPES:
         for field, value in _numeric_fields(ev["payload"]).items():
-            citation_key = field if field in _CANONICAL_RATIO_KEYS else f"{ev['entity']}.{field}"
+            citation_key = field if field in CANONICAL_RATIO_KEYS else f"{ev['entity']}.{field}"
             conclusions.append(
                 {
                     "claim": f"{ev['entity']} {field} = {value}",

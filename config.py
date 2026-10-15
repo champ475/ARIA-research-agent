@@ -1,64 +1,216 @@
 """
-config.py — Central configuration for ARIA v2
-Groq key rotation + Gemini fallback, all free.
+config.py — Central configuration for ARIA v2 (ARCH-03).
+
+Every environment-driven setting is a typed, validated field on `Settings`
+(pydantic-settings). The module-level names below (`GROQ_MODEL`,
+`DATABASE_URL`, ...) are re-exports of the loaded settings so existing
+`from config import X` call sites keep working; static data (sector universe,
+TA defaults, feeds) stays as plain constants.
+
+Two levels of validation:
+- type/range errors (e.g. `LLM_TIMEOUT_SECONDS=abc`) stop the import with one
+  readable list of problems (SystemExit 2);
+- deployment checks (`boot_problems()`: DATABASE_URL shape, SECRET_KEY, an LLM
+  provider in prod) run at process start via `check_boot()` — app.py, the
+  worker and scripts call it; tests don't.
 """
 
-import os
+from __future__ import annotations
+
+import sys
+from functools import lru_cache
+from typing import Literal
 
 from dotenv import load_dotenv
+from pydantic import Field, ValidationError, ValidationInfo, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
 
-# ── Groq key rotation ─────────────────────────────────────────────────────────
-# Add as many keys as you have (all free at console.groq.com)
-_raw_groq_keys = [
-    os.getenv("GROQ_API_KEY_1", ""),
-    os.getenv("GROQ_API_KEY_2", ""),
-    os.getenv("GROQ_API_KEY_3", ""),
-    os.getenv("GROQ_API_KEY_4", ""),
-    os.getenv("GROQ_API_KEY_5", ""),
-]
-GROQ_API_KEYS = [k for k in _raw_groq_keys if k.strip()]
 
-GROQ_MODEL = "llama-3.3-70b-versatile"  # 14,400 req/day per key
-GROQ_MODEL_FAST = "llama-3.1-8b-instant"  # lighter, for fast calls — gemma2-9b-it was decommissioned by Groq
+class Settings(BaseSettings):
+    """All operator-tunable settings, read from the environment / `.env`."""
 
-# ── Gemini fallback ───────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.0-flash"
+    model_config = SettingsConfigDict(extra="ignore", case_sensitive=True)
 
-PREFERRED_PROVIDER = os.getenv("PREFERRED_PROVIDER", "groq").lower()
+    # ── Environment (OPS-01) ──────────────────────────────────────────────────
+    APP_ENV: Literal["dev", "test", "staging", "prod"] = "dev"
 
-# ── Local LLM fallback (last resort after the cloud providers) ────────────────
-# Any OpenAI-compatible server the operator runs, e.g. llama.cpp `llama-server`
-# at http://127.0.0.1:8080/v1. Empty = disabled. Used when Groq/Gemini (or a
-# user's own BYO key) are rate-limited or failing (agents/llm_client.py).
-LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "").strip()
-LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "local-fast")
-LOCAL_LLM_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "local")  # llama.cpp ignores it
-# A small CPU model generates ~5 tok/s, so a full TOKENS_SYNTHESIS (2000) answer
-# would take ~7 min; cap its output and bound how long one call may block.
-LOCAL_LLM_MAX_TOKENS = int(os.getenv("LOCAL_LLM_MAX_TOKENS", "1024"))
-LOCAL_LLM_TIMEOUT_SECONDS = float(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
+    # ── Groq key rotation (up to 5 free keys) ─────────────────────────────────
+    GROQ_API_KEY_1: str = ""
+    GROQ_API_KEY_2: str = ""
+    GROQ_API_KEY_3: str = ""
+    GROQ_API_KEY_4: str = ""
+    GROQ_API_KEY_5: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL_FAST: str = "llama-3.1-8b-instant"
 
-# ── Timeouts and the turn deadline (REL-02) ───────────────────────────────────
+    # ── Gemini fallback ───────────────────────────────────────────────────────
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.0-flash"
+    PREFERRED_PROVIDER: Literal["groq", "gemini"] = "groq"
+
+    # ── Local LLM fallback (any OpenAI-compatible server; empty = disabled) ───
+    LOCAL_LLM_BASE_URL: str = ""
+    LOCAL_LLM_MODEL: str = "local-fast"
+    LOCAL_LLM_API_KEY: str = "local"
+    LOCAL_LLM_MAX_TOKENS: int = Field(1024, ge=16, le=32768)
+    LOCAL_LLM_TIMEOUT_SECONDS: float = Field(300, gt=0)
+
+    # ── Timeouts and the turn deadline (REL-02) ───────────────────────────────
+    LLM_TIMEOUT_SECONDS: float = Field(30, gt=0)
+    LLM_STREAM_TIMEOUT_SECONDS: float = Field(15, gt=0)
+    YF_TIMEOUT_SECONDS: float = Field(10, gt=0)
+    TOOL_TIMEOUT_SECONDS: float = Field(25, gt=0)
+    TURN_DEADLINE_SECONDS: float | None = Field(None, gt=0)
+    BREAKER_FAILURES: int = Field(5, ge=1)
+    BREAKER_WINDOW_SECONDS: float = Field(60, gt=0)
+    BREAKER_COOLDOWN_SECONDS: float = Field(30, gt=0)
+    IO_POOL_WORKERS: int = Field(64, ge=1)
+    TOOL_POOL_WORKERS: int = Field(32, ge=1)
+
+    # ── Prompt budgets ────────────────────────────────────────────────────────
+    SYNTHESIS_EVIDENCE_CHAR_BUDGET: int = Field(12000, ge=1000)
+
+    # ── Database ──────────────────────────────────────────────────────────────
+    DATABASE_URL: str = ""
+    DB_POOL_MAX: int = Field(20, ge=1, le=500)
+    DB_POOL_ACQUIRE_TIMEOUT: float = Field(10, gt=0)
+    RUN_MIGRATIONS_ON_START: bool = False
+
+    # ── Secrets ───────────────────────────────────────────────────────────────
+    SECRET_KEY: str = ""
+
+    # ── Telegram ──────────────────────────────────────────────────────────────
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_BOT_USERNAME: str = ""
+    ALERT_MAX_DELIVERY_ATTEMPTS: int = Field(5, ge=1)
+
+    # ── Serving ───────────────────────────────────────────────────────────────
+    CHAT_CONCURRENCY: int = Field(8, ge=1, le=256)
+    QUEUE_MAX_SIZE: int = Field(100, ge=1)
+    TRIAL_DAILY_LIMIT: int = Field(5, ge=0)
+    BYO_ALLOW_PRIVATE_HOSTS: bool = False
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+    # ── Tracing (OBS-02) ──────────────────────────────────────────────────────
+    ARIA_TRACING: str = ""
+    LANGSMITH_API_KEY: str = ""
+    LANGSMITH_PROJECT: str = "aria"
+
+    @field_validator("PREFERRED_PROVIDER", "LOG_LEVEL", "ARIA_TRACING", mode="before")
+    @classmethod
+    def _normalise_case(cls, v: object, info: ValidationInfo) -> object:
+        if not isinstance(v, str):
+            return v
+        return v.strip().upper() if info.field_name == "LOG_LEVEL" else v.strip().lower()
+
+    @field_validator("LOCAL_LLM_BASE_URL", "DATABASE_URL", mode="before")
+    @classmethod
+    def _strip(cls, v: object) -> object:
+        return v.strip() if isinstance(v, str) else v
+
+    @property
+    def groq_api_keys(self) -> list[str]:
+        keys = [
+            self.GROQ_API_KEY_1,
+            self.GROQ_API_KEY_2,
+            self.GROQ_API_KEY_3,
+            self.GROQ_API_KEY_4,
+            self.GROQ_API_KEY_5,
+        ]
+        return [k for k in keys if k.strip()]
+
+    @property
+    def turn_deadline_seconds(self) -> float:
+        # A local CPU model needs minutes per turn, so the default stretches.
+        if self.TURN_DEADLINE_SECONDS is not None:
+            return self.TURN_DEADLINE_SECONDS
+        return 600.0 if self.LOCAL_LLM_BASE_URL else 90.0
+
+
+def _format_validation_error(exc: ValidationError) -> str:
+    lines = ["ARIA configuration error: fix these environment variables:"]
+    for err in exc.errors():
+        name = ".".join(str(p) for p in err.get("loc", ())) or "(settings)"
+        lines.append(f"  - {name}: {err.get('msg', 'invalid value')}")
+    return "\n".join(lines)
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """The process-wide settings. Exits with a readable list on bad values."""
+    try:
+        return Settings()
+    except ValidationError as exc:
+        sys.stderr.write(_format_validation_error(exc) + "\n")
+        raise SystemExit(2) from None
+
+
+def boot_problems(s: Settings | None = None, *, serving: bool = True) -> list[str]:
+    """Deployment checks a process must pass before it starts work.
+    `serving=False` (alert checker, worker jobs) skips the LLM-provider check."""
+    s = s or get_settings()
+    problems: list[str] = []
+    url = s.DATABASE_URL
+    if not url:
+        problems.append("DATABASE_URL is not set (postgresql://user:pass@host/db).")
+    elif not url.startswith(("postgresql://", "postgres://")):
+        problems.append("DATABASE_URL must start with postgresql:// (got a different scheme).")
+    elif "@" not in url or "/" not in url.split("@", 1)[1]:
+        problems.append("DATABASE_URL must look like postgresql://user:pass@host/dbname.")
+    if serving and s.APP_ENV == "prod" and not (s.groq_api_keys or s.GEMINI_API_KEY or s.LOCAL_LLM_BASE_URL):
+        problems.append(
+            "APP_ENV=prod needs at least one LLM provider (GROQ_API_KEY_1, GEMINI_API_KEY or LOCAL_LLM_BASE_URL)."
+        )
+    return problems
+
+
+def check_boot(*, serving: bool = True) -> None:
+    """Print every boot problem at once and exit non-zero if there are any."""
+    problems = boot_problems(serving=serving)
+    if problems:
+        sys.stderr.write("ARIA cannot start:\n" + "\n".join(f"  - {p}" for p in problems) + "\n")
+        raise SystemExit(2)
+
+
+settings = get_settings()
+
+# ── Re-exports (existing call sites import these names) ───────────────────────
+APP_ENV = settings.APP_ENV
+GROQ_API_KEYS = settings.groq_api_keys
+GROQ_MODEL = settings.GROQ_MODEL  # 14,400 req/day per key
+GROQ_MODEL_FAST = settings.GROQ_MODEL_FAST  # lighter, for fast calls
+GEMINI_API_KEY = settings.GEMINI_API_KEY
+GEMINI_MODEL = settings.GEMINI_MODEL
+PREFERRED_PROVIDER = settings.PREFERRED_PROVIDER
+
+LOCAL_LLM_BASE_URL = settings.LOCAL_LLM_BASE_URL
+LOCAL_LLM_MODEL = settings.LOCAL_LLM_MODEL
+LOCAL_LLM_API_KEY = settings.LOCAL_LLM_API_KEY  # llama.cpp ignores it
+# A small CPU model generates ~5 tok/s; cap its output and bound one call.
+LOCAL_LLM_MAX_TOKENS = settings.LOCAL_LLM_MAX_TOKENS
+LOCAL_LLM_TIMEOUT_SECONDS = settings.LOCAL_LLM_TIMEOUT_SECONDS
+
 # Cloud LLM calls: total wait for a non-streaming reply, and the longest gap
 # allowed between streamed chunks (which also bounds time-to-first-token).
-LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
-LLM_STREAM_TIMEOUT_SECONDS = float(os.getenv("LLM_STREAM_TIMEOUT_SECONDS", "15"))
+LLM_TIMEOUT_SECONDS = settings.LLM_TIMEOUT_SECONDS
+LLM_STREAM_TIMEOUT_SECONDS = settings.LLM_STREAM_TIMEOUT_SECONDS
 # One yfinance call (it takes no timeout of its own; utils/resilience.py bounds the wait).
-YF_TIMEOUT_SECONDS = float(os.getenv("YF_TIMEOUT_SECONDS", "10"))
+YF_TIMEOUT_SECONDS = settings.YF_TIMEOUT_SECONDS
 # One research tool call (may make several source calls).
-TOOL_TIMEOUT_SECONDS = float(os.getenv("TOOL_TIMEOUT_SECONDS", "25"))
+TOOL_TIMEOUT_SECONDS = settings.TOOL_TIMEOUT_SECONDS
 # Whole chat turn: research stops dispatching new work at 70% of it, and the
-# answer is built from whatever evidence arrived. A local CPU model needs
-# minutes per turn, so the default stretches when one is configured.
-TURN_DEADLINE_SECONDS = float(os.getenv("TURN_DEADLINE_SECONDS", "600" if LOCAL_LLM_BASE_URL else "90"))
+# answer is built from whatever evidence arrived.
+TURN_DEADLINE_SECONDS = settings.turn_deadline_seconds
 RESEARCH_DEADLINE_FRACTION = 0.7
+BREAKER_FAILURES = settings.BREAKER_FAILURES
+BREAKER_WINDOW_SECONDS = settings.BREAKER_WINDOW_SECONDS
+BREAKER_COOLDOWN_SECONDS = settings.BREAKER_COOLDOWN_SECONDS
+IO_POOL_WORKERS = settings.IO_POOL_WORKERS
+TOOL_POOL_WORKERS = settings.TOOL_POOL_WORKERS
 
-# ── Token budgets (tune to stay within daily limits) ─────────────────────────
-# TOKENS_* below all cap OUTPUT tokens only (max_tokens/max_output_tokens on
-# the provider call) — none of them bound the size of the PROMPT itself.
+# ── Token budgets (OUTPUT tokens only — none bound the prompt size) ───────────
 TOKENS_SYNTHESIS = 2000  # full report synthesis
 TOKENS_COMPLEX = 3000  # multi-part questions / comparisons — need more room to cover every sub-ask
 TOKENS_AGENT = 800  # sub-agent calls
@@ -70,46 +222,39 @@ MAX_RETRIES = 2  # per provider before fallback
 MAX_CHAT_CHARS = 4000  # one chat message, after normalisation (utils/input_guard.py)
 
 # ── Prompt INPUT budget (contrast with TOKENS_* above, which cap OUTPUT) ──────
-# Bounds graph/nodes/evidence_summarizer.py::cap_evidence_for_prompt(), used
-# by Reflection/Verification before embedding evidence_summary in a prompt.
-# Confirmed in production: an uncapped evidence_summary reached 10,000-11,000
-# tokens against Groq free tier's 6,000 TPM cap for llama-3.1-8b-instant in
-# ONE call. Rough 4-chars-per-token heuristic (no tokenizer dependency in
-# this repo) — 6,000 chars ≈ 1,500 tokens, leaving headroom under the 6,000
-# TPM cap after the system prompt, query/objective text, and TOKENS_AGENT's
-# 800 output tokens, with margin for burst concurrency across users.
+# Bounds evidence embedded in Reflection/Verification prompts. An uncapped
+# evidence_summary once reached 10-11k tokens against Groq's 6,000 TPM cap for
+# the 8B model in ONE call; at ~4 chars/token, 6,000 chars ≈ 1,500 tokens.
 EVIDENCE_PROMPT_CHAR_BUDGET = 6000
+# LLM-02: the answer (synthesis) prompt's budget for rendered evidence rows.
+SYNTHESIS_EVIDENCE_CHAR_BUDGET = settings.SYNTHESIS_EVIDENCE_CHAR_BUDGET
 
-# LLM-02: the answer (synthesis) prompt's budget for rendered evidence —
-# fund rows, headlines, filing passages (graph/evidence_render.py). ~3k
-# tokens: fits Groq's primary model and an 8k-context local model with room
-# for the conclusions, history and the answer itself.
-SYNTHESIS_EVIDENCE_CHAR_BUDGET = int(os.getenv("SYNTHESIS_EVIDENCE_CHAR_BUDGET", "12000"))
-
-# How long a provider stays marked unavailable after reporting a
-# STRUCTURALLY zero quota (e.g. Gemini's "limit: 0" — never provisioned,
-# not "exhausted for today") — agents/llm_client.py's _ProviderHealthCache.
-# Long enough to actually stop the wasted retry cost, short enough to
-# auto-recover without a redeploy if the operator fixes the quota.
+# How long a provider stays marked unavailable after a STRUCTURALLY zero quota
+# (e.g. Gemini's "limit: 0") — agents/llm_client.py's _ProviderHealthCache.
 PROVIDER_ZERO_QUOTA_TTL_SECONDS = 3600
+
+# ── Serving / free trial ──────────────────────────────────────────────────────
+CHAT_CONCURRENCY = settings.CHAT_CONCURRENCY  # chat turns at once, server-wide
+QUEUE_MAX_SIZE = settings.QUEUE_MAX_SIZE
+TRIAL_DAILY_LIMIT = settings.TRIAL_DAILY_LIMIT  # free messages/day on the operator's keys
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 NSE_SUFFIX = ".NS"
 BSE_SUFFIX = ".BO"
 DATA_DIR = "data"
 
-# ── Database (Neon Postgres — shared by the app and the GH Actions alert checker) ─
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+# ── Database (Neon Postgres — shared by the app and the alert checker) ────────
+DATABASE_URL = settings.DATABASE_URL
+DB_POOL_MAX = settings.DB_POOL_MAX
+DB_POOL_ACQUIRE_TIMEOUT = settings.DB_POOL_ACQUIRE_TIMEOUT
 
-# ── Crypto (encrypts user-supplied BYO LLM keys before Postgres storage,
-# ── utils/crypto.py — any string works, it's SHA-256-stretched into a
-# ── valid Fernet key) ──────────────────────────────────────────────────────────
-SECRET_KEY = os.getenv("SECRET_KEY", "")
+# ── Crypto (encrypts users' BYO LLM keys before storage, utils/crypto.py) ────
+SECRET_KEY = settings.SECRET_KEY
 
-# ── Telegram (alert notifications — one shared bot, each user links their own
-# ── chat via the in-app "Connect Telegram" flow, utils/telegram_link.py) ─────
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")  # without the @, for building the deep link
+# ── Telegram (one shared bot; each user links their own chat in Settings) ─────
+TELEGRAM_BOT_TOKEN = settings.TELEGRAM_BOT_TOKEN
+TELEGRAM_BOT_USERNAME = settings.TELEGRAM_BOT_USERNAME  # without the @, for building the deep link
+ALERT_MAX_DELIVERY_ATTEMPTS = settings.ALERT_MAX_DELIVERY_ATTEMPTS  # Telegram retries before inbox
 
 MACRO_TICKERS = {
     "Nifty 50": "^NSEI",

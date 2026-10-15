@@ -71,6 +71,7 @@ from graph.grounding import check as grounding_check
 from graph.grounding import record as record_grounding
 from graph.guardrails import finalize
 from graph.journal import log_decision
+from graph.nodes.conclusion_builder import CANONICAL_RATIO_KEYS
 from graph.nodes.execute_task import from_cacheable
 from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
 from graph.state import Conclusion, GraphState
@@ -100,7 +101,6 @@ _PLANNING_RESET_KW = [
     "clear my profile",
 ]
 
-_CANONICAL_RATIO_KEYS = {"pe", "pb", "roce", "de", "cr"}
 
 log = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def _build_prompt(
 ) -> str:
     lines = [_render_history(history), f"Objective: {objective}", "", "Verified conclusions:"]
     for c in conclusions:
-        marker = f" [^{c['citation_key']}]" if c["citation_key"] in _CANONICAL_RATIO_KEYS else ""
+        marker = f" [^{c['citation_key']}]" if c["citation_key"] in CANONICAL_RATIO_KEYS else ""
         lines.append(f"- {c['claim']}{marker} (confidence: {c['confidence']:.2f})")
     if evidence_block:
         # LLM-02: the actual rows, headlines and passages behind the conclusions.

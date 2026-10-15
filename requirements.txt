@@ -49,6 +49,7 @@ alembic>=1.13.0                  # versioned schema migrations (ARCH-01); pulls 
 
 # ── Utils ─────────────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
+pydantic-settings>=2.6.0         # typed, validated configuration (ARCH-03)
 pytz>=2024.1
 
 # ── Testing ───────────────────────────────────────────────────────────────────

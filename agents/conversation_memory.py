@@ -18,6 +18,16 @@ from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
+# The one summarisation prompt (ARCH-03): every provider's overflow summariser
+# and the orchestrator's history summary format it with old= and chunk=.
+SUMMARY_PROMPT = (
+    "Existing summary of earlier conversation (may be empty):\n{old}\n\n"
+    "New older messages to fold in:\n{chunk}\n\n"
+    "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
+    "tickers, and decisions mentioned, so later replies stay consistent with this history. "
+    "Return only the summary text."
+)
+
 
 class ConversationMemory:
     def __init__(self, cap: int = 20, summarizer: Callable[[str, str], str] | None = None):

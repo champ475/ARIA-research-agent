@@ -8,7 +8,6 @@ The schema itself lives in Alembic migrations (migrations/versions/, ARCH-01).
 import contextlib
 import json
 import logging
-import os
 import threading
 from datetime import UTC, date
 
@@ -16,7 +15,7 @@ import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
-from config import DATABASE_URL
+from config import DATABASE_URL, DB_POOL_ACQUIRE_TIMEOUT, DB_POOL_MAX
 
 log = logging.getLogger(__name__)
 
@@ -27,8 +26,6 @@ _pool: "pool.ThreadedConnectionPool | None" = None
 # each fanning tools out in parallel, that turned a busy moment into failed
 # turns. A semaphore sized to the pool makes callers wait (up to
 # DB_POOL_ACQUIRE_TIMEOUT seconds) for a free connection instead.
-DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "20"))
-DB_POOL_ACQUIRE_TIMEOUT = float(os.getenv("DB_POOL_ACQUIRE_TIMEOUT", "10"))
 _pool_slots = threading.BoundedSemaphore(DB_POOL_MAX)
 
 

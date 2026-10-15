@@ -35,6 +35,7 @@ from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
 from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
 from graph.state import Evidence, GraphState, VerificationIssue
+from utils.helpers import strip_code_fence
 
 log = logging.getLogger(__name__)
 
@@ -178,19 +179,9 @@ def _stage2_semantic(evidence: list[Evidence]) -> list[VerificationIssue]:
     return issues
 
 
-def _strip_code_fence(raw: str) -> str:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text[3:]
-        if text.lower().startswith("json"):
-            text = text[4:]
-        text = text.rsplit("```", 1)[0]
-    return text.strip()
-
-
 def _parse_llm_issues(raw: str) -> list[VerificationIssue]:
     try:
-        parsed = json.loads(_strip_code_fence(raw))
+        parsed = json.loads(strip_code_fence(raw))
         raw_issues = parsed.get("issues", [])
     except (json.JSONDecodeError, AttributeError, TypeError):
         log.warning("Verification: failed to parse LLM judge output: %r", raw)

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import contextvars
 import logging
-import os
 import threading
 import time
 from collections import deque
@@ -29,13 +28,17 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, TypeVar
 
+from config import (
+    BREAKER_COOLDOWN_SECONDS,
+    BREAKER_FAILURES,
+    BREAKER_WINDOW_SECONDS,
+    IO_POOL_WORKERS,
+    TOOL_POOL_WORKERS,
+)
+
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-BREAKER_FAILURES = int(os.getenv("BREAKER_FAILURES", "5"))
-BREAKER_WINDOW_SECONDS = float(os.getenv("BREAKER_WINDOW_SECONDS", "60"))
-BREAKER_COOLDOWN_SECONDS = float(os.getenv("BREAKER_COOLDOWN_SECONDS", "30"))
 
 
 class CallTimeout(TimeoutError):
@@ -141,12 +144,8 @@ def reset_breakers() -> None:
 
 # Two pools so a tool call (execute_task) waiting on its own source calls can
 # never deadlock by exhausting the pool those inner calls need.
-_IO_POOL = ThreadPoolExecutor(
-    max_workers=int(os.getenv("IO_POOL_WORKERS", "64")), thread_name_prefix="aria-io"
-)
-_TOOL_POOL = ThreadPoolExecutor(
-    max_workers=int(os.getenv("TOOL_POOL_WORKERS", "32")), thread_name_prefix="aria-tool"
-)
+_IO_POOL = ThreadPoolExecutor(max_workers=IO_POOL_WORKERS, thread_name_prefix="aria-io")
+_TOOL_POOL = ThreadPoolExecutor(max_workers=TOOL_POOL_WORKERS, thread_name_prefix="aria-tool")
 
 
 def call_with_timeout(fn: Callable[..., T], *args: Any, timeout: float, pool: str = "io", **kwargs: Any) -> T:

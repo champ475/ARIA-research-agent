@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 
-from agents.conversation_memory import ConversationMemory
+from agents.conversation_memory import SUMMARY_PROMPT, ConversationMemory
 from config import (
     GEMINI_API_KEY,
     GEMINI_MODEL,
@@ -26,14 +26,6 @@ from config import (
 )
 from utils import tracing
 from utils.tracing import usage_from_response
-
-_SUMMARY_PROMPT = (
-    "Existing summary of earlier conversation (may be empty):\n{old}\n\n"
-    "New older messages to fold in:\n{chunk}\n\n"
-    "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
-    "tickers, and decisions mentioned, so later replies stay consistent with this history. "
-    "Return only the summary text."
-)
 
 log = logging.getLogger(__name__)
 
@@ -263,7 +255,7 @@ class _GroqProvider:
         return self._Groq(api_key=_groq_rotator.next(), timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
 
     def _summarize(self, old_summary: str, chunk_text: str) -> str:
-        prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
+        prompt = SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         r = self._client().chat.completions.create(
             model=GROQ_MODEL_FAST,
             messages=[{"role": "user", "content": prompt}],
@@ -372,7 +364,7 @@ class _GeminiProvider:
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
 
     def _summarize(self, old_summary: str, chunk_text: str) -> str:
-        prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
+        prompt = SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         cfg = self._types.GenerateContentConfig(temperature=0.2, max_output_tokens=TOKENS_FAST)
         r = self._client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=cfg)
         self.last_usage = usage_from_response(r)

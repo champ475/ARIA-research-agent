@@ -14,17 +14,9 @@ difference.
 
 from __future__ import annotations
 
-from agents.conversation_memory import ConversationMemory
+from agents.conversation_memory import SUMMARY_PROMPT, ConversationMemory
 from config import LLM_STREAM_TIMEOUT_SECONDS, LLM_TIMEOUT_SECONDS, TOKENS_FAST
 from utils.tracing import usage_from_response
-
-_SUMMARY_PROMPT = (
-    "Existing summary of earlier conversation (may be empty):\n{old}\n\n"
-    "New older messages to fold in:\n{chunk}\n\n"
-    "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
-    "tickers, and decisions mentioned, so later replies stay consistent with this history. "
-    "Return only the summary text."
-)
 
 
 class OpenAICompatibleProvider:
@@ -72,7 +64,7 @@ class OpenAICompatibleProvider:
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
 
     def _summarize(self, old_summary: str, chunk_text: str) -> str:
-        prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
+        prompt = SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         r = self._client.chat.completions.create(
             model=self._model,
             messages=[{"role": "user", "content": prompt}],
