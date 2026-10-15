@@ -61,4 +61,4 @@ def classify_reply(text: str) -> Reply:
     return "unclear"
 
 
-REPROMPT = "Please answer **yes** to go ahead or **no** to cancel — or just ask a new question."
+REASK_TEXT = "Please answer **yes** to go ahead or **no** to cancel — or just ask a new question."

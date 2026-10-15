@@ -72,11 +72,12 @@ from typing import Any
 
 from langgraph.types import Command
 
+import prompts
 from agents.conversation_memory import ConversationMemory, strip_badge
 from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT
 from graph.checkpointer import get_postgres_checkpointer
-from graph.confirmation import REPROMPT as CONFIRM_REPROMPT
+from graph.confirmation import REASK_TEXT as CONFIRM_REPROMPT
 from graph.confirmation import classify_reply
 from graph.deadline import data_gaps_note, new_deadline
 from graph.entity_resolution import entity_notes_text
@@ -393,7 +394,7 @@ class GraphOrchestrator:
 
         prompt = SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         client = LLMClient(
-            system_prompt="Summarize conversation history concisely.", provider_config=self._provider_config
+            system_prompt=prompts.get("orchestrator.summary_system"), provider_config=self._provider_config
         )
         return client.ask(prompt, temperature=0.2, max_tokens=TOKENS_FAST)
 
@@ -607,15 +608,10 @@ class GraphOrchestrator:
         from agents.llm_client import LLMClient
         from config import GROQ_MODEL_FAST, TOKENS_FAST
 
-        prompt = (
-            f'User asked: "{last_query[:80]}". Response was about Indian stocks/funds/'
-            f"reports/alerts/planning.\n"
-            f"Return a JSON array of exactly 4 short follow-up questions (max 7 words each) "
-            f"a user would ask next. Only the JSON array, nothing else."
-        )
+        prompt = prompts.get("orchestrator.suggestions").format(query=last_query[:80])
         try:
             client = LLMClient(
-                system_prompt="Generate short follow-up question suggestions.",
+                system_prompt=prompts.get("orchestrator.suggestions_system"),
                 provider_config=self._provider_config,
             )
             # GROQ_MODEL_FAST is a Groq-only concept (see LLMClient providers'

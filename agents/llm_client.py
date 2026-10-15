@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 
+import prompts
 from agents.conversation_memory import SUMMARY_PROMPT, ConversationMemory
 from agents.providers.usage import ThreadLocalUsage
 from config import (
@@ -483,10 +484,7 @@ class _GeminiProvider(ThreadLocalUsage):
 
 # ── Unified client ────────────────────────────────────────────────────────────
 
-_DEFAULT_SYSTEM = (
-    "You are ARIA, an expert institutional equity research analyst for Indian markets (NSE/BSE). "
-    "Always respond with precise, data-grounded analysis. Format in clean Markdown."
-)
+_DEFAULT_SYSTEM = prompts.get("llm.default_system")
 
 
 class LLMClient:
@@ -527,7 +525,9 @@ class LLMClient:
 
     def __init__(self, system_prompt: str = "", provider_config: dict | None = None):
         self._system = system_prompt or _DEFAULT_SYSTEM
-        self._prompt_version = tracing.prompt_version(self._system)
+        # LLM-07: a registry prompt records its id ("planner.system@v1");
+        # anything else (ad-hoc system text) falls back to a content hash.
+        self._prompt_version = getattr(self._system, "id", None) or tracing.prompt_version(self._system)
         self._primary = None
         self._secondary = None
         self._active = "none"

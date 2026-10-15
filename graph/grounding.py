@@ -27,6 +27,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+import prompts
 from utils.numbers import UNIT_MULTIPLIERS
 
 log = logging.getLogger(__name__)
@@ -209,11 +210,7 @@ def check(text: str, sources: str, *, mode: str = "default") -> GroundingResult:
     return result
 
 
-REGENERATE_INSTRUCTION = (
-    "\n\nCORRECTION: your previous answer stated figures that are not in the conclusions or evidence: "
-    "{figures}. Rewrite the answer without them — use only figures that appear above, or say the "
-    "figure isn't available."
-)
+REGENERATE_INSTRUCTION = prompts.get("grounding.regenerate")
 
 
 def unverified_note(unsupported: list[str]) -> str:

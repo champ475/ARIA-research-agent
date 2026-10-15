@@ -28,12 +28,13 @@ import json
 import logging
 from collections.abc import Callable
 
+import prompts
 from agents.llm_client import LLMClient, LLMProvidersExhausted
 from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
 from graph.deadline import past_research_cutoff
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
-from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
+from graph.prompt_safety import wrap_untrusted
 from graph.schemas import VerificationResult
 from graph.state import Evidence, GraphState, VerificationIssue
 from utils.llm_json import ParseFailure, extract_json, json_reply
@@ -55,15 +56,7 @@ _CONFIDENCE_FLOOR = 0.5
 _CONTRADICTION_TOLERANCE = 0.05  # 5% relative difference
 _VALID_ISSUE_TYPES = {"unsupported", "contradiction", "low_confidence", "missing_citation"}
 
-_SYSTEM = (
-    "You judge whether collected evidence actually supports answering a "
-    "financial-research objective for ARIA. Respond with ONLY a JSON object, "
-    'no prose, no markdown fences: {"issues": [{"claim": "...", '
-    '"issue_type": "unsupported|contradiction|low_confidence|missing_citation", '
-    '"evidence_ids": ["..."]}]}. An empty issues list means the evidence is '
-    "sufficient and consistent. Be conservative — only flag a genuine "
-    "problem, not a stylistic preference." + UNTRUSTED_NOTICE
-)
+_SYSTEM = prompts.get("verification.system") + prompts.get("safety.untrusted_notice")
 
 
 def _numeric_fields(payload) -> dict[str, float]:

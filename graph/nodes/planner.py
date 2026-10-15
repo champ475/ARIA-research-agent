@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+import prompts
 from agents.llm_client import LLMClient
 from config import GROQ_MODEL_FAST, TOKENS_AGENT
 from graph.entity_resolution import blocking_resolutions
@@ -39,14 +40,7 @@ from utils.llm_json import ParseFailure, extract_json, json_reply
 
 log = logging.getLogger(__name__)
 
-_SYSTEM = (
-    "You select which research tools are needed to answer a financial-research "
-    "objective for ARIA. Respond with ONLY a JSON object, no prose, no markdown "
-    'fences: {"tools": ["tool_name", ...]}. Pick only tools whose data the '
-    "objective actually needs — do not include a tool just because it's "
-    "available. If a tool depends on another tool's output, you don't need to "
-    "include the dependency yourself; it's added automatically."
-)
+_SYSTEM = prompts.get("planner.system")
 
 _ALL_TOOL_NAMES = {spec.name for spec in list_tools()}
 

@@ -60,6 +60,7 @@ from collections.abc import Callable
 
 import pandas as pd
 
+import prompts
 from agents.llm_client import LLMClient
 from config import SYNTHESIS_EVIDENCE_CHAR_BUDGET, TOKENS_SYNTHESIS
 from graph.advice_policy import REFRAME_INSTRUCTION
@@ -73,7 +74,7 @@ from graph.guardrails import finalize
 from graph.journal import log_decision
 from graph.nodes.conclusion_builder import CANONICAL_RATIO_KEYS
 from graph.nodes.execute_task import from_cacheable
-from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
+from graph.prompt_safety import wrap_untrusted
 from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
@@ -106,19 +107,7 @@ _PLANNING_RESET_KW = [
 
 log = logging.getLogger(__name__)
 
-_SYSTEM = (
-    "You are ARIA, an autonomous financial research engine for Indian equity "
-    "markets (NSE/BSE). You are given a list of pre-verified conclusions — "
-    "facts already decided and checked, not raw data. Write a clear, direct "
-    "answer to the user's objective using ONLY these conclusions. State each "
-    "ratio using its exact [^key] marker where one is given, right after the "
-    'number (e.g. "P/E of 24.3 [^pe]") — never invent a marker, never attach '
-    "one to a value that has none. Do not introduce any number that isn't in "
-    "the conclusions list or the evidence data. You may quote names, rows and "
-    "headlines from the evidence data section; never invent a fund, company, "
-    "headline or figure that isn't there. If the conclusions and evidence don't "
-    "fully cover the objective, say so plainly rather than filling the gap." + UNTRUSTED_NOTICE
-)
+_SYSTEM = prompts.get("communication.system") + prompts.get("safety.untrusted_notice")
 
 
 _HISTORY_TURNS_IN_PROMPT = 6  # last N history messages included verbatim, same budget as query_analyzer.py

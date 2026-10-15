@@ -16,6 +16,29 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Versioned prompt registry (LLM-07)
+**Problem.**
+- About 20 prompts lived as string constants across 9 modules. They changed without review or a version.
+- A bad answer could only be traced to an anonymous hash of its system prompt.
+
+**Alternatives considered.**
+- *A prompt-management SaaS* (LangSmith Hub, PromptLayer). Rejected: a network dependency on every turn, and prompts leave the repo's review flow.
+- *A typed Python registry module.* Workable, but editing long prose inside Python string literals makes review harder than Markdown files.
+
+**Final decision.**
+- One file per prompt version, under `prompts/`, loaded by `prompts.get()`.
+- The returned `Prompt` str subclass carries the `name@vN` id that LLMClient records on each turn.
+- Changes go through CODEOWNERS and the eval job.
+- Moved text is byte-identical, so the recorded eval fixtures stay valid.
+
+**Trade-offs.**
+- Prompt *builders* that interleave data and instructions (the synthesis prompt, the verification judge prompt, the strategy prompt) are still assembled in code from registry pieces and data.
+- Versions are bumped by hand.
+
+**Future improvements.**
+- A CI check that a changed `prompts/` file comes with a version bump and re-recorded fixtures.
+- Per-version eval history (LLM-01).
+
 ## 2026-10-16 — Per-conversation state in a bounded cache, rebuilt from Postgres (REL-03, VAL-10)
 **Problem.**
 - One `GraphOrchestrator` was built per user who had ever chatted, each with its own compiled graph and LLM clients, and kept forever, so memory grew with total users.

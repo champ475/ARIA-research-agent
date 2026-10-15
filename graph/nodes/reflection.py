@@ -22,13 +22,14 @@ import json
 import logging
 from collections.abc import Callable
 
+import prompts
 from agents.llm_client import LLMClient, LLMProvidersExhausted
 from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
 from graph.deadline import past_research_cutoff
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
 from graph.nodes.planner import _ALL_TOOL_NAMES, _build_tasks, _with_transitive_deps
-from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
+from graph.prompt_safety import wrap_untrusted
 from graph.schemas import ReflectionResult
 from graph.state import GraphState, MissingInfoItem, Task
 from graph.write_policy import WRITE_TOOLS
@@ -36,17 +37,7 @@ from utils.llm_json import ParseFailure, extract_json, json_reply
 
 log = logging.getLogger(__name__)
 
-_SYSTEM = (
-    "You review evidence already collected against a research objective for "
-    "ARIA, an autonomous research engine. Respond with ONLY a JSON object, no "
-    'prose, no markdown fences: {"missing": [{"missing": "short label", '
-    '"reason": "why it\'s needed", "priority": "high|medium|low", '
-    '"action": "tool_name"}]}. Only list something as missing if the objective '
-    "genuinely can't be answered without it — an empty list means the "
-    'evidence already covers everything asked. "action" must be one of the '
-    "available tool names below; if no available tool would fill the gap, "
-    "omit that item entirely rather than inventing a tool name." + UNTRUSTED_NOTICE
-)
+_SYSTEM = prompts.get("reflection.system") + prompts.get("safety.untrusted_notice")
 
 # SEC-03: Reflection fills research gaps; it may never add a tool that writes.
 _REFLECTION_TOOL_NAMES = _ALL_TOOL_NAMES - WRITE_TOOLS

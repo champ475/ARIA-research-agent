@@ -1,0 +1,7 @@
+# Changes to LLM prompts need the owner's review and a green eval job (LLM-07).
+/prompts/ @champ475
+# Trust boundaries and schema.
+/migrations/ @champ475
+/graph/guardrails.py @champ475
+/graph/advice_policy.py @champ475
+/graph/write_policy.py @champ475
