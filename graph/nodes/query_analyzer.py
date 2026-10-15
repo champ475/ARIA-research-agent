@@ -34,7 +34,7 @@ import logging
 from collections.abc import Callable
 
 from agents.llm_client import LLMClient
-from config import GROQ_MODEL_FAST, TOKENS_FAST
+from config import GROQ_MODEL_FAST, MAX_ENTITIES_PER_TURN, TOKENS_FAST
 from graph.data_questions import min_complexity
 from graph.entity_resolution import add_llm_mentions, history_entities, resolve_mentions
 from graph.journal import log_decision
@@ -137,11 +137,23 @@ def build_query_analyzer_node(
         classification = _parse(raw)
         add_llm_mentions(resolved, classification["companies"])
         entities = resolved.entities if resolved.mentioned else history_entities(history)
+        unresolved = list(resolved.unresolved)
+        if len(entities) > MAX_ENTITIES_PER_TURN:
+            # VAL-03: tasks = companies x tools; past the cap, ask instead of
+            # fanning out dozens of fetches (blocking, like an ambiguous name).
+            unresolved.append(
+                {
+                    "query": ", ".join(entities),
+                    "status": "too_many",
+                    "candidates": [{"symbol": e, "name": e} for e in entities],
+                    "limit": MAX_ENTITIES_PER_TURN,
+                }
+            )
         # LLM-06: a data question never takes the no-research path.
         complexity, raised = min_complexity(query, entities, classification["complexity"])
         return {
             "entities": entities,
-            "entity_resolutions": resolved.unresolved,
+            "entity_resolutions": unresolved,
             "entity_notes": resolved.notes,
             "intent": classification["intent"],
             "secondary_intents": classification["secondary_intents"],

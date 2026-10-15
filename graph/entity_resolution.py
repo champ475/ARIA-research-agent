@@ -249,6 +249,9 @@ def blocking_resolutions(state: dict) -> list[dict]:
     intents = {state.get("intent")} | set(state.get("secondary_intents") or [])
     if not unresolved or not intents & _COMPANY_INTENTS:
         return []
+    too_many = [u for u in unresolved if u["status"] == "too_many"]
+    if too_many:
+        return too_many
     ambiguous = [u for u in unresolved if u["status"] == "ambiguous"]
     if ambiguous:
         return ambiguous
@@ -266,6 +269,15 @@ def clarification_text(blocking: list[dict]) -> str:
     parts: list[str] = []
     for u in blocking:
         name = u["query"]
+        if u["status"] == "too_many":
+            symbols = ", ".join(f"**{c['symbol']}**" for c in u["candidates"])
+            parts.append(
+                f"You asked about {len(u['candidates'])} companies ({symbols}). I can research up to "
+                f"{u['limit']} at a time, so the answer stays fast and complete.\n\n"
+                f"Tell me which {u['limit']} to start with — or, to compare many at once, ask the screener "
+                'for a table, e.g. *"IT stocks with PE below 30"*.'
+            )
+            return "\n\n".join(parts)
         if u["status"] == "ambiguous":
             options = "\n".join(f"- {_option(c)}" for c in u["candidates"])
             parts.append(f"Which **{name}** do you mean?\n{options}")
