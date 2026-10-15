@@ -15,6 +15,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 from utils.db import auth_attempt_clear, auth_attempt_count, auth_attempt_record, get_conn, release_conn
+from utils.errors import UserInputError
 
 SESSION_TTL_HOURS = 24 * 14  # 14 days
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -43,7 +44,7 @@ def _clear_rate_limit(email: str):
     auth_attempt_clear(email)
 
 
-class AuthError(Exception):
+class AuthError(UserInputError):
     """Raised for signup/login failures with a user-facing message."""
 
 

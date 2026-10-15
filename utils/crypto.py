@@ -21,6 +21,7 @@ import hashlib
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 import config
+from utils.errors import ConfigurationError
 
 _fernet: MultiFernet | None = None
 
@@ -39,10 +40,10 @@ def _get_fernet() -> MultiFernet:
     if _fernet is None:
         secret = config.SECRET_KEY
         if not secret:
-            raise ValueError(
-                "No SECRET_KEY found.\n"
-                "Add SECRET_KEY=<32+ random characters> to your .env — used to encrypt "
-                "user-supplied LLM API keys before they're stored."
+            raise ConfigurationError(
+                "Keys can't be stored securely on this server right now.",
+                fix_hint="Ask the site operator to set SECRET_KEY.",
+                detail="No SECRET_KEY found. Add SECRET_KEY=<32+ random characters> to .env.",
             )
         _fernet = MultiFernet([_derive(secret), *(_derive(s) for s in _previous_secrets())])
     return _fernet
@@ -62,7 +63,11 @@ def decrypt(ciphertext: str) -> str:
     try:
         return _get_fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
     except InvalidToken as e:
-        raise ValueError("Stored API key could not be decrypted — SECRET_KEY may have changed.") from e
+        raise ConfigurationError(
+            "Your saved API key can't be read any more.",
+            fix_hint="Enter your key again in Settings.",
+            detail="Stored API key could not be decrypted — SECRET_KEY may have changed.",
+        ) from e
 
 
 def rotate(ciphertext: str) -> str:
@@ -71,4 +76,6 @@ def rotate(ciphertext: str) -> str:
     try:
         return _get_fernet().rotate(ciphertext.encode("utf-8")).decode("utf-8")
     except InvalidToken as e:
-        raise ValueError("Ciphertext is not readable with SECRET_KEY or SECRET_KEY_PREVIOUS.") from e
+        raise ConfigurationError(
+            detail="Ciphertext is not readable with SECRET_KEY or SECRET_KEY_PREVIOUS."
+        ) from e

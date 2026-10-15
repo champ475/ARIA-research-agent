@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from agents.conversation_memory import SUMMARY_PROMPT, ConversationMemory
 from config import LLM_STREAM_TIMEOUT_SECONDS, LLM_TIMEOUT_SECONDS, TOKENS_FAST
+from utils.errors import ConfigurationError
 from utils.tracing import usage_from_response
 
 
@@ -26,13 +27,15 @@ class OpenAICompatibleProvider:
 
     def __init__(self, system: str, api_key: str, model: str, base_url: str | None = None):
         if not api_key:
-            raise ValueError(
-                "No API key configured for your chosen LLM provider.\n"
-                "Add one in Settings — any OpenAI-compatible provider works "
-                "(OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...)."
+            raise ConfigurationError(
+                "No API key is configured for your LLM provider.",
+                fix_hint="Add one in Settings — any OpenAI-compatible provider works "
+                "(OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...).",
             )
         if not model:
-            raise ValueError("No model configured for your chosen LLM provider — set one in Settings.")
+            raise ConfigurationError(
+                "No model is configured for your LLM provider.", fix_hint="Set one in Settings."
+            )
         try:
             from openai import OpenAI as _OpenAI
         except ImportError as e:

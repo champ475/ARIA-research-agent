@@ -18,6 +18,7 @@ configure_logging()
 from config import CHAT_CONCURRENCY, MAX_CHAT_CHARS, QUEUE_MAX_SIZE, TRIAL_DAILY_LIMIT, check_boot
 from utils.auth import AuthError, login, signup
 from utils.db import ensure_schema
+from utils.errors import AriaError, ConfigurationError, UserInputError, error_id_from_turn, render_error
 from utils.helpers import IST as IST_TZ
 from utils.helpers import now_ist
 from utils.input_guard import CleanMessage, InputRejected, clean_message
@@ -281,31 +282,22 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
             md_update = gr.update(value=md_path, label=f"⬇ {os.path.basename(md_path)}", visible=True)
         if csv_path:
             csv_update = gr.update(value=csv_path, label="⬇ Export Results CSV", visible=True)
-    except UnsafeURLError as e:
-        # A saved BYO base URL that fails the egress policy (SEC-01).
-        text = (
-            f"### ⚠️ Settings need attention\n\n{e}\n\nUpdate or remove the base URL in the **Settings** tab."
-        )
-    except ValueError as e:
-        text = (
-            f"### ⚠️ API Key Required\n\n{e}\n\n"
-            "Add to `.env`:\n"
-            "```\nGROQ_API_KEY_1=your_key   # free at console.groq.com\n"
-            "GEMINI_API_KEY=your_key    # free at aistudio.google.com/apikey\n```\n"
-            "Then restart: `python app.py`"
-        )
-    except Exception:
-        # OBS-02: the error ID is the turn's id prefix — it finds the `turns`
-        # row and the trace (scripts/find_turn.py). Raw exception text is
-        # logged, never shown (it can carry internals).
+    except Exception as e:
+        # SEC-08: the user gets a friendly message and a short error ID; the
+        # exception text (which can carry SQL, paths, provider responses) goes
+        # only to the log. OBS-02: the error ID is the turn's id prefix — it
+        # finds the `turns` row and the trace (scripts/find_turn.py).
         from utils.logging_setup import turn_id_var
 
-        error_id = turn_id_var.get().replace("-", "")[:8] or "unknown"
-        log.exception(f"[respond] turn failed (error_id={error_id})")
-        text = (
-            "⚠️ Something went wrong on our side while answering that.\n\n"
-            f"Please try again. If it keeps happening, report **Error ID `{error_id}`**."
-        )
+        error_id = error_id_from_turn(turn_id_var.get())
+        if isinstance(e, UserInputError | ConfigurationError):
+            log.info(f"[respond] turn refused ({type(e).__name__}, error_id={error_id})")
+        else:
+            log.exception(f"[respond] turn failed (error_id={error_id})")
+        text = render_error(e if isinstance(e, AriaError) else None, error_id)
+        if isinstance(e, UnsafeURLError):
+            # A saved BYO base URL that fails the egress policy (SEC-01).
+            text += "\n\nUpdate or remove the base URL in the **Settings** tab."
 
     # A save failure here (e.g. a Neon connection dropped for being idle —
     # utils/db.py now retries once, but a second failure is still possible)
@@ -1165,7 +1157,7 @@ def _build_settings_tab(user_state: gr.State):
             try:
                 base_url = validate_public_https_url(base_url)
             except UnsafeURLError as e:
-                return f"⚠️ {e}", model, base_url, api_key
+                return f"⚠️ {e.user_message}", model, base_url, api_key
         from utils.crypto import encrypt
         from utils.db import llm_config_set
 
@@ -1228,7 +1220,7 @@ def _build_settings_tab(user_state: gr.State):
             provider = OpenAICompatibleProvider("Reply with OK.", api_key, model, base_url)
             provider.ask("ping", temperature=0.0, max_tokens=1)
         except UnsafeURLError as e:
-            return f"⚠️ {e}"
+            return f"⚠️ {e.user_message}"
         except Exception as e:
             kind = _error_class(LLMProvidersExhausted(e, is_byo=True))
             log.warning(f"[Settings] connection test failed ({kind}): {e}")
@@ -1402,7 +1394,7 @@ def _build_auth_gate():
         try:
             token = login(email, password)
         except AuthError as e:
-            return str(e), gr.update(visible=True), gr.update(visible=False), None
+            return e.user_message, gr.update(visible=True), gr.update(visible=False), None
         from utils.auth import get_user_id
 
         uid = get_user_id(token)
@@ -1423,7 +1415,7 @@ def _build_auth_gate():
             accept_terms(uid)
             token = login(email, password)
         except AuthError as e:
-            return str(e), gr.update(visible=True), gr.update(visible=False), None
+            return e.user_message, gr.update(visible=True), gr.update(visible=False), None
         from utils.auth import get_user_id
 
         uid = get_user_id(token)

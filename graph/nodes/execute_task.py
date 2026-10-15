@@ -205,7 +205,7 @@ def execute_task_node(send_state: dict) -> dict:
         failed_task = {**task, "status": "failed", "error": _failure_reason(e)}
         return {
             "tasks": [failed_task],
-            **log_decision("execute_task", f"failed: {task['id']}", str(e)),
+            **log_decision("execute_task", f"failed: {task['id']}", _failure_reason(e)),
         }
     done_task = {**task, "status": "done", "result_evidence_ids": [evidence["id"]]}
     return {

@@ -12,6 +12,7 @@ pipeline the rest of the graph uses.
 from __future__ import annotations
 
 import json
+import logging
 
 from config import TOKENS_COMPLEX, TOKENS_FAST
 from tools.data.amfi import format_fund_search_results, get_category_funds
@@ -20,6 +21,8 @@ from tools.data.news_fetcher import market_news
 from utils.financial_profile import REQUIRED_FIELDS as _PROFILE_REQUIRED
 from utils.financial_profile import is_complete, rejected_note, validate_updates
 from utils.helpers import now_ist
+
+log = logging.getLogger(__name__)
 
 # Minimum fields needed before a first strategy can be generated at all
 # (VAL-05: the schema and the build trigger live in utils/financial_profile.py).
@@ -142,7 +145,8 @@ def fetch_fund_data(profile: dict) -> str:
             funds = get_category_funds(cat, top_n=5, horizon_years=_horizon(profile))
             blocks.append(f"--- {cat.title()} (AMFI NAV data) ---\n{format_fund_search_results(funds)}")
         except Exception as e:
-            blocks.append(f"--- {cat.title()} ---\nUnavailable: {e}")
+            log.warning("[planning] fund data for %s unavailable: %s", cat, e)
+            blocks.append(f"--- {cat.title()} ---\nUnavailable (data source error).")
     return "\n\n".join(blocks)
 
 
@@ -154,12 +158,14 @@ def fetch_macro_news() -> str:
             for k, v in macro.items()
         )
     except Exception as e:
-        macro_txt = f"Unavailable: {e}"
+        log.warning("[planning] macro data unavailable: %s", e)
+        macro_txt = "Unavailable (data source error)."
     try:
         news = market_news()
         news_txt = "\n".join(f"- {n['title']}" for n in news[:6])
     except Exception as e:
-        news_txt = f"Unavailable: {e}"
+        log.warning("[planning] market news unavailable: %s", e)
+        news_txt = "Unavailable (data source error)."
     return f"MACRO:\n{macro_txt}\n\nHEADLINES:\n{news_txt}"
 
 

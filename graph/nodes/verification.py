@@ -276,7 +276,9 @@ def build_verification_node(
                     }
                 ],
                 "loop_count": max_loops,
-                **log_decision("Verification", "llm_judge skipped — all providers exhausted", str(e)),
+                **log_decision(
+                    "Verification", "llm_judge skipped — all providers exhausted", type(e).__name__
+                ),
             }
         stage3_issues = _parse_llm_issues(raw)
         # loop_count is a shared budget incremented by whichever side (Reflection

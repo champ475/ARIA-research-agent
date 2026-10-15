@@ -121,7 +121,7 @@ def build_reflection_node(
             return {
                 "missing_info": [],
                 "loop_count": max_loops,
-                **log_decision("Reflection", "skipped — all LLM providers exhausted", str(e)),
+                **log_decision("Reflection", "skipped — all LLM providers exhausted", type(e).__name__),
             }
         missing_items = _parse(raw)
 

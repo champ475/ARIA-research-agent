@@ -25,9 +25,14 @@ from config import (
     TOKENS_SYNTHESIS,
 )
 from utils import tracing
+from utils.errors import ConfigurationError
 from utils.tracing import usage_from_response
 
 log = logging.getLogger(__name__)
+
+# SEC-08: what a user sees when this server has no trial provider configured.
+_NO_TRIAL_MESSAGE = "The free trial isn't available on this server right now."
+_NO_TRIAL_HINT = "Add your own LLM API key in the Settings tab (any OpenAI-compatible provider works)."
 
 # ── Thread-safe Groq key rotator ─────────────────────────────────────────────
 
@@ -234,10 +239,10 @@ class _GroqProvider:
 
     def __init__(self, system: str):
         if not _groq_rotator.available():
-            raise ValueError(
-                "No GROQ_API_KEY found.\n"
-                "Add GROQ_API_KEY_1 (and optionally _2, _3) to your .env.\n"
-                "Free keys at https://console.groq.com"
+            raise ConfigurationError(
+                _NO_TRIAL_MESSAGE,
+                fix_hint=_NO_TRIAL_HINT,
+                detail="No GROQ_API_KEY found: add GROQ_API_KEY_1 to .env (free at console.groq.com).",
             )
         try:
             from groq import Groq as _Groq
@@ -345,8 +350,10 @@ class _GeminiProvider:
 
     def __init__(self, system: str):
         if not GEMINI_API_KEY:
-            raise ValueError(
-                "No GEMINI_API_KEY found.\nAdd it to your .env — free at https://aistudio.google.com/apikey"
+            raise ConfigurationError(
+                _NO_TRIAL_MESSAGE,
+                fix_hint=_NO_TRIAL_HINT,
+                detail="No GEMINI_API_KEY found: add it to .env (free at aistudio.google.com/apikey).",
             )
         try:
             from google import genai
@@ -572,8 +579,10 @@ class LLMClient:
             if self._local is not None:
                 self._active = self._local.name
                 return
-            raise ValueError(
-                "No LLM provider configured.\nAdd GROQ_API_KEY_1 or GEMINI_API_KEY to your .env file."
+            raise ConfigurationError(
+                _NO_TRIAL_MESSAGE,
+                fix_hint=_NO_TRIAL_HINT,
+                detail="No LLM provider configured: add GROQ_API_KEY_1 or GEMINI_API_KEY to .env.",
             )
         if self._primary is None:
             self._primary = self._secondary

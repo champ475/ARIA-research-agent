@@ -16,6 +16,24 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — Typed user-safe errors at one boundary (SEC-08)
+**Problem.** Users could see raw exception text: SQL errors, provider responses, internal URLs, and file paths. It looked broken and helped an attacker map the system. One handler showed every `ValueError` as "API Key Required", with operator-only `.env` instructions.
+
+**Alternatives considered.**
+- *Sanitize exception strings with regexes.* Rejected: it is a blocklist, and it always misses something.
+- *Show a generic message for everything.* Rejected: users need actionable messages like "your saved key can't be read, enter it again in Settings".
+
+**Final decision.**
+- Typed errors whose user-facing text is written deliberately: `utils/errors.py`.
+- One rendering function, `render_error`.
+- One catch-all boundary in `respond` that logs the full exception against the error ID.
+- An AST test that keeps exception variables out of non-log strings.
+
+**Trade-offs.**
+- Library exceptions are not wrapped where they are raised; they surface as the generic message. That is safe but less specific until a call site adopts `DataUnavailableError` or `ProviderError` (REL-06 and UX-02 continue this).
+
+**Future improvements.** Map `DataUnavailableError` and `ProviderError` from the data and LLM layers to specific messages with fix-it links (UX-02).
+
 ## 2026-10-15 — No pickle in the checkpointer (SEC-09)
 **Problem.** The checkpointer used `JsonPlusSerializer(pickle_fallback=True)`. Anyone who could write to the checkpoint tables could get code execution on the app server when a thread was resumed. That includes a leaked `DATABASE_URL`, an injection elsewhere, or a compromised replica.
 
