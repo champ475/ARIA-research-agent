@@ -29,7 +29,7 @@ def test_queue_is_configured_for_concurrent_turns(app_module):
 def test_chat_events_share_one_concurrent_pool(app_module):
     demo = app_module.build_ui()
     chat_fns = [fn for fn in demo.fns.values() if getattr(fn, "concurrency_id", None) == "chat"]
-    assert len(chat_fns) == 2  # Enter and the Send button
+    assert len(chat_fns) == 4  # Enter, the Send button, and the Yes/No confirmation buttons
     assert all(fn.concurrency_limit == app_module.CHAT_CONCURRENCY for fn in chat_fns)
 
 

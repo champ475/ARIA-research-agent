@@ -247,7 +247,8 @@ _REPORT_LIST_KW = [
     "show my reports",
 ]
 _REPORT_DOWNLOAD_KW = ["download", "regenerate", "resend", "re-download", "redownload"]
-_REPORT_ID_RE = re.compile(r"#?(\d+)")
+# VAL-08: only "report #12" / "report 12" names an id — "report for 2024" doesn't.
+_REPORT_ID_RE = re.compile(r"\breport\s*(?:#|no\.?|number)?\s*(\d+)\b", re.IGNORECASE)
 
 
 def _handle_report_management(state: GraphState) -> dict | None:

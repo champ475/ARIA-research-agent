@@ -897,6 +897,11 @@ def _build_chat_tab(user_state: gr.State):
                     gr.Button(CHAT_DEFAULTS[i], size="sm", elem_classes=["sugg-btn"]) for i in range(4)
                 ]
 
+            # VAL-08: shown only while the research graph waits for a yes/no.
+            with gr.Row(visible=False, elem_id=f"confirm-row-{tab_id}") as confirm_row:
+                yes_btn = gr.Button("✅ Yes, go ahead", variant="primary", size="sm")
+                no_btn = gr.Button("✖ No, cancel", variant="secondary", size="sm")
+
             with gr.Row(elem_id=f"input-row-{tab_id}"):
                 msg_box = gr.Textbox(
                     placeholder=CHAT_PLACEHOLDER,
@@ -964,24 +969,27 @@ def _build_chat_tab(user_state: gr.State):
     # (bouncing dots, prefixed to the assistant bubble) is the one loading
     # indicator meant to be visible; this stops Gradio's from fighting it.
     chat_inputs = [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio]
+
     # Both triggers share one "chat" worker pool (REL-01): the limit is on
     # concurrent chat turns server-wide, not per button.
-    msg_box.submit(
-        _respond,
-        chat_inputs,
-        outputs,
-        show_progress="hidden",
-        concurrency_id="chat",
-        concurrency_limit=CHAT_CONCURRENCY,
+    def _confirm_visible(user_id, request: gr.Request):
+        """Show Yes/No while this user's graph is paused for confirmation."""
+        user_id = _request_user(request) or user_id
+        orch = _orchestrators.get(user_id) if user_id else None
+        return gr.update(visible=bool(orch and getattr(orch, "_awaiting_confirmation", False)))
+
+    chat_kwargs = {"show_progress": "hidden", "concurrency_id": "chat", "concurrency_limit": CHAT_CONCURRENCY}
+    msg_box.submit(_respond, chat_inputs, outputs, **chat_kwargs).then(
+        _confirm_visible, [user_state], [confirm_row]
     )
-    send_btn.click(
-        _respond,
-        chat_inputs,
-        outputs,
-        show_progress="hidden",
-        concurrency_id="chat",
-        concurrency_limit=CHAT_CONCURRENCY,
+    send_btn.click(_respond, chat_inputs, outputs, **chat_kwargs).then(
+        _confirm_visible, [user_state], [confirm_row]
     )
+    for btn, answer in ((yes_btn, "yes"), (no_btn, "no")):
+        # A click is the typed answer: fill the box, run the same turn path.
+        btn.click(lambda a=answer: a, None, [msg_box]).then(
+            _respond, chat_inputs, outputs, **chat_kwargs
+        ).then(_confirm_visible, [user_state], [confirm_row])
     clear_btn.click(
         _clear,
         [user_state],

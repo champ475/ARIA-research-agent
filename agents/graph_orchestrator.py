@@ -71,6 +71,8 @@ from agents.conversation_memory import ConversationMemory
 from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT
 from graph.checkpointer import get_postgres_checkpointer
+from graph.confirmation import REPROMPT as CONFIRM_REPROMPT
+from graph.confirmation import classify_reply
 from graph.deadline import data_gaps_note, new_deadline
 from graph.entity_resolution import entity_notes_text
 from graph.graph import build_graph
@@ -81,7 +83,6 @@ from graph.guardrails import check_input, finalize
 
 log = logging.getLogger(__name__)
 
-_APPROVE_WORDS = {"y", "yes", "approve", "approved", "proceed", "confirm", "ok", "okay"}
 _DEFAULT_MAX_LOOPS = 2
 
 _TRIAL_EXHAUSTED_MESSAGE = (
@@ -385,11 +386,24 @@ class GraphOrchestrator:
         than duplicated in every caller."""
         try:
             if self._awaiting_confirmation:
+                # VAL-08: a lenient yes/no; a fresh question cancels the
+                # pending step and runs as its own turn (never a silent "no").
+                kind = classify_reply(message)
+                if kind == "unclear":
+                    rec.status = "gated"
+                    self._memory.add_user(message)
+                    self._memory.add_assistant(CONFIRM_REPROMPT)
+                    yield CONFIRM_REPROMPT, None, None, None, None, "equity"
+                    return
+                if kind == "new_question":
+                    log.info("[orchestrator] new question while a confirmation was pending; cancelling it")
+                    self._awaiting_confirmation = False
+            if self._awaiting_confirmation:
                 # Must resume on the SAME thread the interrupt paused on — the
                 # config resolved for the turn that raised this interrupt is
                 # still current in self._provider_config, no need to re-resolve.
                 config = {"configurable": {"thread_id": self._thread_id}}
-                approved = message.strip().lower() in _APPROVE_WORDS
+                approved = kind == "yes"
                 # A fresh deadline: the user's think time at the gate mustn't
                 # count against the research budget (REL-02).
                 result = self._graph.invoke(Command(resume=approved, update=new_deadline()), config=config)
@@ -438,7 +452,7 @@ class GraphOrchestrator:
                 rec.status = "gated"
                 self._awaiting_confirmation = True
                 prompt = result["__interrupt__"][0].value.get("message", "Proceed?")
-                reply = f"{prompt} (reply yes/no)"
+                reply = f"{prompt} (reply yes/no, or use the buttons)"
                 self._memory.add_assistant(reply)
                 yield reply, None, None, None, None, "equity"
                 return
