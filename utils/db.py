@@ -1159,12 +1159,13 @@ def turn_record(
     node_ms: dict,
     data_gaps: int,
     grounding: dict | None,
+    parse_failures: dict | None = None,
 ) -> None:
     _query(
         "INSERT INTO turns (turn_id, user_id, session_id, intent, complexity, status, error_id, latency_ms, "
         "ttft_ms, llm_calls, tokens_in, tokens_out, tokens_estimated, providers, prompt_versions, tool_calls, "
-        "cache_hits, node_ms, data_gaps, grounding) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+        "cache_hits, node_ms, data_gaps, grounding, parse_failures) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
         "ON CONFLICT (turn_id) DO NOTHING",
         (
             turn_id,
@@ -1187,6 +1188,7 @@ def turn_record(
             json.dumps(node_ms),
             data_gaps,
             None if grounding is None else json.dumps(grounding, default=str),
+            None if parse_failures is None else json.dumps(parse_failures),
         ),
         fetch=None,
         commit=True,

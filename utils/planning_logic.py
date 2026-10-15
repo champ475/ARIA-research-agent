@@ -108,11 +108,14 @@ def intake_turn(client, msg: str, profile: dict) -> tuple[dict, bool, str]:
         message=msg,
     )
     try:
-        raw = client.ask(prompt, temperature=0.4, max_tokens=TOKENS_FAST)
-        from utils.helpers import strip_code_fence
+        from utils.llm_json import IntakeReply, ask_json
 
-        raw = strip_code_fence(raw)
-        data = json.loads(raw)
+        reply_obj = ask_json(
+            client, prompt, IntakeReply, node="planning_intake", temperature=0.4, max_tokens=TOKENS_FAST
+        )
+        if reply_obj is None:
+            return {}, is_complete(profile), fallback_question(profile)
+        data = reply_obj.model_dump()
         proposed = data.get("updates") or {}
         if not isinstance(proposed, dict):
             proposed = {}

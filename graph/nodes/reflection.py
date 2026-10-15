@@ -29,9 +29,10 @@ from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
 from graph.nodes.planner import _ALL_TOOL_NAMES, _build_tasks, _with_transitive_deps
 from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
+from graph.schemas import ReflectionResult
 from graph.state import GraphState, MissingInfoItem, Task
 from graph.write_policy import WRITE_TOOLS
-from utils.helpers import strip_code_fence
+from utils.llm_json import ParseFailure, extract_json, json_reply
 
 log = logging.getLogger(__name__)
 
@@ -66,9 +67,9 @@ def _build_prompt(query: str, objective: str, evidence_summary: dict) -> str:
 
 def _parse(raw: str) -> list[MissingInfoItem]:
     try:
-        parsed = json.loads(strip_code_fence(raw))
+        parsed = extract_json(raw)
         raw_items = parsed.get("missing", [])
-    except (json.JSONDecodeError, AttributeError, TypeError):
+    except (ParseFailure, AttributeError, TypeError):
         log.warning("Reflection: failed to parse LLM output as JSON: %r", raw)
         return []
 
@@ -103,7 +104,10 @@ def build_reflection_node(
             return log_decision("Reflection", "skipped", "turn deadline reached — no further research")
 
         try:
-            raw = client.ask(
+            raw = json_reply(
+                client,
+                ReflectionResult,
+                "reflection",
                 _build_prompt(
                     state.get("query", ""), state.get("objective", ""), state.get("evidence_summary", {})
                 ),

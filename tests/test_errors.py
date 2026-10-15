@@ -107,6 +107,8 @@ SCAN = ["app.py", "agents", "graph", "utils", "tools"]
 ALLOWED = {
     ("agents/llm_client.py", "_classify_error"),  # str(e).lower() to classify, not displayed
     ("utils/tracing.py", "span"),  # redacted error field on the trace span
+    ("utils/llm_json.py", "ask_json"),  # parse-failure reason: logged and fed back to the model, never shown
+    ("agents/graph_orchestrator.py", "generate_suggestions"),  # parse-failure reason, logged only
 }
 _LOG_ATTRS = {"debug", "info", "warning", "error", "exception", "critical"}
 

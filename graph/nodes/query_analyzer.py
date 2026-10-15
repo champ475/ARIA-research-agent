@@ -29,7 +29,6 @@ turn's ticker.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 
@@ -38,8 +37,9 @@ from config import GROQ_MODEL_FAST, MAX_ENTITIES_PER_TURN, TOKENS_FAST
 from graph.data_questions import min_complexity
 from graph.entity_resolution import add_llm_mentions, history_entities, resolve_mentions
 from graph.journal import log_decision
+from graph.schemas import QueryAnalysis
 from graph.state import GraphState
-from utils.helpers import strip_code_fence
+from utils.llm_json import ParseFailure, extract_json, json_reply
 
 log = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ def _build_prompt(query: str, entities: list[str], history: list[dict]) -> str:
 
 def _parse(raw: str) -> dict:
     try:
-        parsed = json.loads(strip_code_fence(raw))
+        parsed = extract_json(raw)
         intent = parsed.get("intent", _FALLBACK["intent"])
         secondary = parsed.get("secondary_intents") or []
         if not isinstance(secondary, list):
@@ -110,7 +110,7 @@ def _parse(raw: str) -> dict:
             "complexity": parsed.get("complexity", _FALLBACK["complexity"]),
             "companies": [c for c in companies if isinstance(c, str)] if isinstance(companies, list) else [],
         }
-    except (json.JSONDecodeError, AttributeError, TypeError):
+    except (ParseFailure, AttributeError, TypeError):
         log.warning("QueryAnalyzer: failed to parse LLM output as JSON: %r", raw)
         return dict(_FALLBACK)
 
@@ -128,7 +128,10 @@ def build_query_analyzer_node(
         query = state["query"]
         history = state.get("history", [])
         resolved = resolve_mentions(query)
-        raw = client.ask(
+        raw = json_reply(
+            client,
+            QueryAnalysis,
+            "query_analyzer",
             _build_prompt(query, resolved.entities, history),
             model=GROQ_MODEL_FAST,
             max_tokens=TOKENS_FAST,

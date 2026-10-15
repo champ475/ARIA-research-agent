@@ -34,8 +34,9 @@ from graph.deadline import past_research_cutoff
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
 from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
+from graph.schemas import VerificationResult
 from graph.state import Evidence, GraphState, VerificationIssue
-from utils.helpers import strip_code_fence
+from utils.llm_json import ParseFailure, extract_json, json_reply
 
 log = logging.getLogger(__name__)
 
@@ -181,9 +182,9 @@ def _stage2_semantic(evidence: list[Evidence]) -> list[VerificationIssue]:
 
 def _parse_llm_issues(raw: str) -> list[VerificationIssue]:
     try:
-        parsed = json.loads(strip_code_fence(raw))
+        parsed = extract_json(raw)
         raw_issues = parsed.get("issues", [])
-    except (json.JSONDecodeError, AttributeError, TypeError):
+    except (ParseFailure, AttributeError, TypeError):
         log.warning("Verification: failed to parse LLM judge output: %r", raw)
         return []
 
@@ -253,7 +254,10 @@ def build_verification_node(
 
         max_loops = state.get("max_loops", 2)
         try:
-            raw = client.ask(
+            raw = json_reply(
+                client,
+                VerificationResult,
+                "verification",
                 _build_judge_prompt(state.get("objective", ""), state.get("evidence_summary", {})),
                 model=GROQ_MODEL_FAST,
                 max_tokens=TOKENS_AGENT,

@@ -598,7 +598,6 @@ class GraphOrchestrator:
         it's a UI concern of the orchestrator, not any one domain. Uses
         whichever provider the last-resolved turn used (BYO or trial) —
         never a separate hardcoded client."""
-        import json
 
         # VAL-05: a planning reply waiting for an explicit build gets a real
         # "Build my plan" button (suggestion chips are buttons) — no LLM call.
@@ -623,10 +622,13 @@ class GraphOrchestrator:
             # own model-override handling) — only meaningful on the trial path.
             model_override = GROQ_MODEL_FAST if self._provider_config is None else None
             raw = client.ask(prompt, model=model_override, temperature=0.8, max_tokens=TOKENS_FAST)
-            from utils.helpers import strip_code_fence
+            from utils.llm_json import ParseFailure, extract_json, record_parse_failure
 
-            raw = strip_code_fence(raw)
-            sug = json.loads(raw)
+            try:
+                sug = extract_json(raw)
+            except ParseFailure as e:
+                record_parse_failure("suggestions", str(e))
+                sug = None
             if isinstance(sug, list):
                 return [str(s) for s in sug[:4]]
         except Exception:

@@ -167,6 +167,7 @@ class TurnRecord:
     node_ms: dict[str, int] = field(default_factory=dict)
     data_gaps: int = 0
     grounding: dict | None = None
+    parse_failures: dict[str, int] = field(default_factory=dict)  # LLM-05, per node
     trace_url: str | None = None
     root_run: Any = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -190,6 +191,10 @@ class TurnRecord:
             self.tokens_estimated = self.tokens_estimated or estimated
             self.providers.add(provider)
             self.prompt_versions[version] = self.prompt_versions.get(version, 0) + 1
+
+    def add_parse_failure(self, node: str) -> None:
+        with self._lock:
+            self.parse_failures[node] = self.parse_failures.get(node, 0) + 1
 
     def add_tool_call(self, cache_hit: bool) -> None:
         with self._lock:
@@ -327,6 +332,7 @@ def _persist(rec: TurnRecord, latency_ms: int, sink: Any) -> None:
             node_ms=rec.node_ms,
             data_gaps=rec.data_gaps,
             grounding=rec.grounding,
+            parse_failures=rec.parse_failures or None,
         )
     except Exception as e:
         log.warning(f"[tracing] could not record turn {rec.error_id}: {e}")

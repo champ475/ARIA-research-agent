@@ -96,6 +96,7 @@ from utils.db import (
     screener_save as db_screener_save,
 )
 from utils.helpers import parse_screener_name
+from utils.llm_json import extract_json, record_parse_failure
 
 # Synthetic entity Planner falls back to when a query has no ticker to
 # extract but still needs a Task (whole-market screens, alert-list, mf
@@ -248,15 +249,15 @@ def _llm_extract_alert(msg: str, symbol: str, llm_config: dict | None) -> AlertS
     model only proposes; graph/alert_spec.py validates it like any other spec."""
     from config import TOKENS_FAST
     from graph.prompt_safety import wrap_untrusted
-    from utils.helpers import strip_code_fence
 
     prompt = _EXTRACT_PROMPT.format(
         message=wrap_untrusted("user", msg), symbol=symbol, types=list(ALERT_TYPES)
     )
     try:
         raw = _get_extract_client(llm_config).ask(prompt, temperature=0.0, max_tokens=TOKENS_FAST)
-        data = json.loads(strip_code_fence(raw))
+        data = extract_json(raw)
     except Exception:
+        record_parse_failure("alert_extract", "unusable reply")
         return None
     return spec_from_llm(data, symbol, msg) if isinstance(data, dict) else None
 
@@ -424,15 +425,15 @@ def _llm_screen(query: str, llm_config: dict | None) -> dict | None:
     from config import TOKENS_FAST
     from graph.prompt_safety import wrap_untrusted
     from tools.screener_grammar import FIELDS, YF_SECTORS, Screen, ScreenFilter
-    from utils.helpers import strip_code_fence
 
     prompt = _SCREEN_EXTRACT_PROMPT.format(
         message=wrap_untrusted("user", query), fields=sorted(FIELDS), sectors=sorted(YF_SECTORS)
     )
     try:
         raw = _get_extract_client(llm_config).ask(prompt, temperature=0.0, max_tokens=TOKENS_FAST)
-        data = json.loads(strip_code_fence(raw))
+        data = extract_json(raw)
     except Exception:
+        record_parse_failure("screener_extract", "unusable reply")
         return None
     if not isinstance(data, dict):
         return None
