@@ -17,7 +17,7 @@ from graph.alert_spec import (
     parse_alert,
     spec_from_llm,
 )
-from utils.indian_numbers import format_inr, parse_amount
+from utils.numbers import format_inr, parse_amount
 
 with open(Path(__file__).parent / "data" / "alert_cases.csv", encoding="utf-8") as _f:
     CASES = list(csv.DictReader(_f))

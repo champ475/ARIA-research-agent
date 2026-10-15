@@ -27,25 +27,12 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from utils.numbers import UNIT_MULTIPLIERS
+
 log = logging.getLogger(__name__)
 
-_UNITS = {
-    "lakh crore": 1e12,
-    "lakh crores": 1e12,
-    "crore": 1e7,
-    "crores": 1e7,
-    "cr": 1e7,
-    "lakh": 1e5,
-    "lakhs": 1e5,
-    "lac": 1e5,
-    "lacs": 1e5,
-    "l": 1e5,
-    "k": 1e3,
-    "bn": 1e9,
-    "billion": 1e9,
-    "mn": 1e6,
-    "million": 1e6,
-}
+# Same multipliers as every other parser (VAL-09: one source of truth).
+_UNITS = {unit: float(mult) for unit, mult in UNIT_MULTIPLIERS.items()}
 _NUMBER = re.compile(
     r"(?P<cur>₹\s?|rs\.?\s?|inr\s?)?"
     r"(?<![\w.^#/])(?P<num>-?\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|-?\d+(?:\.\d+)?)(?![\w.]*\d)"

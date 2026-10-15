@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from utils.indian_numbers import parse_amount
+from utils.numbers import parse_amount
 
 REQUIRED_FIELDS = ("age", "capital", "horizon_years", "goal", "risk_tolerance")
 
@@ -180,7 +180,7 @@ def profile_summary(profile: dict) -> str:
         if value in (None, ""):
             continue
         if key in ("capital", "monthly_sip") and isinstance(value, (int, float)):
-            from utils.indian_numbers import format_inr
+            from utils.numbers import format_inr
 
             value = format_inr(value)
         elif key == "horizon_years":

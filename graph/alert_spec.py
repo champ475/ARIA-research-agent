@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from utils.indian_numbers import AMOUNT_RE, amount_from_match, format_inr
+from utils.numbers import AMOUNT_RE, amount_from_match, format_inr
 
 AlertType = Literal[
     "price_above",
