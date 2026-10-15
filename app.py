@@ -51,6 +51,10 @@ def startup() -> None:
     warn_if_auto_tracing_on()
     # The Telegram /start-code listener (no-ops if no bot token set).
     start_polling_thread()
+    # LLM-08: probe every routed model once, in the background.
+    from agents.model_health import start_model_health_check
+
+    start_model_health_check()
 
 
 # ── Loading indicator HTML (three bouncing dots, styled via global CSS) ──────

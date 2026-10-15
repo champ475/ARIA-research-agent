@@ -362,7 +362,7 @@ def build_communication_layer_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
-    client = client or LLMClient(_SYSTEM, provider_config)
+    client = client or LLMClient(_SYSTEM, provider_config, node="communication")
 
     def communication_layer(state: GraphState) -> dict:
         blocking = blocking_resolutions(state)

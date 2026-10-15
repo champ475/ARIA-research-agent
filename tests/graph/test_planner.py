@@ -108,13 +108,14 @@ class TestPlannerTaskGeneration:
         result = node({"objective": "x", "entities": ["RELIANCE"], "complexity": "moderate"})
         assert result["tasks"] == []
 
-    def test_routes_through_fast_model(self):
-        from config import GROQ_MODEL_FAST
+    def test_routes_through_its_node_model_route(self):
+        """LLM-08: the node's client is built for its own model route (the
+        fast class) instead of passing a Groq-only model name per call."""
+        from unittest.mock import patch
 
-        stub = _StubClient(json.dumps({"tools": ["fetch_info"]}))
-        node = build_planner_node(stub)
-        node({"objective": "x", "entities": ["RELIANCE"], "complexity": "moderate"})
-        assert stub.last_call_kwargs["model"] == GROQ_MODEL_FAST
+        with patch("graph.nodes.planner.LLMClient") as client_cls:
+            build_planner_node(None, provider_config=None)
+        assert client_cls.call_args.kwargs["node"] == "planner"
 
     def test_writes_journal_entry(self):
         stub = _StubClient(json.dumps({"tools": ["fetch_info"]}))

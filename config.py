@@ -42,12 +42,16 @@ class Settings(BaseSettings):
     GROQ_API_KEY_3: str = ""
     GROQ_API_KEY_4: str = ""
     GROQ_API_KEY_5: str = ""
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    GROQ_MODEL_FAST: str = "llama-3.1-8b-instant"
+    # LLM-08: Groq retired llama-3.3-70b-versatile and llama-3.1-8b-instant on
+    # 2026-08-16 and Google gemini-2.0-flash in 2026; these are their
+    # recommended successors. Override per node with ARIA_MODEL_<NODE>.
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    GROQ_MODEL_FAST: str = "openai/gpt-oss-20b"
 
     # ── Gemini fallback ───────────────────────────────────────────────────────
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL_FAST: str = "gemini-2.5-flash-lite"
     PREFERRED_PROVIDER: Literal["groq", "gemini"] = "groq"
 
     # ── Local LLM fallback (any OpenAI-compatible server; empty = disabled) ───
@@ -254,6 +258,7 @@ GROQ_MODEL = settings.GROQ_MODEL  # 14,400 req/day per key
 GROQ_MODEL_FAST = settings.GROQ_MODEL_FAST  # lighter, for fast calls
 GEMINI_API_KEY = settings.GEMINI_API_KEY
 GEMINI_MODEL = settings.GEMINI_MODEL
+GEMINI_MODEL_FAST = settings.GEMINI_MODEL_FAST
 PREFERRED_PROVIDER = settings.PREFERRED_PROVIDER
 
 LOCAL_LLM_BASE_URL = settings.LOCAL_LLM_BASE_URL
@@ -515,3 +520,64 @@ SECTOR_UNIVERSE = {
 # Flattened stock universe across all sectors — historically named NIFTY200 but
 # is actually ~100 curated NSE stocks, not the NIFTY 200 index constituents.
 STOCK_UNIVERSE = [s for stocks in SECTOR_UNIVERSE.values() for s in stocks]
+
+
+# ── Model routing (LLM-08) ────────────────────────────────────────────────────
+# Each LLM-backed node walks an ordered list of "provider:model" entries (the
+# trial path; a BYO user's own model is always used for them). A model a
+# provider has retired is detected (startup check, or its first 404) and
+# skipped, so a deprecation degrades to the next entry instead of failing
+# every request. Change a model without a code change:
+#   ARIA_MODEL_PLANNER="groq:openai/gpt-oss-20b,gemini:gemini-2.5-flash"
+#   ARIA_MODELS_FAST=... / ARIA_MODELS_SYNTHESIS=...   (whole classes)
+MODEL_CLASSES: dict[str, list[str]] = {
+    "fast": [f"groq:{GROQ_MODEL_FAST}", f"gemini:{GEMINI_MODEL_FAST}", f"gemini:{GEMINI_MODEL}"],
+    "synthesis": [f"groq:{GROQ_MODEL}", f"gemini:{GEMINI_MODEL}", f"groq:{GROQ_MODEL_FAST}"],
+}
+NODE_MODEL_CLASS: dict[str, str] = {
+    "query_analyzer": "fast",
+    "planner": "fast",
+    "reflection": "fast",
+    "verification": "fast",
+    "suggestions": "fast",
+    "summary": "fast",
+    "extract": "fast",
+    "communication": "synthesis",
+    "default": "synthesis",
+}
+MODEL_PROVIDERS = ("groq", "gemini")
+
+
+def _parse_route(raw: str) -> list[tuple[str, str]]:
+    route = []
+    for item in raw.split(","):
+        provider, _, model = item.strip().partition(":")
+        if provider.strip().lower() in MODEL_PROVIDERS and model.strip():
+            route.append((provider.strip().lower(), model.strip()))
+    return route
+
+
+def model_route(node: str | None) -> list[tuple[str, str]]:
+    """Ordered (provider, model) candidates for a node on the trial path."""
+    import os
+
+    node = node or "default"
+    override = os.getenv(f"ARIA_MODEL_{node.upper()}", "").strip()
+    if override and _parse_route(override):
+        return _parse_route(override)
+    cls = NODE_MODEL_CLASS.get(node, "synthesis")
+    cls_override = os.getenv(f"ARIA_MODELS_{cls.upper()}", "").strip()
+    route = _parse_route(cls_override) if cls_override else _parse_route(",".join(MODEL_CLASSES[cls]))
+    if PREFERRED_PROVIDER == "gemini":
+        route = [r for r in route if r[0] == "gemini"] + [r for r in route if r[0] != "gemini"]
+    return route
+
+
+def all_routed_models() -> list[tuple[str, str]]:
+    """Every distinct (provider, model) any node may use — for the startup check."""
+    seen: list[tuple[str, str]] = []
+    for node in NODE_MODEL_CLASS:
+        for entry in model_route(node):
+            if entry not in seen:
+                seen.append(entry)
+    return seen

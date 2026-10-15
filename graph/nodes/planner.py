@@ -29,7 +29,7 @@ from collections.abc import Callable
 
 import prompts
 from agents.llm_client import LLMClient
-from config import GROQ_MODEL_FAST, TOKENS_AGENT
+from config import TOKENS_AGENT
 from graph.entity_resolution import blocking_resolutions
 from graph.journal import log_decision
 from graph.schemas import ToolSelection
@@ -106,7 +106,7 @@ def build_planner_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
-    client = client or LLMClient(_SYSTEM, provider_config)
+    client = client or LLMClient(_SYSTEM, provider_config, node="planner")
 
     def planner(state: GraphState) -> dict:
         objective = state.get("objective", "")
@@ -147,7 +147,6 @@ def build_planner_node(
             ToolSelection,
             "planner",
             _build_prompt(objective, entities, hidden),
-            model=GROQ_MODEL_FAST,
             max_tokens=TOKENS_AGENT,
             temperature=0.0,
         )

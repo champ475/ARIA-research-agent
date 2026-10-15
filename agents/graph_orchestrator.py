@@ -394,7 +394,9 @@ class GraphOrchestrator:
 
         prompt = SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         client = LLMClient(
-            system_prompt=prompts.get("orchestrator.summary_system"), provider_config=self._provider_config
+            system_prompt=prompts.get("orchestrator.summary_system"),
+            provider_config=self._provider_config,
+            node="summary",
         )
         return client.ask(prompt, temperature=0.2, max_tokens=TOKENS_FAST)
 
@@ -560,7 +562,7 @@ class GraphOrchestrator:
                 from tools.analysis.fundamental import cited_footnotes
 
                 synthesis_client = LLMClient(
-                    system_prompt=_COMM_SYSTEM, provider_config=self._provider_config
+                    system_prompt=_COMM_SYSTEM, provider_config=self._provider_config, node="communication"
                 )
                 chunks: list[str] = []
                 for delta in synthesis_client.stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
@@ -606,18 +608,16 @@ class GraphOrchestrator:
             return ["Build my plan", "Show my profile", "Start over", "Change my risk tolerance"]
 
         from agents.llm_client import LLMClient
-        from config import GROQ_MODEL_FAST, TOKENS_FAST
+        from config import TOKENS_FAST
 
         prompt = prompts.get("orchestrator.suggestions").format(query=last_query[:80])
         try:
             client = LLMClient(
                 system_prompt=prompts.get("orchestrator.suggestions_system"),
+                node="suggestions",
                 provider_config=self._provider_config,
             )
-            # GROQ_MODEL_FAST is a Groq-only concept (see LLMClient providers'
-            # own model-override handling) — only meaningful on the trial path.
-            model_override = GROQ_MODEL_FAST if self._provider_config is None else None
-            raw = client.ask(prompt, model=model_override, temperature=0.8, max_tokens=TOKENS_FAST)
+            raw = client.ask(prompt, temperature=0.8, max_tokens=TOKENS_FAST)
             from utils.llm_json import ParseFailure, extract_json, record_parse_failure
 
             try:

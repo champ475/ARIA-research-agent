@@ -2,7 +2,7 @@
 QueryAnalyzer node (RFC_AGENTIC_RESEARCH_GRAPH.md Sec6). Cheap classification
 call — entity extraction is fully deterministic (reused from utils.helpers,
 which already does alias resolution like SBI -> SBIN); only intent/objective/
-complexity go through the LLM, routed via GROQ_MODEL_FAST since this runs on
+complexity go through the LLM, routed to the fast model class (config.model_route) since this runs on
 every turn and doesn't need the primary model's reasoning depth.
 
 Phase 7.4 (multi-intent-in-one-turn): `secondary_intents` lets one message
@@ -34,7 +34,7 @@ from collections.abc import Callable
 
 import prompts
 from agents.llm_client import LLMClient
-from config import GROQ_MODEL_FAST, MAX_ENTITIES_PER_TURN, TOKENS_FAST
+from config import MAX_ENTITIES_PER_TURN, TOKENS_FAST
 from graph.data_questions import min_complexity
 from graph.entity_resolution import add_llm_mentions, history_entities, resolve_mentions
 from graph.journal import log_decision
@@ -108,7 +108,7 @@ def build_query_analyzer_node(
     """Factory so the graph wiring builds one LLMClient per node type (with the
     right system prompt) and tests can inject a stub without touching a real
     provider. `client=None` constructs a real LLMClient(_SYSTEM, provider_config)."""
-    client = client or LLMClient(_SYSTEM, provider_config)
+    client = client or LLMClient(_SYSTEM, provider_config, node="query_analyzer")
 
     def query_analyzer(state: GraphState) -> dict:
         query = state["query"]
@@ -119,7 +119,6 @@ def build_query_analyzer_node(
             QueryAnalysis,
             "query_analyzer",
             _build_prompt(query, resolved.entities, history),
-            model=GROQ_MODEL_FAST,
             max_tokens=TOKENS_FAST,
             temperature=0.0,
         )

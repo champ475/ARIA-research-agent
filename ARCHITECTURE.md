@@ -16,6 +16,30 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Configurable model routes with retirement detection (LLM-08)
+**Problem.**
+- Model ids were hard-coded, and nodes passed a Groq-only "fast model" name per call.
+- When Groq retired both Llama models (Aug 2026) and Google retired gemini-2.0-flash, every request failed until a code change. The local `.env` trial keys showed exactly that 404.
+
+**Alternatives considered.**
+- *Bump the constants.* Rejected: it fixes today and breaks on the next retirement.
+- *A model gateway (LiteLLM / OpenRouter).* Rejected: an extra network hop, a processor and a dependency for something a small routing table solves.
+
+**Final decision.**
+- Per-node ordered `provider:model` routes, in two classes (fast, synthesis), overridable by environment per node or per class.
+- Health is tracked per `provider:model`. Retirement errors are classified, skipped and logged.
+- A background startup probe of every routed model.
+- Defaults moved to the providers' recommended successors.
+
+**Trade-offs.**
+- A new route only takes effect for clients built after the change. Compiled graphs (REL-03) hold their clients until the process restarts or the graph is evicted.
+- The probe spends one token per model per start.
+- BYO users are unaffected: their one configured model is always used.
+
+**Future improvements.**
+- Record eval results per model (LLM-01) before switching defaults.
+- Expose model health on `/health/data` (DATA-02) and alert on it (OBS-04).
+
 ## 2026-10-16 — Versioned prompt registry (LLM-07)
 **Problem.**
 - About 20 prompts lived as string constants across 9 modules. They changed without review or a version.

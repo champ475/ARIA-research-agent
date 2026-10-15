@@ -214,13 +214,14 @@ class TestReflectionProviderExhaustion:
 
 
 class TestReflectionRouting:
-    def test_routes_through_fast_model(self):
-        from config import GROQ_MODEL_FAST
+    def test_routes_through_its_node_model_route(self):
+        """LLM-08: the node's client is built for its own model route (the
+        fast class) instead of passing a Groq-only model name per call."""
+        from unittest.mock import patch
 
-        stub = _StubClient(json.dumps({"missing": []}))
-        node = build_reflection_node(stub)
-        node(_base_state())
-        assert stub.last_call_kwargs["model"] == GROQ_MODEL_FAST
+        with patch("graph.nodes.reflection.LLMClient") as client_cls:
+            build_reflection_node(None, provider_config=None)
+        assert client_cls.call_args.kwargs["node"] == "reflection"
 
     def test_writes_journal_entry(self):
         stub = _StubClient(json.dumps({"missing": []}))

@@ -30,7 +30,7 @@ from collections.abc import Callable
 
 import prompts
 from agents.llm_client import LLMClient, LLMProvidersExhausted
-from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
+from config import EVIDENCE_PROMPT_CHAR_BUDGET, TOKENS_AGENT
 from graph.deadline import past_research_cutoff
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
@@ -209,7 +209,7 @@ def build_verification_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
-    client = client or LLMClient(_SYSTEM, provider_config)
+    client = client or LLMClient(_SYSTEM, provider_config, node="verification")
 
     def verification(state: GraphState) -> dict:
         evidence = state.get("evidence", [])
@@ -252,7 +252,6 @@ def build_verification_node(
                 VerificationResult,
                 "verification",
                 _build_judge_prompt(state.get("objective", ""), state.get("evidence_summary", {})),
-                model=GROQ_MODEL_FAST,
                 max_tokens=TOKENS_AGENT,
                 temperature=0.0,
             )

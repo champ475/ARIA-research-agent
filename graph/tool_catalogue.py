@@ -226,7 +226,7 @@ def _get_extract_client(llm_config: dict | None):
     the app's trial quota on their behalf."""
     from agents.llm_client import LLMClient
 
-    return LLMClient(system_prompt=_ALERT_CREATE_SYSTEM, provider_config=llm_config)
+    return LLMClient(system_prompt=_ALERT_CREATE_SYSTEM, provider_config=llm_config, node="extract")
 
 
 def _llm_extract_alert(msg: str, symbol: str, llm_config: dict | None) -> AlertSpec | AlertRefusal | None:
