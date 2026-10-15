@@ -4,7 +4,7 @@ google-genai>=1.0.0
 openai>=1.0.0
 
 # ── Crypto (encrypting user-supplied LLM API keys, utils/crypto.py) ──────────
-cryptography>=42.0.0
+cryptography>=50.0.0
 
 # ── Agentic research graph ────────────────────────────────────────────────────
 langgraph>=0.2.0
@@ -27,7 +27,7 @@ lxml>=5.0.0
 # ── PDF processing ────────────────────────────────────────────────────────────
 pdfplumber>=0.10.0
 markdown>=3.5.0
-weasyprint>=60.0
+weasyprint>=70.0
 nh3>=0.2.17                  # HTML sanitiser for report PDF rendering (SEC-02)
 
 # ── Technical analysis ────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ ta>=0.11.0
 plotly>=5.18.0
 
 # ── UI ────────────────────────────────────────────────────────────────────────
-gradio>=4.40.0
+gradio>=6.16.0
 
 # ── Sentiment ─────────────────────────────────────────────────────────────────
 vaderSentiment>=3.3.2

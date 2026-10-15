@@ -16,6 +16,32 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — Locked, scanned, non-root builds (SEC-14)
+**Problem.**
+- Every dependency was `>=`, so a build was whatever PyPI served that day. CI already ran WeasyPrint 70 while developers ran 68, and resolving fresh would silently move openai to v3.
+- The image ran as root on a mutable base tag, with a compiler in it.
+- Nothing scanned the image.
+
+**Alternatives considered.**
+- *pip-tools.* It works, but `uv pip compile` is about 10× faster and can resolve for Linux from a Windows dev machine (`--python-platform`).
+- *Poetry or PDM lock files.* Rejected: they would change how every contributor installs.
+- *Distroless runtime.* Rejected: WeasyPrint needs the Pango/Cairo system libraries from Debian.
+
+**Final decision.**
+- Hand-edited ranges stay in `requirements*.txt`. Generated hashed locks live in `requirements*.lock`.
+- Each lock is its own constraint file, so regeneration is stable. Upgrades are explicit (`--upgrade pkg`).
+- CI and the image install only from the locks.
+- The image is multi-stage, pinned by digest, non-root, and has a healthcheck.
+- Trivy, pip-audit and Dependabot run in CI.
+
+**Trade-offs.**
+- Developers on Windows still install from the ranges (a Linux lock can't be installed on Windows with hashes), so local versions can drift from the lock. `pip install -r requirements-dev.txt -c requirements-dev.lock` keeps them aligned.
+- Dependabot edits `requirements.txt`, and the lock must be regenerated on that PR.
+
+**Future improvements.**
+- A read-only root filesystem in the compose and host configs (only `data/` and `/tmp` need writes).
+- SBOM and provenance attestations at release time (TEST-07).
+
 ## 2026-10-15 — Secret validation, rotation window and log redaction filter (SEC-11)
 **Problem.**
 - The app ran with the `.env.example` `SECRET_KEY`.
