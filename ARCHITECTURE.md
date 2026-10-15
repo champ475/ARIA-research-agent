@@ -16,6 +16,25 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — No pickle in the checkpointer (SEC-09)
+**Problem.** The checkpointer used `JsonPlusSerializer(pickle_fallback=True)`. Anyone who could write to the checkpoint tables could get code execution on the app server when a thread was resumed. That includes a leaked `DATABASE_URL`, an injection elsewhere, or a compromised replica.
+
+**Alternatives considered.**
+- *A custom serde that hand-reconstructs known types.* Rejected: LangGraph now ships a strict msgpack allowlist that already includes its internal `Send`, `Interrupt` and `Command` types, which were the original reason for the pickle fallback.
+- *An in-memory checkpointer for every non-HITL turn (ARCH-04).* Complementary, and planned for Phase 3. It shrinks how much is stored but does not make the stored data safe.
+
+**Final decision.**
+- Use `make_serializer()`: msgpack only, `SAFE_MSGPACK_TYPES` only, no pickle on read or write.
+- `GraphState` stays JSON-safe at its source.
+
+**Trade-offs.**
+- Checkpoints written with pickle by older code can't be resumed. Only HITL turns pending at deploy time are affected.
+- Any future state type outside the safe list must be added to the allowlist explicitly. That is the intended friction.
+
+**Future improvements.**
+- ARCH-04: in-memory checkpoints by default, with Postgres only for interrupted turns.
+- Encrypt or MAC checkpoint blobs, so tampering is detected even for allowed types.
+
 ## 2026-10-15 — One Postgres driver, waiting pool, statement timeouts (REL-04)
 **Problem.**
 - The app ran two Postgres client libraries with two pools: psycopg2 for `utils/db.py`, psycopg 3 for the LangGraph checkpointer. Connection use against Neon's limits doubled.

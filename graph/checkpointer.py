@@ -11,17 +11,16 @@ PostgresSaver needs autocommit connections while the app pool runs explicit
 transactions; DB_POOL_MAX + CHECKPOINT_POOL_MAX is the process's connection
 budget against the database.
 
-Serializer: PostgresSaver's default JsonPlusSerializer msgpack-encodes
-GraphState after every superstep and raises TypeError on anything it
-doesn't natively know how to represent — confirmed to break on a raw
-pandas DataFrame (application data; graph/nodes/execute_task.py works
-around this at the source by keeping Evidence.payload in a JSON-safe form)
-AND on LangGraph's own internal `Send` object (framework-internal pending-
-write state during a multi-task fan-out — not something application code
-can pre-convert, since it's never exposed to a node function). Constructing
-the serde with `pickle_fallback=True` covers both today and any future type
-neither side anticipated, instead of hand-listing every non-native type as
-it's discovered.
+Serializer (SEC-09): no pickle, and a strict msgpack allowlist. Anyone able
+to write the checkpoint tables (a leaked DATABASE_URL, an injection elsewhere)
+must not get code execution when a thread is resumed. `make_serializer()`
+turns off `pickle_fallback` (a "pickle"-typed blob is refused outright) and
+restricts msgpack extension types to LangGraph's SAFE_MSGPACK_TYPES (datetime,
+UUID, Decimal, Send, Interrupt, Command, ...); any other class named in a
+blob is NOT imported or constructed — it decodes as plain data. GraphState is
+kept JSON-safe at the source (graph/nodes/execute_task.py::_to_cacheable), so
+nothing legitimate needs more than that; a new non-native type now fails
+loudly at write time instead of silently falling back to pickle.
 """
 
 from __future__ import annotations
@@ -36,6 +35,14 @@ CHECKPOINT_POOL_MAX = 5
 _checkpointer: Any = None
 _pool = None
 _lock = threading.Lock()
+
+
+def make_serializer() -> Any:
+    """The checkpoint serializer: msgpack only, LangGraph's safe types only,
+    never pickle (SEC-09)."""
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    return JsonPlusSerializer(pickle_fallback=False, allowed_msgpack_modules=None, allowed_json_modules=None)
 
 
 def get_postgres_checkpointer():
@@ -53,7 +60,6 @@ def get_postgres_checkpointer():
             return _checkpointer
 
         from langgraph.checkpoint.postgres import PostgresSaver
-        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
         from psycopg_pool import ConnectionPool
 
         from utils.db import connection_kwargs
@@ -68,7 +74,7 @@ def get_postgres_checkpointer():
             name="aria-checkpoints",
             open=True,
         )
-        checkpointer = PostgresSaver(_pool, serde=JsonPlusSerializer(pickle_fallback=True))
+        checkpointer = PostgresSaver(_pool, serde=make_serializer())
         _checkpointer = checkpointer
         return _checkpointer
 
