@@ -1407,6 +1407,7 @@ def _build_settings_tab(user_state: gr.State):
         return f"✅ Logged out {n} other session(s).\n\n" + _sessions(user_id)
 
     gr.Markdown(
+        "**Your data** — [download everything ARIA stores about you](/account/export) (JSON) · "
         "**Delete account** — permanently remove your account and all its data: "
         "[delete my account…](/account/delete)"
     )

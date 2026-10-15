@@ -46,7 +46,7 @@ def redact_for_trace(value: Any, depth: int = 0) -> Any:
     if depth > 6:
         return "…"
     if isinstance(value, str):
-        text = _EMAIL.sub("[email]", redact(value))
+        text = redact(_EMAIL.sub("[email]", value))
         return text if len(text) <= _MAX_TRACE_TEXT else text[:_MAX_TRACE_TEXT] + "…[truncated]"
     if isinstance(value, dict):
         return {str(k): redact_for_trace(v, depth + 1) for k, v in list(value.items())[:50]}

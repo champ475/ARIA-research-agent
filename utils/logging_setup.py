@@ -52,6 +52,9 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
     # rule below can't see it (SEC-11).
     (re.compile(r"bot\d{5,}:[A-Za-z0-9_\-]{20,}"), "bot***"),
     (re.compile(r"\b\d{8,10}:[A-Za-z0-9_\-]{30,}\b"), "***telegram-bot-token***"),
+    # COMP-03 data minimisation: no email addresses in logs (the domain is
+    # kept — it helps debug delivery problems without identifying anyone).
+    (re.compile(r"\b[A-Za-z0-9._%+\-]+@([A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+)\b"), r"***@\1"),
 ]
 
 

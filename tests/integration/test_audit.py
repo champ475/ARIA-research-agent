@@ -110,7 +110,7 @@ def test_public_cannot_update_or_delete(db):
 def test_every_audit_action_has_a_call_site():
     """Each declared event is actually recorded somewhere (COMP-04's list),
     except the ones whose features arrive later in Phase 2."""
-    pending = {"account.export"}
+    pending: set[str] = set()
     code = "\n".join(
         p.read_text(encoding="utf-8")
         for d in ("app.py", "web", "graph", "utils", "agents")

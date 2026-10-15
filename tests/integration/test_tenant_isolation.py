@@ -154,6 +154,14 @@ def test_account_lifecycle_functions(db, two_users):
     assert db.user_email(b) is None and db.watchlist_all(a) == ["TCS"]
 
 
+def test_data_export_rows(db, two_users):
+    """COMP-03: export helpers return only the named user's rows."""
+    a, b = two_users
+    db.watchlist_add(a, "TCS")
+    assert db.user_rows("watchlist", b) == []
+    assert db.user_account_row(b)["id"] == b
+
+
 def test_trial_quota(db, two_users):
     a, b = two_users
     today = date(2026, 10, 14)
@@ -240,6 +248,8 @@ COVERED = {
     "user_mark_verified": test_account_lifecycle_functions,
     "user_set_password": test_account_lifecycle_functions,
     "user_delete": test_account_lifecycle_functions,
+    "user_rows": test_data_export_rows,
+    "user_account_row": test_data_export_rows,
     "trial_quota_check_and_increment": test_trial_quota,
     "telegram_link_code_create": test_telegram_linking,
     "telegram_chat_id_set": test_telegram_linking,

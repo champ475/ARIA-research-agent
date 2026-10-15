@@ -192,3 +192,28 @@ def delete_submit(
     response = RedirectResponse("/login?n=deleted", status_code=303)
     clear_session_cookie(response)
     return response
+
+
+# ── data export (COMP-03) ─────────────────────────────────────────────────────
+
+
+@router.get("/account/export")
+def export_data(request: Request) -> Response:
+    """Download every row stored about the logged-in user, as JSON."""
+    info = current_session(request)
+    if info is None:
+        return RedirectResponse("/login", status_code=303)
+    import json
+
+    from utils.data_export import export_user
+    from utils.helpers import IST
+
+    payload = export_user(info.user_id)
+    audit("account.export", actor_user_id=info.user_id, ip=client_ip(request))
+    body = json.dumps(payload, default=str, ensure_ascii=False, indent=2).encode("utf-8")
+    filename = f"aria-data-{datetime.now(IST):%Y%m%d}.json"
+    return Response(
+        body,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+    )

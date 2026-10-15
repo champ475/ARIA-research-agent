@@ -822,6 +822,32 @@ def audit_log_for(actor_user_id: int, limit: int = 1000) -> list[dict]:
     )
 
 
+# ── Data export (COMP-03) ─────────────────────────────────────────────────────
+
+
+def user_scoped_tables() -> list[str]:
+    """Every public table with a user_id column, read from the live schema."""
+    rows = _query(
+        "SELECT DISTINCT table_name FROM information_schema.columns "
+        "WHERE table_schema='public' AND column_name='user_id' ORDER BY table_name"
+    )
+    return [r["table_name"] for r in rows or []]
+
+
+def user_rows(table: str, user_id: int) -> list[dict]:
+    """All of one user's rows in `table` (a name from user_scoped_tables())."""
+    if table not in user_scoped_tables():
+        raise ValueError(f"not a user-scoped table: {table!r}")
+    from psycopg import sql
+
+    query = sql.SQL("SELECT * FROM {} WHERE user_id = %s").format(sql.Identifier(table))
+    return _query(query.as_string(), (user_id,)) or []
+
+
+def user_account_row(user_id: int) -> dict | None:
+    return _query("SELECT * FROM users WHERE id=%s", (user_id,), fetch="one")
+
+
 # ── Accounts: verification, reset, deletion (SEC-06) ──────────────────────────
 
 
