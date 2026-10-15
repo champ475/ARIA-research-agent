@@ -65,6 +65,7 @@ jobs:
       # Integration tests (tests/integration) run against this throwaway DB.
       TEST_DATABASE_URL: postgresql://aria:aria@localhost:5432/aria_test
       SECRET_KEY: ci-only-not-a-secret
+      APP_ENV: test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

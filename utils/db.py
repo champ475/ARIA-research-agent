@@ -625,6 +625,25 @@ def llm_config_clear(user_id: int):
     _query("DELETE FROM user_llm_config WHERE user_id=%s", (user_id,), fetch=None, commit=True)
 
 
+def llm_config_ciphertexts() -> list[dict]:
+    """Every stored BYO key ciphertext, for operator key rotation (SEC-11,
+    scripts/rotate_secret_key.py). Cross-tenant by design; never call from
+    a request handler."""
+    return _query("SELECT user_id, api_key_encrypted FROM user_llm_config ORDER BY user_id") or []
+
+
+def llm_config_rewrap(user_id: int, old_ciphertext: str, new_ciphertext: str) -> bool:
+    """Replace one user's ciphertext only if it is still `old_ciphertext`
+    (compare-and-set, so a key the user saved mid-rotation is not clobbered)."""
+    row = _query(
+        "UPDATE user_llm_config SET api_key_encrypted=%s WHERE user_id=%s AND api_key_encrypted=%s RETURNING user_id",
+        (new_ciphertext, user_id, old_ciphertext),
+        fetch="one",
+        commit=True,
+    )
+    return row is not None
+
+
 # ── Free-trial quota helpers (agents/graph_orchestrator.py) ──────────────────
 
 

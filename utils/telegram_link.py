@@ -62,7 +62,9 @@ def _send(chat_id, text: str):
             timeout=10,
         )
     except Exception as e:
-        log.warning(f"[telegram_link] confirmation send failed: {e}")
+        # The text can contain the request URL, i.e. the bot token; the log
+        # filter masks it (SEC-11).
+        log.warning("[telegram_link] confirmation send failed: %s", e)
 
 
 def _poll_once():
@@ -103,7 +105,7 @@ def _poll_loop():
         try:
             _poll_once()
         except Exception as e:
-            log.warning(f"[telegram_link] poll failed: {e}")
+            log.warning("[telegram_link] poll failed: %s", e)
             time.sleep(_POLL_ERROR_BACKOFF_S)
 
 

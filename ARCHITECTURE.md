@@ -16,6 +16,27 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — Secret validation, rotation window and log redaction filter (SEC-11)
+**Problem.**
+- The app ran with the `.env.example` `SECRET_KEY`.
+- The key could not be rotated without losing every stored BYO key.
+- Telegram request URLs, which contain the bot token, could reach the logs through `requests` exception text. Only our JSON formatter redacted, and its token regex missed tokens inside URLs.
+
+**Alternatives considered.**
+- *A KMS / secret manager with envelope encryption.* This is the right long-term answer, but there is no hosted environment to attach it to (OPS-03 is skipped).
+- *Re-encrypting at boot.* Rejected: every replica would race to write the same rows.
+
+**Final decision.**
+- **Boot validation.** The boot check rejects a weak `SECRET_KEY`.
+- **Rotation window.** A `MultiFernet` rotation window driven by `SECRET_KEY_PREVIOUS`. The one-off `scripts/rotate_secret_key.py` re-encrypts rows with compare-and-set.
+- **Log redaction.** Redaction is a `logging.Filter` on every handler, so it covers any formatter.
+
+**Trade-offs.**
+- The key derivation is still SHA-256 of the secret, with no KDF salt. That is fine for a high-entropy key, and the boot check now enforces the length.
+- Rotation is operator-driven, not scheduled.
+
+**Future improvements.** Move `SECRET_KEY` into a managed secret store with two named holders (REL-08 escrow), and alert if `SECRET_KEY_PREVIOUS` is still set N days after a rotation.
+
 ## 2026-10-15 — Typed, validated configuration (ARCH-03)
 **Problem.** Configuration was ~25 `os.getenv` calls with ad-hoc `int()`/`float()` casts spread over five modules. A typo'd value crashed on first use (or silently fell back), and shared constants had been copy-pasted and drifted: the trial limit lived in two places, and the user-facing message hard-coded "5".
 

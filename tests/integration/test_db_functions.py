@@ -244,6 +244,35 @@ def test_mf_metrics_cache_round_trip_and_freshness(db):
     assert db.mf_metrics_get([], date.today()) == {}
 
 
+def test_secret_key_rotation_rewraps_every_stored_key(db, two_users, monkeypatch):
+    """SEC-11: rotate_secret_key re-encrypts rows with the new key; a row
+    changed after it was read is left alone (compare-and-set)."""
+    import config
+    import scripts.rotate_secret_key as rot
+    from utils import crypto
+
+    a, b = two_users
+    old_key, new_key = "o" * 40, "n" * 40
+    monkeypatch.setattr(config, "SECRET_KEY", old_key)
+    monkeypatch.setattr(config, "SECRET_KEY_PREVIOUS", "")
+    crypto.reset_cache()
+    db.llm_config_set(a, "openai_compatible", "m", crypto.encrypt("key-a"))
+    db.llm_config_set(b, "openai_compatible", "m", crypto.encrypt("key-b"))
+    assert {r["user_id"] for r in db.llm_config_ciphertexts()} == {a, b}
+
+    monkeypatch.setattr(config, "SECRET_KEY", new_key)
+    monkeypatch.setattr(config, "SECRET_KEY_PREVIOUS", old_key)
+    crypto.reset_cache()
+    assert rot.rotate_all() == {"rows": 2, "rotated": 2, "unreadable": 0, "changed_meanwhile": 0}
+    assert db.llm_config_rewrap(a, "stale-ciphertext", "x") is False
+
+    monkeypatch.setattr(config, "SECRET_KEY_PREVIOUS", "")
+    crypto.reset_cache()
+    assert crypto.decrypt(db.llm_config_get(a)["api_key_encrypted"]) == "key-a"
+    assert crypto.decrypt(db.llm_config_get(b)["api_key_encrypted"]) == "key-b"
+    crypto.reset_cache()
+
+
 # ── coverage meta-test ────────────────────────────────────────────────────────
 
 # Public functions covered in this file (user-scoped ones are in ISOLATION_COVERED).
@@ -261,6 +290,7 @@ COVERED = {
     "turns_by_error_id": test_turn_record_round_trip_and_error_id_lookup,
     "mf_metrics_get": test_mf_metrics_cache_round_trip_and_freshness,
     "mf_metrics_put": test_mf_metrics_cache_round_trip_and_freshness,
+    "llm_config_ciphertexts": test_secret_key_rotation_rewraps_every_stored_key,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 INFRASTRUCTURE = {"get_conn", "release_conn", "ensure_schema"}

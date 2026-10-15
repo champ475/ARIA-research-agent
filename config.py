@@ -78,8 +78,11 @@ class Settings(BaseSettings):
     DB_POOL_ACQUIRE_TIMEOUT: float = Field(10, gt=0)
     RUN_MIGRATIONS_ON_START: bool = False
 
-    # ── Secrets ───────────────────────────────────────────────────────────────
+    # ── Secrets (SEC-11) ──────────────────────────────────────────────────────
     SECRET_KEY: str = ""
+    # Old SECRET_KEY value(s), comma-separated, still accepted for decryption
+    # while scripts/rotate_secret_key.py re-encrypts stored keys.
+    SECRET_KEY_PREVIOUS: str = ""
 
     # ── Telegram ──────────────────────────────────────────────────────────────
     TELEGRAM_BOT_TOKEN: str = ""
@@ -147,6 +150,22 @@ def get_settings() -> Settings:
         raise SystemExit(2) from None
 
 
+SECRET_KEY_PLACEHOLDER = "change_this_to_any_random_string"  # noqa: S105  # nosec B105 - the .env.example value we refuse
+SECRET_KEY_MIN_LENGTH = 32
+
+
+def secret_key_problems(secret: str) -> list[str]:
+    """SEC-11: refuse a missing, copied-from-the-example or short SECRET_KEY."""
+    hint = 'generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
+    if not secret:
+        return [f"SECRET_KEY is not set; {hint}"]
+    if secret.strip() == SECRET_KEY_PLACEHOLDER:
+        return [f"SECRET_KEY is still the placeholder from .env.example; {hint}"]
+    if len(secret) < SECRET_KEY_MIN_LENGTH:
+        return [f"SECRET_KEY must be at least {SECRET_KEY_MIN_LENGTH} characters (got {len(secret)}); {hint}"]
+    return []
+
+
 def boot_problems(s: Settings | None = None, *, serving: bool = True) -> list[str]:
     """Deployment checks a process must pass before it starts work.
     `serving=False` (alert checker, worker jobs) skips the LLM-provider check."""
@@ -159,6 +178,8 @@ def boot_problems(s: Settings | None = None, *, serving: bool = True) -> list[st
         problems.append("DATABASE_URL must start with postgresql:// (got a different scheme).")
     elif "@" not in url or "/" not in url.split("@", 1)[1]:
         problems.append("DATABASE_URL must look like postgresql://user:pass@host/dbname.")
+    if serving and s.APP_ENV != "test":
+        problems.extend(secret_key_problems(s.SECRET_KEY))
     if serving and s.APP_ENV == "prod" and not (s.groq_api_keys or s.GEMINI_API_KEY or s.LOCAL_LLM_BASE_URL):
         problems.append(
             "APP_ENV=prod needs at least one LLM provider (GROQ_API_KEY_1, GEMINI_API_KEY or LOCAL_LLM_BASE_URL)."
@@ -250,6 +271,7 @@ DB_POOL_ACQUIRE_TIMEOUT = settings.DB_POOL_ACQUIRE_TIMEOUT
 
 # ── Crypto (encrypts users' BYO LLM keys before storage, utils/crypto.py) ────
 SECRET_KEY = settings.SECRET_KEY
+SECRET_KEY_PREVIOUS = settings.SECRET_KEY_PREVIOUS
 
 # ── Telegram (one shared bot; each user links their own chat in Settings) ─────
 TELEGRAM_BOT_TOKEN = settings.TELEGRAM_BOT_TOKEN

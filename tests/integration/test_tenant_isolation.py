@@ -115,6 +115,9 @@ def test_llm_config(db, two_users):
     assert db.llm_config_get(b) is None
     db.llm_config_clear(b)
     assert db.llm_config_get(a)["api_key_encrypted"] == "enc-key-a"
+    # Key rotation's compare-and-set only ever touches the named user's row.
+    assert db.llm_config_rewrap(b, "enc-key-a", "enc-by-b") is False
+    assert db.llm_config_get(a)["api_key_encrypted"] == "enc-key-a"
 
 
 def test_trial_quota(db, two_users):
@@ -193,6 +196,7 @@ COVERED = {
     "llm_config_get": test_llm_config,
     "llm_config_set": test_llm_config,
     "llm_config_clear": test_llm_config,
+    "llm_config_rewrap": test_llm_config,
     "trial_quota_check_and_increment": test_trial_quota,
     "telegram_link_code_create": test_telegram_linking,
     "telegram_chat_id_set": test_telegram_linking,
