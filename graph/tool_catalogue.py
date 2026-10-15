@@ -71,6 +71,7 @@ from tools.screener import (
 from tools.screener import (
     to_markdown as screener_to_markdown,
 )
+from utils.audit import audit
 from utils.db import (
     MAX_ACTIVE_ALERTS,  # noqa: E402
     AlertLimitReached,
@@ -316,6 +317,12 @@ def _alert_create(entity: str, context: dict[str, Any]) -> dict:
         return {**base, "result": "duplicate", "alert_id": e.existing_id, "condition": spec.describe()}
     except AlertLimitReached:
         return {**base, "result": "limit_reached", "limit": MAX_ACTIVE_ALERTS}
+    audit(
+        "alert.create",
+        actor_user_id=user_id,
+        target=f"alert:{alert_id}",
+        details={"symbol": symbol, "condition": spec.describe(), "recurring": spec.recurring},
+    )
     return {
         **base,
         "result": "created",
@@ -380,6 +387,12 @@ def _manage(entity: str, context: dict[str, Any], action: str, want_active: bool
     except DuplicateAlert:
         return {**base, "result": "duplicate", "alert_id": target["id"]}
     done = {"cancel": "removed", "pause": "paused", "resume": "resumed"}[action]
+    audit(
+        f"alert.{action}",
+        actor_user_id=context.get("_user_id"),
+        target=f"alert:{target['id']}",
+        details={"symbol": target.get("symbol"), "condition": target.get("condition")},
+    )
     return {**base, "result": done, "alert_id": target["id"], "condition": target.get("condition")}
 
 
@@ -417,6 +430,7 @@ def _screener_save(entity: str, context: dict[str, Any]) -> dict:
     name = parse_screener_name(context.get("_query") or "")
     filters = context.get("screener_parse_query") or {}
     db_screener_save(context.get("_user_id"), name, filters)
+    audit("screener.save", actor_user_id=context.get("_user_id"), target=name, details={"filters": filters})
     return {"name": name, "filters": filters}
 
 

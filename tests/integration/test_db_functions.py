@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from tests.integration import test_sessions
+from tests.integration import test_audit, test_sessions
 from tests.integration.test_tenant_isolation import COVERED as ISOLATION_COVERED
 
 pytestmark = pytest.mark.integration
@@ -297,6 +297,8 @@ COVERED = {
     "auth_session_touch": test_sessions.test_refresh_keeps_you_logged_in_and_gradio_routes_need_the_cookie,
     "auth_session_delete": test_sessions.test_logout_makes_the_token_unusable,
     "auth_sessions_purge_expired": test_sessions.test_expired_session_gets_no_access,
+    "audit_log_write": test_audit.test_audit_rows_cannot_be_changed_or_deleted,
+    "audit_log_for": test_audit.test_alert_and_screener_writes_are_audited,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.

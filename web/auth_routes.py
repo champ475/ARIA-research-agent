@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from utils import auth
+from utils.audit import audit
 from web import csrf
 from web.session import clear_session_cookie, client_ip, current_user_id, session_token, set_session_cookie
 
@@ -44,6 +45,14 @@ def render(request: Request, template: str, status_code: int = 200, **ctx: Any) 
     return response
 
 
+def _email_ref(email: str) -> str:
+    """A failed login's target without storing the typed address itself (it
+    may be someone else's email, or a password typed into the wrong box)."""
+    import hashlib
+
+    return "email-sha256:" + hashlib.sha256(email.strip().lower().encode()).hexdigest()[:16]
+
+
 def _to_app(token: str) -> RedirectResponse:
     response = RedirectResponse("/", status_code=303)
     set_session_cookie(response, token)
@@ -66,12 +75,14 @@ def login_submit(
 ) -> Response:
     if not csrf.valid(request, csrf_token):
         return render(request, "login.html", 400, title="Log in", error=_CSRF_FAILED, email=email)
+    ip, ua = client_ip(request), request.headers.get("user-agent")
     try:
         user_id = auth.authenticate(email[:320], password[:1024])
     except auth.AuthError as e:
+        audit("auth.login_failed", target=_email_ref(email), ip=ip, user_agent=ua)
         return render(request, "login.html", 400, title="Log in", error=e.user_message, email=email)
-    token = auth.create_session(user_id, ip=client_ip(request), user_agent=request.headers.get("user-agent"))
-    log.info("[auth] login ok")
+    token = auth.create_session(user_id, ip=ip, user_agent=ua)
+    audit("auth.login", actor_user_id=user_id, ip=ip, user_agent=ua)
     return _to_app(token)
 
 
@@ -107,8 +118,11 @@ def signup_submit(
         return render(request, "signup.html", 400, title="Sign up", error=e.user_message, email=email)
     from utils.db import accept_terms
 
+    ip, ua = client_ip(request), request.headers.get("user-agent")
     accept_terms(user_id)
-    token = auth.create_session(user_id, ip=client_ip(request), user_agent=request.headers.get("user-agent"))
+    audit("auth.signup", actor_user_id=user_id, ip=ip, user_agent=ua)
+    audit("auth.terms_accepted", actor_user_id=user_id, ip=ip, user_agent=ua)
+    token = auth.create_session(user_id, ip=ip, user_agent=ua)
     return _to_app(token)
 
 
@@ -116,7 +130,10 @@ def signup_submit(
 def logout(request: Request) -> Response:
     """Ends this session and clears the cookie. POST-only: the cookie is
     SameSite=Lax, so another site can't log a user out with a cross-site POST."""
+    user_id = current_user_id(request)
     auth.logout(session_token(request))
+    if user_id is not None:
+        audit("auth.logout", actor_user_id=user_id, ip=client_ip(request))
     response = RedirectResponse("/login", status_code=303)
     clear_session_cookie(response)
     return response

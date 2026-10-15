@@ -16,6 +16,30 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — Append-only audit log enforced by the database (COMP-04)
+**Problem.** There was no tamper-evident record of who did what. That record is needed for security investigations, for disputes ("I never set that alert"), and for any regulated posture.
+
+**Alternatives considered.**
+- *Log lines only.* Rejected: logs rotate, have no query interface, and anyone with log access can edit them.
+- *An external audit service.* Rejected: we have no hosted environment (OPS-03 is skipped) and it adds a processor under DPDP.
+- *A separate audit database role.* That is the right production setup, but it needs the operator to create roles on Neon. The trigger enforces append-only regardless of role.
+
+**Final decision.**
+- An `audit_log` table, append-only by trigger and revoke.
+- One `audit()` helper with a fixed vocabulary of actions. It is called at each action's single choke point: auth routes, settings handlers, write tools, report/plan generation and the Telegram link handler.
+- Actor ids have no foreign key, so the trail outlives the account.
+
+**Trade-offs.**
+- `TRUNCATE` and the table owner dropping the trigger are not prevented. The table owner can still do anything.
+- Audit writes are best-effort. A failure is logged at ERROR, but the user's action still succeeds.
+- The trail keeps the user id after account deletion, which counsel should confirm under DPDP (COMP-03).
+
+**Future improvements.**
+- A dedicated low-privilege app role without TRUNCATE.
+- Periodic hash-chaining of rows for tamper evidence.
+- An admin view (OBS-05).
+- A retention job (COMP-06, 5 years by default).
+
 ## 2026-10-15 — Liveness, readiness and draining shutdown (OPS-04)
 **Problem.** The platform couldn't tell a hung app from a healthy one, and a deploy cut off answers mid-stream.
 

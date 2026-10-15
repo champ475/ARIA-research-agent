@@ -1203,6 +1203,13 @@ def _build_settings_tab(user_state: gr.State):
                 api_key,
             )
         llm_config_set(user_id, "openai_compatible", model, encrypted, base_url=base_url)
+        from utils.audit import audit
+
+        audit(
+            "settings.llm_key_set",
+            actor_user_id=user_id,
+            details={"model": model[:100], "base_url_host": _url_host(base_url)},
+        )
         # Evict the cached orchestrator so the new key applies on this
         # user's very next message instead of waiting for a restart/reset —
         # GraphOrchestrator resolves its BYO config once per instance
@@ -1263,6 +1270,9 @@ def _build_settings_tab(user_state: gr.State):
         from utils.db import llm_config_clear
 
         llm_config_clear(user_id)
+        from utils.audit import audit
+
+        audit("settings.llm_key_cleared", actor_user_id=user_id)
         _orchestrators.pop(user_id, None)
         return _settings_status_md(user_id), "", "", ""
 
@@ -1320,6 +1330,9 @@ def _build_settings_tab(user_state: gr.State):
         from utils.db import telegram_chat_id_set
 
         telegram_chat_id_set(user_id, None)
+        from utils.audit import audit
+
+        audit("settings.telegram_unlinked", actor_user_id=user_id)
         return _telegram_status_md(user_id)
 
     tg_connect_btn.click(_tg_connect, inputs=[user_state], outputs=[tg_status])
@@ -1388,6 +1401,9 @@ def _build_settings_tab(user_state: gr.State):
         from web.session import COOKIE_NAME
 
         n = logout_other_devices(user_id, request.cookies.get(COOKIE_NAME))
+        from utils.audit import audit
+
+        audit("auth.logout_other_devices", actor_user_id=user_id, details={"revoked": n})
         return f"✅ Logged out {n} other session(s).\n\n" + _sessions(user_id)
 
     logout_others_btn.click(_logout_others, inputs=[user_state], outputs=[sessions_md])
@@ -1395,6 +1411,14 @@ def _build_settings_tab(user_state: gr.State):
     user_state.change(_sessions, inputs=[user_state], outputs=[sessions_md])
 
     return status
+
+
+def _url_host(url: str | None) -> str | None:
+    if not url:
+        return None
+    from urllib.parse import urlsplit
+
+    return urlsplit(url).hostname
 
 
 def _sessions_md(rows: list[dict]) -> str:

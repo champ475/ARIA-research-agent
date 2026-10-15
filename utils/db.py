@@ -775,6 +775,35 @@ def accept_terms(user_id: int) -> None:
     _query("UPDATE users SET accepted_terms_at=now() WHERE id=%s", (user_id,), fetch=None, commit=True)
 
 
+# ── Audit log (COMP-04: append-only, enforced by a trigger) ───────────────────
+
+
+def audit_log_write(
+    action: str,
+    *,
+    actor_user_id: int | None = None,
+    target: str | None = None,
+    details: dict | None = None,
+    ip: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    _query(
+        "INSERT INTO audit_log (actor_user_id, action, target, details, ip, user_agent) "
+        "VALUES (%s,%s,%s,%s,%s,%s)",
+        (actor_user_id, action, target, None if details is None else json.dumps(details), ip, user_agent),
+        fetch=None,
+        commit=True,
+    )
+
+
+def audit_log_for(actor_user_id: int, limit: int = 1000) -> list[dict]:
+    """One account's own audit trail, newest first (data export, support)."""
+    return _query(
+        "SELECT at, action, target, details, ip FROM audit_log WHERE actor_user_id=%s ORDER BY at DESC LIMIT %s",
+        (actor_user_id, limit),
+    )
+
+
 # ── Login sessions (SEC-04: cookie sessions, only token hashes stored) ────────
 
 

@@ -96,6 +96,9 @@ def _poll_once():
             )
             continue
         telegram_chat_id_set(user_id, str(chat_id))
+        from utils.audit import audit
+
+        audit("settings.telegram_linked", actor_user_id=user_id)
         _send(chat_id, "✅ Connected! ARIA will send your alerts to this chat from now on.")
 
 

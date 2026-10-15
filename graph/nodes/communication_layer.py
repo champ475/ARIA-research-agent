@@ -77,6 +77,7 @@ from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
 from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
+from utils.audit import audit
 from utils.db import profile_clear, profile_get, profile_upsert, report_get, report_list, report_save
 from utils.financial_profile import is_complete as _profile_complete
 from utils.financial_profile import profile_summary as _profile_summary
@@ -353,6 +354,7 @@ def _handle_planning(client: LLMClient, state: GraphState) -> dict:
 
     if _wants_build(query):
         strategy = _planning_build_strategy(client, profile)
+        audit("plan.generate", actor_user_id=user_id, details={"fields": sorted(profile)})
         return _empty_result(strategy, "planning: built strategy", f"user_id={user_id}")
 
     # Complete but not asked for: show exactly what was saved first (the
@@ -497,6 +499,12 @@ def build_communication_layer_node(
             if user_id is not None:
                 try:
                     report_save(user_id, primary_entity, rtype, f"{rtype} — {primary_entity}", report)
+                    audit(
+                        "report.generate",
+                        actor_user_id=user_id,
+                        target=primary_entity,
+                        details={"type": rtype},
+                    )
                 except Exception as e:
                     # Persistence failure shouldn't block returning the report itself.
                     log.warning(f"[CommunicationLayer] report_save failed: {e}")
