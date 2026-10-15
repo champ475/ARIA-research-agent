@@ -775,6 +775,67 @@ def accept_terms(user_id: int) -> None:
     _query("UPDATE users SET accepted_terms_at=now() WHERE id=%s", (user_id,), fetch=None, commit=True)
 
 
+# ── Login sessions (SEC-04: cookie sessions, only token hashes stored) ────────
+
+
+def auth_session_create(
+    user_id: int, token_hash: str, expires_at, ip: str | None = None, user_agent: str | None = None
+) -> None:
+    _query(
+        "INSERT INTO sessions (user_id, token_hash, expires_at, ip, user_agent) VALUES (%s,%s,%s,%s,%s)",
+        (user_id, token_hash, expires_at, ip, (user_agent or "")[:300] or None),
+        fetch=None,
+        commit=True,
+    )
+
+
+def auth_session_lookup(token_hash: str) -> dict | None:
+    """The live (unexpired) session for a token hash: user_id, expires_at,
+    last_seen_at — or None."""
+    return _query(
+        "SELECT user_id, expires_at, last_seen_at FROM sessions WHERE token_hash=%s AND expires_at > now()",
+        (token_hash,),
+        fetch="one",
+    )
+
+
+def auth_session_touch(token_hash: str) -> None:
+    _query(
+        "UPDATE sessions SET last_seen_at=now() WHERE token_hash=%s", (token_hash,), fetch=None, commit=True
+    )
+
+
+def auth_session_delete(token_hash: str) -> None:
+    _query("DELETE FROM sessions WHERE token_hash=%s", (token_hash,), fetch=None, commit=True)
+
+
+def auth_sessions_list(user_id: int) -> list[dict]:
+    """The user's live sessions, newest first (no token hashes)."""
+    return _query(
+        "SELECT id, created_at, last_seen_at, expires_at, ip, user_agent FROM sessions "
+        "WHERE user_id=%s AND expires_at > now() ORDER BY last_seen_at DESC",
+        (user_id,),
+    )
+
+
+def auth_sessions_revoke_others(user_id: int, keep_token_hash: str | None) -> int:
+    """'Log out other devices': delete every session of this user except the
+    one making the request. Returns how many were revoked."""
+    rows = _query(
+        "DELETE FROM sessions WHERE user_id=%s AND token_hash IS DISTINCT FROM %s RETURNING id",
+        (user_id, keep_token_hash),
+        fetch="all",
+        commit=True,
+    )
+    return len(rows or [])
+
+
+def auth_sessions_purge_expired() -> int:
+    """Daily job: drop expired login sessions. Returns rows deleted."""
+    rows = _query("DELETE FROM sessions WHERE expires_at <= now() RETURNING id", fetch="all", commit=True)
+    return len(rows or [])
+
+
 # ── Postgres-backed auth rate limiting (replaces utils/auth.py's in-memory dict) ─
 
 

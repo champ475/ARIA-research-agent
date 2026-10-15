@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     TRIAL_DAILY_LIMIT: int = Field(5, ge=0)
     BYO_ALLOW_PRIVATE_HOSTS: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    HOST: str = "0.0.0.0"  # noqa: S104  # nosec B104 - container entrypoint; host/proxy controls exposure
+    PORT: int = Field(7860, ge=1, le=65535)
+    # Session cookie `Secure` flag (SEC-04); unset = on everywhere except dev/test.
+    COOKIE_SECURE: bool | None = None
 
     # ── Tracing (OBS-02) ──────────────────────────────────────────────────────
     ARIA_TRACING: str = ""
@@ -127,6 +131,12 @@ class Settings(BaseSettings):
             self.GROQ_API_KEY_5,
         ]
         return [k for k in keys if k.strip()]
+
+    @property
+    def cookie_secure(self) -> bool:
+        if self.COOKIE_SECURE is not None:
+            return self.COOKIE_SECURE
+        return self.APP_ENV not in ("dev", "test")
 
     @property
     def turn_deadline_seconds(self) -> float:
@@ -261,6 +271,9 @@ PROVIDER_ZERO_QUOTA_TTL_SECONDS = 3600
 # ── Serving / free trial ──────────────────────────────────────────────────────
 CHAT_CONCURRENCY = settings.CHAT_CONCURRENCY  # chat turns at once, server-wide
 QUEUE_MAX_SIZE = settings.QUEUE_MAX_SIZE
+HOST = settings.HOST
+PORT = settings.PORT
+COOKIE_SECURE = settings.cookie_secure
 TRIAL_DAILY_LIMIT = settings.TRIAL_DAILY_LIMIT  # free messages/day on the operator's keys
 
 # ── Data ──────────────────────────────────────────────────────────────────────

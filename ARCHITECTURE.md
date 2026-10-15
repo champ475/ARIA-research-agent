@@ -16,6 +16,31 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — FastAPI wrapper with cookie sessions checked on every Gradio request (SEC-04)
+**Problem.** After login, the token was discarded and `gr.State` held the user id. A refresh logged the user out. There was no logout. Expiry was never checked after login. Tokens were stored in plaintext.
+
+**Alternatives considered.**
+- *Keep the Gradio auth gate and pass a one-time ticket to a cookie-setting route through a JS redirect.* It works, but it adds a second round trip and keeps the login form inside a framework that can't set cookies.
+- *Gradio's built-in `auth=`.* Rejected: it takes a username and password callback only. It has no signup, consent, verification or reset, and its cookie is non-HttpOnly.
+
+**Final decision.**
+- FastAPI wraps the Gradio UI (`server.py`).
+- Login, signup and terms are server-rendered pages with CSRF tokens. They set an HttpOnly, SameSite=Lax, Secure cookie.
+- Gradio is mounted with `auth_dependency`, so the session is validated on every Gradio request, not only at page load. The user id reaches handlers as `gr.Request.username`.
+- The DB stores only `sha256(token)`, with expiry, last use and client info.
+- Logout and "log out other devices" are available.
+
+**Trade-offs.**
+- A revoked session can keep working on *another* replica for up to `SESSION_CACHE_SECONDS` (30 s) because of the in-process cache.
+- The login page is now outside Gradio, so it has its own small template and CSS.
+- `HttpOnly` blocks reading the token from JS by design. Logout therefore goes through `POST /auth/logout`.
+
+**Future improvements.**
+- SEC-05 adds per-IP limits on these routes.
+- SEC-06 adds verification and reset pages beside them.
+- SEC-15 adds security headers via a middleware on the same FastAPI app.
+- A shared cache (Redis) would remove the 30 s revocation window.
+
 ## 2026-10-15 — Typed user-safe errors at one boundary (SEC-08)
 **Problem.** Users could see raw exception text: SQL errors, provider responses, internal URLs, and file paths. It looked broken and helped an attacker map the system. One handler showed every `ValueError` as "API Key Required", with operator-only `.env` instructions.
 

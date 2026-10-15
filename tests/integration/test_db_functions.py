@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from tests.integration import test_sessions
 from tests.integration.test_tenant_isolation import COVERED as ISOLATION_COVERED
 
 pytestmark = pytest.mark.integration
@@ -291,6 +292,11 @@ COVERED = {
     "mf_metrics_get": test_mf_metrics_cache_round_trip_and_freshness,
     "mf_metrics_put": test_mf_metrics_cache_round_trip_and_freshness,
     "llm_config_ciphertexts": test_secret_key_rotation_rewraps_every_stored_key,
+    # SEC-04 session plumbing, exercised end to end in test_sessions.py:
+    "auth_session_lookup": test_sessions.test_expired_session_gets_no_access,
+    "auth_session_touch": test_sessions.test_refresh_keeps_you_logged_in_and_gradio_routes_need_the_cookie,
+    "auth_session_delete": test_sessions.test_logout_makes_the_token_unusable,
+    "auth_sessions_purge_expired": test_sessions.test_expired_session_gets_no_access,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.

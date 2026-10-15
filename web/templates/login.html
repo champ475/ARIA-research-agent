@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin-top:0;font-size:20px">Log in</h2>
+  {% if error %}<div class="msg error" role="alert">{{ error }}</div>{% endif %}
+  {% if notice %}<div class="msg ok" role="status">{{ notice }}</div>{% endif %}
+  <form method="post" action="/login" novalidate>
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="email" required value="{{ email or '' }}">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+  </form>
+  {% block below_form %}{% endblock %}
+  <p class="alt">New here? <a href="/signup">Create an account</a></p>
+</div>
+{% endblock %}

@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card {{ body_class or '' }}">
+  {% if heading %}<h2 style="margin-top:0;font-size:20px">{{ heading }}</h2>{% endif %}
+  {% if error %}<div class="msg error" role="alert">{{ error }}</div>{% endif %}
+  {% if notice %}<div class="msg ok" role="status">{{ notice }}</div>{% endif %}
+  {% if body_html %}{{ body_html | safe }}{% endif %}
+  {% if link_href %}<p class="alt"><a href="{{ link_href }}">{{ link_text }}</a></p>{% endif %}
+</div>
+{% endblock %}

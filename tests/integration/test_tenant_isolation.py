@@ -120,6 +120,20 @@ def test_llm_config(db, two_users):
     assert db.llm_config_get(a)["api_key_encrypted"] == "enc-key-a"
 
 
+def test_auth_sessions(db, two_users):
+    """SEC-04: B listing or revoking sessions never sees or touches A's."""
+    from datetime import UTC, datetime, timedelta
+
+    a, b = two_users
+    later = datetime.now(UTC) + timedelta(days=1)
+    db.auth_session_create(a, "hash-a", later, ip="1.2.3.4", user_agent="A's browser")
+    db.auth_session_create(b, "hash-b", later)
+    assert [r["user_agent"] for r in db.auth_sessions_list(b)] == [None]
+    assert db.auth_sessions_revoke_others(b, "hash-b") == 0
+    assert db.auth_session_lookup("hash-a")["user_id"] == a
+    assert len(db.auth_sessions_list(a)) == 1
+
+
 def test_trial_quota(db, two_users):
     a, b = two_users
     today = date(2026, 10, 14)
@@ -197,6 +211,9 @@ COVERED = {
     "llm_config_set": test_llm_config,
     "llm_config_clear": test_llm_config,
     "llm_config_rewrap": test_llm_config,
+    "auth_session_create": test_auth_sessions,
+    "auth_sessions_list": test_auth_sessions,
+    "auth_sessions_revoke_others": test_auth_sessions,
     "trial_quota_check_and_increment": test_trial_quota,
     "telegram_link_code_create": test_telegram_linking,
     "telegram_chat_id_set": test_telegram_linking,

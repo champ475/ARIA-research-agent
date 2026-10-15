@@ -13,15 +13,15 @@ and every turn spends real LLM quota.
     python scripts/load_test.py --url http://localhost:7860 --users 20 \
         --password 'LoadTest-Passw0rd!'
 
-Requires `gradio_client` (installed with gradio). The app's event API names
-are Gradio's defaults (the handler function names); if the UI is refactored,
-pass --login-api / --chat-api.
+Requires `gradio_client` (installed with gradio). Users sign up / log in
+through the /signup and /login forms (SEC-04 cookie sessions); the session
+cookie is then sent with every Gradio API call. The chat event's API name is
+Gradio's default (the handler name); if the UI is refactored, pass --chat-api.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import statistics
 import sys
 import threading
@@ -44,11 +44,31 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[k]
 
 
+def _session_cookie(url: str, email: str, password: str) -> str:
+    """Sign up (or, if the account exists, log in) through the HTML forms and
+    return the aria_session cookie value."""
+    import re
+
+    import requests
+
+    s = requests.Session()
+    for page, data in (("/signup", {"agree": "yes"}), ("/login", {})):
+        html = s.get(url + page, timeout=30).text
+        m = re.search(r'name="csrf" value="([^"]+)"', html)
+        if not m:
+            continue
+        s.post(
+            url + page, data={"email": email, "password": password, "csrf": m.group(1), **data}, timeout=30
+        )
+        if s.cookies.get("aria_session"):
+            return s.cookies["aria_session"]
+    raise RuntimeError(f"could not log in as {email}")
+
+
 def _one_user(
     url: str,
     idx: int,
     password: str,
-    login_api: str,
     chat_api: str,
     ttfts: list[float],
     errors: list[str],
@@ -57,12 +77,9 @@ def _one_user(
     from gradio_client import Client
 
     try:
-        client = Client(url, verbose=False)
         email = f"loadtest+{idx}@example.com"
-        # Sign up (ignored if it exists), then log in; state lives in this client's session.
-        with contextlib.suppress(Exception):
-            client.predict(email, password, True, api_name="/_do_signup")
-        client.predict(email, password, True, api_name=login_api)
+        cookie = _session_cookie(url, email, password)
+        client = Client(url, verbose=False, headers={"Cookie": f"aria_session={cookie}"})
         if start is not None:
             start.wait(timeout=120)
         question = QUESTIONS[idx % len(QUESTIONS)]
@@ -84,14 +101,12 @@ def _one_user(
         errors.append(f"user {idx}: {type(e).__name__}: {e}")
 
 
-def _run(url: str, users: int, password: str, login_api: str, chat_api: str) -> tuple[list[float], list[str]]:
+def _run(url: str, users: int, password: str, chat_api: str) -> tuple[list[float], list[str]]:
     ttfts: list[float] = []
     errors: list[str] = []
     barrier = threading.Barrier(users) if users > 1 else None
     threads = [
-        threading.Thread(
-            target=_one_user, args=(url, i, password, login_api, chat_api, ttfts, errors, barrier)
-        )
+        threading.Thread(target=_one_user, args=(url, i, password, chat_api, ttfts, errors, barrier))
         for i in range(users)
     ]
     for t in threads:
@@ -107,17 +122,16 @@ def main() -> int:
     ap.add_argument("--users", type=int, default=20)
     ap.add_argument("--baseline-runs", type=int, default=5)
     ap.add_argument("--password", required=True)
-    ap.add_argument("--login-api", default="/_do_login")
     ap.add_argument("--chat-api", default="/_respond")
     args = ap.parse_args()
 
     baseline: list[float] = []
     for i in range(args.baseline_runs):
-        t, errs = _run(args.url, 1, args.password, args.login_api, args.chat_api)
+        t, errs = _run(args.url, 1, args.password, args.chat_api)
         baseline += t
         for e in errs:
             print(f"baseline run {i}: {e}")
-    concurrent, errors = _run(args.url, args.users, args.password, args.login_api, args.chat_api)
+    concurrent, errors = _run(args.url, args.users, args.password, args.chat_api)
 
     b95, c95 = _percentile(baseline, 95), _percentile(concurrent, 95)
     print(

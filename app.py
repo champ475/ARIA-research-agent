@@ -3,6 +3,7 @@ app.py — Gradio front end for ARIA, an autonomous financial research engine.
 Gradio 6 compatible. show_api=False fixes the proxy/launch error.
 """
 
+import html
 import logging
 import os
 import threading
@@ -16,7 +17,6 @@ from utils.logging_setup import configure_logging, run_in_turn
 configure_logging()
 
 from config import CHAT_CONCURRENCY, MAX_CHAT_CHARS, QUEUE_MAX_SIZE, TRIAL_DAILY_LIMIT, check_boot
-from utils.auth import AuthError, login, signup
 from utils.db import ensure_schema
 from utils.errors import AriaError, ConfigurationError, UserInputError, error_id_from_turn, render_error
 from utils.helpers import IST as IST_TZ
@@ -512,7 +512,7 @@ def _build_chat_sidebar(
 
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
-CSS = """
+APP_CSS = """
 body, .gradio-container {
     background: #0d1117 !important;
     color: #e6edf3 !important;
@@ -765,6 +765,22 @@ footer { display: none !important; }
 """
 
 
+CSS = APP_CSS  # older name
+
+# Force Gradio's built-in dark theme vars regardless of the visitor's
+# OS/browser color-scheme preference (UX-03 revisits this). Gradio only applies
+# its dark vars when `.dark` is on <body>. Must be an IIFE — Gradio evaluates
+# `js` as a bare expression.
+APP_JS = "(() => { document.body.classList.add('dark'); })()"
+
+# SEC-04: logout is a POST to the FastAPI route (it deletes the session row and
+# the HttpOnly cookie), then back to the login page.
+LOGOUT_JS = (
+    "() => { fetch('/auth/logout', {method: 'POST', credentials: 'same-origin'})"
+    ".finally(() => { window.location.href = '/login'; }); }"
+)
+
+
 # ── Build the single unified chat tab (orchestrator-routed) ──────────────────
 
 
@@ -874,7 +890,12 @@ def _build_chat_tab(user_state: gr.State):
         + [session_state, refresh_state]
     )
 
-    def _respond(user_id, session_id, refresh, msg, hist, sugg, tf):
+    def _respond(user_id, session_id, refresh, msg, hist, sugg, tf, request: gr.Request):
+        # SEC-04: the authenticated request decides who is chatting (API
+        # clients never run the page's load event that fills user_state).
+        user_id = _request_user(request) or user_id
+        if not user_id:
+            return
         if session_id is None and isinstance(clean_message(msg), CleanMessage):
             from utils.db import session_create
 
@@ -1332,7 +1353,53 @@ def _build_settings_tab(user_state: gr.State):
     inbox_read_btn.click(_inbox_mark_read, inputs=[user_state], outputs=[inbox_md])
     user_state.change(lambda uid: _inbox_refresh(uid, notify=True), inputs=[user_state], outputs=[inbox_md])
 
+    # ── Account security (SEC-04) ─────────────────────────────────────────────
+    gr.Markdown("---\n### 🔐 Signed-in devices")
+    sessions_md = gr.Markdown("")
+    with gr.Row():
+        logout_others_btn = gr.Button("Log out other devices", variant="secondary")
+        logout_here_btn = gr.Button("Log out", variant="secondary")
+
+    def _sessions(user_id):
+        if not user_id:
+            return ""
+        from utils.db import auth_sessions_list
+
+        try:
+            rows = auth_sessions_list(user_id)
+        except Exception as e:
+            log.warning(f"[Settings] session list failed: {e}")
+            return "⚠️ Couldn't load your signed-in devices right now."
+        return _sessions_md(rows)
+
+    def _logout_others(user_id, request: gr.Request):
+        if not user_id:
+            return ""
+        from utils.auth import logout_other_devices
+        from web.session import COOKIE_NAME
+
+        n = logout_other_devices(user_id, request.cookies.get(COOKIE_NAME))
+        return f"✅ Logged out {n} other session(s).\n\n" + _sessions(user_id)
+
+    logout_others_btn.click(_logout_others, inputs=[user_state], outputs=[sessions_md])
+    logout_here_btn.click(None, js=LOGOUT_JS)
+    user_state.change(_sessions, inputs=[user_state], outputs=[sessions_md])
+
     return status
+
+
+def _sessions_md(rows: list[dict]) -> str:
+    """Signed-in sessions table; the user agent is escaped (SEC-10)."""
+    if not rows:
+        return "_No active sessions._"
+    lines = ["| Device | Last active (IST) |", "|---|---|"]
+    for r in rows:
+        ua = html.escape((r.get("user_agent") or "Unknown device")[:60]).replace("|", "&#124;")
+        seen = (
+            r["last_seen_at"].astimezone(IST_TZ).strftime("%d %b %Y, %H:%M") if r.get("last_seen_at") else "—"
+        )
+        lines.append(f"| {ua} | {seen} |")
+    return "\n".join(lines)
 
 
 def _inbox_md(rows: list[dict]) -> str:
@@ -1350,95 +1417,26 @@ def _inbox_md(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# ── Auth gate ─────────────────────────────────────────────────────────────────
+def _request_user(request: gr.Request | None) -> int | None:
+    """The user server.py's auth_dependency resolved from the session cookie
+    for this request (SEC-04), or None outside the authenticated server."""
+    username = getattr(request, "username", None) if request is not None else None
+    return int(username) if username and str(username).isdigit() else None
 
 
-def _build_auth_gate():
-    """
-    Login/signup screen. On success, sets user_state to the authenticated
-    user_id, hides this gate, and reveals the main app.
-    Returns (auth_group, main_group, user_state).
-    """
-    user_state = gr.State(None)  # holds user_id once authenticated
-
-    def _load_legal_text() -> str:
-        try:
-            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "LEGAL.md")
-            with open(path, encoding="utf-8") as f:
-                return f.read()
-        except Exception:
-            return "Terms of Use & Privacy Notice unavailable — contact this instance's operator."
-
-    with gr.Column(elem_id="auth-gate", visible=True) as auth_group:
-        gr.HTML(
-            "<div style='text-align:center;padding:30px 0 10px'>"
-            "<span style='font-size:22px;font-weight:700;color:#58a6ff;'>⚡ ARIA</span><br/>"
-            "<span style='font-size:12px;color:#8b949e;'>Sign in to your research workspace</span>"
-            "</div>"
-        )
-        with gr.Column(scale=1, min_width=360, elem_id="auth-card"):
-            email_box = gr.Textbox(label="Email", placeholder="you@example.com")
-            pass_box = gr.Textbox(label="Password", type="password", placeholder="At least 8 characters")
-            with gr.Accordion("📜 Terms of Use & Privacy Notice", open=False):
-                gr.Markdown(_load_legal_text(), elem_id="legal-text")
-            terms_box = gr.Checkbox(label="I agree to the Terms of Use & Privacy Notice above", value=False)
-            auth_msg = gr.Markdown("")
-            with gr.Row():
-                login_btn = gr.Button("Log in", variant="primary")
-                signup_btn = gr.Button("Sign up", variant="secondary")
-
-    with gr.Column(elem_id="main-app", visible=False) as main_group:
-        pass  # populated by caller
-
-    def _do_login(email, password, _agreed):
-        try:
-            token = login(email, password)
-        except AuthError as e:
-            return e.user_message, gr.update(visible=True), gr.update(visible=False), None
-        from utils.auth import get_user_id
-
-        uid = get_user_id(token)
-        return "", gr.update(visible=False), gr.update(visible=True), uid
-
-    def _do_signup(email, password, agreed):
-        if not agreed:
-            return (
-                "⚠️ Please agree to the Terms of Use & Privacy Notice to sign up.",
-                gr.update(visible=True),
-                gr.update(visible=False),
-                None,
-            )
-        try:
-            uid = signup(email, password)
-            from utils.db import accept_terms
-
-            accept_terms(uid)
-            token = login(email, password)
-        except AuthError as e:
-            return e.user_message, gr.update(visible=True), gr.update(visible=False), None
-        from utils.auth import get_user_id
-
-        uid = get_user_id(token)
-        return "", gr.update(visible=False), gr.update(visible=True), uid
-
-    login_btn.click(
-        _do_login, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state]
-    )
-    signup_btn.click(
-        _do_signup, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state]
-    )
-    pass_box.submit(
-        _do_login, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state]
-    )
-
-    return auth_group, main_group, user_state
+def _identify_user(request: gr.Request) -> int | None:
+    """The authenticated user id for this page load (SEC-04)."""
+    return _request_user(request)
 
 
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="ARIA — Autonomous Financial Research Engine") as demo:
-        auth_group, main_group, user_state = _build_auth_gate()
+        # SEC-04: who is logged in comes from the session cookie, checked by
+        # server.py's auth_dependency on every request (gr.Request.username).
+        # user_state is set once per page load from that, never from input.
+        user_state = gr.State(None)
 
-        with main_group:
+        with gr.Column(elem_id="main-app"):
             # Header
             gr.HTML("""
             <div id='aria-header' style='display:flex;align-items:center;justify-content:space-between'>
@@ -1454,6 +1452,8 @@ def build_ui() -> gr.Blocks:
               </div>
             </div>
             """)
+            logout_btn = gr.Button("Log out", size="sm", variant="secondary", elem_id="logout-btn")
+            logout_btn.click(None, js=LOGOUT_JS)
 
             # Tabs — one unified chat (orchestrator-routed) + Watchlist utility view
             with gr.Tabs():
@@ -1490,6 +1490,8 @@ def build_ui() -> gr.Blocks:
             [chat_chatbot, chat_chart, chat_sugg_state, chat_session],
         )
 
+        demo.load(_identify_user, None, [user_state])
+
     demo.queue(**_queue_kwargs())
     return demo
 
@@ -1506,11 +1508,11 @@ if __name__ == "__main__":
     print("  NSE · BSE · Mutual Funds · Screener")
     print("=" * 62)
     print(f"  Started  : {now_ist()}")
-    print("  URL      : http://localhost:7860")
+    from config import LOCAL_LLM_BASE_URL, LOCAL_LLM_MODEL, PORT
+
+    print(f"  URL      : http://localhost:{PORT}")
     print("  Primary  : Groq (Llama 3.3 70B) — 14,400 req/day per key")
     print("  Fallback : Google Gemini 2.0 Flash")
-    from config import LOCAL_LLM_BASE_URL, LOCAL_LLM_MODEL
-
     if LOCAL_LLM_BASE_URL:
         print(f"  Local    : {LOCAL_LLM_MODEL} at {LOCAL_LLM_BASE_URL} (last resort)")
     print("=" * 62)
@@ -1519,23 +1521,8 @@ if __name__ == "__main__":
     os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,0.0.0.0")
     os.environ.setdefault("no_proxy", "localhost,127.0.0.1,0.0.0.0")
 
-    demo = build_ui()
-    demo.launch(
-        server_name="0.0.0.0",  # container entrypoint; host/proxy controls exposure  # noqa: S104  # nosec B104
-        server_port=7860,
-        share=False,
-        show_error=True,
-        quiet=False,
-        theme=gr.themes.Base(),
-        css=CSS,
-        # Force Gradio's built-in dark theme vars regardless of the visitor's
-        # OS/browser color-scheme preference — this app has one deliberate
-        # dark aesthetic, not a light/dark toggle. Without this, users on a
-        # light-mode OS get Gradio's default light component backgrounds
-        # (white Chatbot/Radio/Dataframe boxes) clashing with our dark CSS,
-        # since Gradio only applies its dark theme vars when `.dark` is on
-        # <body> (not <html>), which it otherwise sets from
-        # prefers-color-scheme. Must be an IIFE — Gradio evaluates `js` as a
-        # bare expression, it does not call a bare arrow function for you.
-        js="(() => { document.body.classList.add('dark'); })()",
-    )
+    # SEC-04: FastAPI (login/signup/logout, cookie sessions) around the
+    # Gradio UI — see server.py.
+    from server import serve
+
+    serve()

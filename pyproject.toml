@@ -50,7 +50,7 @@ known-first-party = ["agents", "graph", "tools", "utils", "config", "app", "scri
 
 [tool.mypy]
 python_version = "3.11"
-files = ["graph", "utils", "agents", "config.py"]
+files = ["graph", "utils", "agents", "web", "config.py", "server.py"]
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = true
 check_untyped_defs = true
@@ -70,6 +70,7 @@ follow_imports = "silent"
 # Fix a module, delete its line, and CI keeps it clean from then on.
 [[tool.mypy.overrides]]
 module = [
+    "app",
     "agents.conversation_memory",
     "agents.graph_orchestrator",
     "agents.llm_client",
