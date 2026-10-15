@@ -338,3 +338,17 @@ def test_every_public_db_function_has_an_integration_test():
     }
     missing = sorted(public - set(COVERED) - set(ISOLATION_COVERED) - INFRASTRUCTURE)
     assert missing == [], f"utils/db.py functions without an integration test: {missing}"
+
+
+def test_watchlist_cap_and_duplicates(db, two_users):
+    """VAL-07: at most 50 symbols; a duplicate is reported, not double-counted."""
+    import pytest as _pytest
+
+    a, b = two_users
+    for i in range(50):
+        assert db.watchlist_add(a, f"S{i}") is True
+    assert db.watchlist_add(a, "S0") is False  # already there, even at the cap
+    with _pytest.raises(db.WatchlistFull):
+        db.watchlist_add(a, "ONEMORE")
+    assert len(db.watchlist_all(a)) == 50
+    assert db.watchlist_add(b, "S0") is True  # the cap is per user

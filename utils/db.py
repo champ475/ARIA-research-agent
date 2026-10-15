@@ -220,13 +220,34 @@ def portfolio_all(user_id: int) -> list[dict]:
 # ── Watchlist helpers ─────────────────────────────────────────────────────────
 
 
-def watchlist_add(user_id: int, symbol: str):
-    _query(
-        "INSERT INTO watchlist (user_id, symbol) VALUES (%s,%s) ON CONFLICT (user_id, symbol) DO NOTHING",
-        (user_id, symbol.upper()),
-        fetch=None,
-        commit=True,
-    )
+class WatchlistFull(Exception):
+    """The user already has WATCHLIST_MAX symbols (VAL-07)."""
+
+
+def watchlist_add(user_id: int, symbol: str, max_symbols: int = 50) -> bool:
+    """Add a symbol; False if it was already there. Raises WatchlistFull at
+    the cap — checked inside the INSERT, so concurrent adds can't overshoot
+    by more than their own concurrency."""
+    symbol = symbol.upper()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM watchlist WHERE user_id=%s AND symbol=%s", (user_id, symbol))
+        if cur.fetchone():
+            return False
+        cur.execute(
+            "INSERT INTO watchlist (user_id, symbol) SELECT %s,%s "
+            "WHERE (SELECT count(*) FROM watchlist WHERE user_id=%s) < %s "
+            "ON CONFLICT (user_id, symbol) DO NOTHING RETURNING id",
+            (user_id, symbol, user_id, max_symbols),
+        )
+        added = cur.fetchone() is not None
+        conn.commit()
+    finally:
+        release_conn(conn)
+    if not added:
+        raise WatchlistFull(f"watchlist already has {max_symbols} symbols")
+    return True
 
 
 def watchlist_remove(user_id: int, symbol: str):

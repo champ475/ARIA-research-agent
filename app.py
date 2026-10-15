@@ -1113,10 +1113,21 @@ def _build_watchlist_tab(user_state: gr.State):
         ref_btn = gr.Button("🔄 Refresh", variant="secondary", scale=1, min_width=90)
 
     def _add(user_id, sym_raw, refresh):
-        sym = clean_ticker(sym_raw.strip().upper())
-        if not sym:
-            return refresh, "⚠️ Enter a valid NSE symbol."
-        watchlist_add(user_id, sym)
+        # VAL-07: only listed NSE symbols, resolved like a chat mention, max 50.
+        from utils.db import WatchlistFull
+        from utils.errors import UserInputError
+        from utils.forms import WATCHLIST_MAX, watchlist_symbol
+
+        try:
+            sym = watchlist_symbol(sym_raw)
+        except UserInputError as e:
+            return refresh, f"⚠️ {html_text(e.user_message)}"
+        try:
+            added = watchlist_add(user_id, sym, max_symbols=WATCHLIST_MAX)
+        except WatchlistFull:
+            return refresh, f"⚠️ Your watchlist is full ({WATCHLIST_MAX} symbols). Remove one to add another."
+        if not added:
+            return refresh, f"ℹ️ **{sym}** is already on your watchlist."
         return refresh + 1, f"✅ **{sym}** added to watchlist."
 
     def _remove(user_id, sym_raw, refresh):
@@ -1209,19 +1220,17 @@ def _build_settings_tab(user_state: gr.State):
     def _save(user_id, model, base_url, api_key):
         if not user_id:
             return "", model, base_url, api_key
-        model = (model or "").strip()
-        api_key = (api_key or "").strip()
-        base_url = (base_url or "").strip() or None
-        if not model or not api_key:
-            return "⚠️ Model and API key are both required.", model, base_url or "", api_key
-        if base_url:
-            # SEC-01: only public https endpoints — never internal hosts.
-            from utils.url_safety import UnsafeURLError, validate_public_https_url
+        # VAL-07: format checks (SEC-01 URL policy included), then a live
+        # 1-token call — a key is saved only once the provider has accepted it.
+        from utils.errors import AriaError
+        from utils.forms import llm_settings, probe_llm
 
-            try:
-                base_url = validate_public_https_url(base_url)
-            except UnsafeURLError as e:
-                return f"⚠️ {e.user_message}", model, base_url, api_key
+        try:
+            model, api_key, base_url = llm_settings(model, api_key, base_url)
+            probe_llm(model, api_key, base_url)
+        except AriaError as e:
+            hint = f" {e.fix_hint}" if e.fix_hint else ""
+            return f"⚠️ {e.user_message}{hint}", model or "", base_url or "", api_key or ""
         from utils.crypto import encrypt
         from utils.db import llm_config_set
 
