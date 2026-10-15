@@ -19,6 +19,7 @@ import secrets
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from typing import NamedTuple
 
 from cachetools import TTLCache
 
@@ -42,8 +43,15 @@ _PBKDF2_ITERATIONS = 260_000
 _RATE_LIMIT_WINDOW_S = 5 * 60
 _RATE_LIMIT_MAX_ATTEMPTS = 5
 
-# token hash -> (user_id, email verified)
-_cache: TTLCache[str, tuple[int, bool]] = TTLCache(maxsize=10_000, ttl=SESSION_CACHE_SECONDS)
+
+class SessionInfo(NamedTuple):
+    user_id: int
+    verified: bool  # email address confirmed (SEC-06)
+    consent_ok: bool = True  # accepted the latest material Terms version (COMP-02)
+
+
+# token hash -> SessionInfo
+_cache: TTLCache[str, SessionInfo] = TTLCache(maxsize=10_000, ttl=SESSION_CACHE_SECONDS)
 _last_touch: TTLCache[str, float] = TTLCache(maxsize=10_000, ttl=_TOUCH_INTERVAL_SECONDS * 2)
 _cache_lock = threading.Lock()
 
@@ -216,9 +224,10 @@ def login(email: str, password: str, ip: str | None = None, user_agent: str | No
     return create_session(authenticate(email, password, ip=ip), ip=ip, user_agent=user_agent)
 
 
-def session_info(token: str | None) -> tuple[int, bool] | None:
-    """(user_id, email_verified) behind a session cookie, or None if missing,
-    unknown, expired or logged out."""
+def session_info(token: str | None) -> SessionInfo | None:
+    """Who is behind a session cookie (and whether they're verified and have
+    accepted the current Terms), or None if missing, unknown, expired or
+    logged out."""
     if not token:
         return None
     th = hash_token(token)
@@ -229,7 +238,9 @@ def session_info(token: str | None) -> tuple[int, bool] | None:
     row = db.auth_session_lookup(th)
     if row is None:
         return None
-    info = (int(row["user_id"]), bool(row.get("verified", True)))
+    info = SessionInfo(
+        int(row["user_id"]), bool(row.get("verified", True)), bool(row.get("consent_ok", True))
+    )
     with _cache_lock:
         _cache[th] = info
         touch = th not in _last_touch
@@ -277,7 +288,7 @@ def logout_other_devices(user_id: int, current_token: str | None) -> int:
 
 def _forget_user(user_id: int, keep: str | None = None) -> None:
     with _cache_lock:
-        for th in [k for k, (uid, _v) in _cache.items() if uid == user_id and k != keep]:
+        for th in [k for k, info in _cache.items() if info.user_id == user_id and k != keep]:
             _cache.pop(th, None)
 
 
@@ -359,3 +370,13 @@ def delete_account(user_id: int, password: str) -> None:
         raise AuthError("That password is not correct.")
     db.user_delete(user_id)
     _forget_user(user_id)
+
+
+def accept_current_terms(user_id: int) -> str:
+    """Record acceptance of the Terms version this code ships (COMP-02)."""
+    from utils.terms import current_version
+
+    version = current_version()
+    db.accept_terms(user_id, version)
+    _forget_user(user_id)
+    return version

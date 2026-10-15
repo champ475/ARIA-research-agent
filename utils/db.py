@@ -771,8 +771,26 @@ def telegram_chat_id_get(user_id: int) -> str | None:
 # ── Terms-of-service consent (utils/auth.py) ──────────────────────────────────
 
 
-def accept_terms(user_id: int) -> None:
-    _query("UPDATE users SET accepted_terms_at=now() WHERE id=%s", (user_id,), fetch=None, commit=True)
+def accept_terms(user_id: int, version: str | None = None) -> None:
+    """Record that the user accepted the Terms (COMP-02: which version, and when)."""
+    if version is None:
+        from utils.terms import current_version
+
+        version = current_version()
+    _query(
+        "UPDATE users SET accepted_terms_at=now(), accepted_terms_version=%s WHERE id=%s",
+        (version, user_id),
+        fetch=None,
+        commit=True,
+    )
+
+
+def terms_version_get(version: str) -> dict | None:
+    return _query(
+        "SELECT version, effective_at, material, summary FROM terms_versions WHERE version=%s",
+        (version,),
+        fetch="one",
+    )
 
 
 # ── Audit log (COMP-04: append-only, enforced by a trigger) ───────────────────
@@ -915,9 +933,13 @@ def auth_session_create(
 
 def auth_session_lookup(token_hash: str) -> dict | None:
     """The live (unexpired) session for a token hash: user_id, expires_at,
-    last_seen_at, verified (email confirmed) — or None."""
+    last_seen_at, verified (email confirmed), consent_ok (accepted the latest
+    material Terms version, COMP-02) — or None."""
     return _query(
-        "SELECT s.user_id, s.expires_at, s.last_seen_at, (u.email_verified_at IS NOT NULL) AS verified "
+        "SELECT s.user_id, s.expires_at, s.last_seen_at, (u.email_verified_at IS NOT NULL) AS verified, "
+        "  COALESCE(u.accepted_terms_version >= ("
+        "    SELECT max(version) FROM terms_versions WHERE material AND effective_at <= now()"
+        "  ), TRUE) AND u.accepted_terms_version IS NOT NULL AS consent_ok "
         "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash=%s AND s.expires_at > now()",
         (token_hash,),
         fetch="one",

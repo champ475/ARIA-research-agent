@@ -90,7 +90,7 @@ def verify_resend(request: Request, csrf_token: str = Form("", alias="csrf")) ->
         return RedirectResponse("/login", status_code=303)
     if not csrf.valid(request, csrf_token):
         return RedirectResponse("/auth/verify-pending", status_code=303)
-    user_id, verified = info
+    user_id, verified = info.user_id, info.verified
     if verified:
         return RedirectResponse("/", status_code=303)
     email = user_email(user_id)

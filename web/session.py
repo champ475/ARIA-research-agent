@@ -15,7 +15,7 @@ import logging
 from fastapi import Request, Response
 
 import config
-from utils.auth import SESSION_TTL_HOURS, session_info
+from utils.auth import SESSION_TTL_HOURS, SessionInfo, session_info
 
 log = logging.getLogger(__name__)
 
@@ -26,8 +26,8 @@ def session_token(request: Request) -> str | None:
     return request.cookies.get(COOKIE_NAME) or None
 
 
-def current_session(request: Request) -> tuple[int, bool] | None:
-    """(user_id, email_verified) for this request's cookie, or None. A
+def current_session(request: Request) -> SessionInfo | None:
+    """Who this request's cookie belongs to, or None. A
     database outage reads as logged out (the request is refused), never as
     someone else."""
     try:
@@ -44,15 +44,17 @@ def current_user_id(request: Request) -> int | None:
 
 
 def app_user_id(request: Request) -> int | None:
-    """The user allowed into the app: logged in, and — when verification is
-    required (SEC-06) — with a confirmed email address."""
+    """The user allowed into the app: logged in, with a confirmed email
+    address when verification is required (SEC-06), and having accepted the
+    current Terms (COMP-02)."""
     info = current_session(request)
     if info is None:
         return None
-    user_id, verified = info
-    if config.REQUIRE_EMAIL_VERIFICATION and not verified:
+    if config.REQUIRE_EMAIL_VERIFICATION and not info.verified:
         return None
-    return user_id
+    if not info.consent_ok:
+        return None
+    return info.user_id
 
 
 def gradio_auth_dependency(request: Request) -> str | None:

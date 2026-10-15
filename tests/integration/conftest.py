@@ -70,7 +70,7 @@ def db(pg_db):
     """Empty tables for every test."""
     tables = pg_db._query(
         "SELECT tablename FROM pg_tables WHERE schemaname='public' "
-        "AND tablename NOT LIKE 'checkpoint%%' AND tablename <> 'alembic_version'"
+        "AND tablename NOT LIKE 'checkpoint%%' AND tablename NOT IN ('alembic_version', 'terms_versions')"
     )
     names = ", ".join(f'"{t["tablename"]}"' for t in tables)
     if names:

@@ -16,6 +16,28 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — Versioned consent with re-acceptance gate (COMP-02)
+**Problem.** Consent was a bare timestamp. After the terms changed, nobody could say who had agreed to which text, and "continued use = acceptance" is weak consent under DPDP.
+
+**Alternatives considered.**
+- *Hash LEGAL.md and treat any change as a new version.* Rejected: a typo fix would force every user to re-consent.
+- *Keep versions in config only.* Rejected: the history of what was published, and when, belongs in the database next to the acceptance records.
+
+**Final decision.**
+- LEGAL.md declares its version.
+- `terms_versions` records every published version with a material flag and an effective date.
+- Users store the version they accepted.
+- The session lookup computes whether the newest effective material version is accepted. If it isn't, the app (including the Gradio API) is blocked until the user re-accepts at `/terms/accept`.
+- Publishing new terms means editing LEGAL.md and adding a migration row. A test fails if the two disagree.
+
+**Trade-offs.**
+- Version ids are compared as strings, which works for the date format used.
+- A consent change on another replica takes effect within the session-cache window (30 s).
+
+**Future improvements.**
+- Show a diff of the material change.
+- Email users ahead of a material change's effective date.
+
 ## 2026-10-15 — Brute-force and enumeration defences on auth (SEC-05)
 **Problem.**
 - The login limit was per email only, so credential stuffing across many emails from one IP was unlimited.

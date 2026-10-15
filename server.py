@@ -50,9 +50,13 @@ class LoginRedirectMiddleware:
 
             request = Request(scope)
             if gradio_auth_dependency(request) is None:
-                if current_session(request) is not None:
+                info = current_session(request)
+                if info is not None and config.REQUIRE_EMAIL_VERIFICATION and not info.verified:
                     # Logged in, email not confirmed yet (SEC-06).
                     response = RedirectResponse("/auth/verify-pending", status_code=303)
+                elif info is not None:
+                    # Logged in; the Terms changed materially since they agreed (COMP-02).
+                    response = RedirectResponse("/terms/accept", status_code=303)
                 else:
                     response = RedirectResponse("/login", status_code=303)
                     if request.cookies.get(COOKIE_NAME):

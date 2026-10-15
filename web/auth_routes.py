@@ -21,7 +21,14 @@ import config
 from utils import auth
 from utils.audit import audit
 from web import captcha, csrf
-from web.session import clear_session_cookie, client_ip, current_user_id, session_token, set_session_cookie
+from web.session import (
+    clear_session_cookie,
+    client_ip,
+    current_session,
+    current_user_id,
+    session_token,
+    set_session_cookie,
+)
 
 log = logging.getLogger(__name__)
 
@@ -137,11 +144,11 @@ def signup_submit(
     except auth.AuthError as e:
         return render(request, "signup.html", 400, title="Sign up", error=e.user_message, email=email)
     if user_id is not None:
-        from utils.db import accept_terms
-
-        accept_terms(user_id)
+        version = auth.accept_current_terms(user_id)
         audit("auth.signup", actor_user_id=user_id, ip=ip, user_agent=ua)
-        audit("auth.terms_accepted", actor_user_id=user_id, ip=ip, user_agent=ua)
+        audit(
+            "auth.terms_accepted", actor_user_id=user_id, details={"version": version}, ip=ip, user_agent=ua
+        )
         # SEC-06: confirm the address before the account can be used.
         auth.start_email_verification(user_id, email.strip().lower())
     # SEC-05: identical answer for a new and an already-registered address —
@@ -187,3 +194,46 @@ def terms(request: Request) -> Response:
         link_href="/signup",
         link_text="Back to sign up",
     )
+
+
+# ── re-consent after a material change (COMP-02) ─────────────────────────────
+
+
+@router.get("/terms/accept", response_class=HTMLResponse)
+def terms_accept_page(request: Request) -> Response:
+    info = current_session(request)
+    if info is None:
+        return RedirectResponse("/login", status_code=303)
+    if info.consent_ok:
+        return RedirectResponse("/", status_code=303)
+    from utils.db import terms_version_get
+    from utils.terms import current_version
+
+    row = terms_version_get(current_version()) or {}
+    return render(
+        request,
+        "terms_accept.html",
+        title="Updated terms",
+        version=current_version(),
+        summary=row.get("summary", ""),
+    )
+
+
+@router.post("/terms/accept", response_class=HTMLResponse)
+def terms_accept_submit(
+    request: Request, agree: str = Form(""), csrf_token: str = Form("", alias="csrf")
+) -> Response:
+    info = current_session(request)
+    if info is None:
+        return RedirectResponse("/login", status_code=303)
+    if not csrf.valid(request, csrf_token) or agree != "yes":
+        return RedirectResponse("/terms/accept", status_code=303)
+    version = auth.accept_current_terms(info.user_id)
+    audit(
+        "auth.terms_accepted",
+        actor_user_id=info.user_id,
+        details={"version": version},
+        ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    return RedirectResponse("/", status_code=303)
