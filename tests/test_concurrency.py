@@ -5,10 +5,6 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from utils import db
-
 
 def _fake_orch(on_stream=None):
     orch = MagicMock()
@@ -113,45 +109,5 @@ def test_get_orchestrator_builds_one_instance_under_contention(app_module):
     assert built == [303]
 
 
-class _FakePool:
-    def __init__(self):
-        self.out = 0
-
-    def getconn(self):
-        self.out += 1
-        conn = MagicMock()
-        conn.closed = False
-        return conn
-
-    def putconn(self, conn, close=False):
-        self.out -= 1
-
-
-@pytest.fixture
-def tiny_pool(monkeypatch):
-    fake = _FakePool()
-    monkeypatch.setattr(db, "_get_pool", lambda: fake)
-    monkeypatch.setattr(db, "_pool_slots", threading.BoundedSemaphore(1))
-    monkeypatch.setattr(db, "DB_POOL_ACQUIRE_TIMEOUT", 0.3)
-    return fake
-
-
-def test_get_conn_waits_for_a_free_connection_instead_of_failing(tiny_pool):
-    first = db.get_conn()
-    threading.Timer(0.1, lambda: db.release_conn(first)).start()
-    second = db.get_conn()  # blocks ~0.1s, then succeeds
-    db.release_conn(second)
-    assert tiny_pool.out == 0
-
-
-def test_get_conn_times_out_cleanly_when_pool_stays_full(tiny_pool):
-    held = db.get_conn()
-    with pytest.raises(db.PoolTimeout):
-        db.get_conn()
-    db.release_conn(held)
-    db.release_conn(db.get_conn())  # slot was not leaked by the timeout
-
-
-def test_discarded_connection_frees_its_slot(tiny_pool):
-    db.release_conn(db.get_conn(), discard=True)
-    db.release_conn(db.get_conn())
+# Pool waiting / timeout / discard behaviour runs against a real Postgres:
+# tests/integration/test_db_pool.py (REL-04).

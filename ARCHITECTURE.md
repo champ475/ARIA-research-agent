@@ -16,6 +16,32 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — One Postgres driver, waiting pool, statement timeouts (REL-04)
+**Problem.**
+- The app ran two Postgres client libraries with two pools: psycopg2 for `utils/db.py`, psycopg 3 for the LangGraph checkpointer. Connection use against Neon's limits doubled.
+- psycopg2's pool raised `PoolError` immediately when exhausted. REL-01 papered over that with a semaphore.
+- No statement had a timeout.
+
+**Alternatives considered.**
+- *Keep psycopg2 and add a statement timeout.* That still leaves two drivers, and psycopg2 is in maintenance mode.
+- *SQLAlchemy Core with its pool.* Rejected: a third abstraction over the same SQL, for no gain.
+- *A single pool shared with the checkpointer.* PostgresSaver needs autocommit connections, while the app relies on explicit transactions (e.g. alert caps in one statement, multi-statement deletes). Mixing the two modes per checkout is error-prone.
+
+**Final decision.**
+- psycopg 3 everywhere: app, checkpointer, Alembic and scripts.
+- The app pool waits for a connection and checks it on checkout.
+- Connection settings shared by both pools: statement timeout, prepared statements off (for transaction-mode PgBouncer), dict rows, application name.
+- The checkpointer has a small separate autocommit pool. The process budget is `DB_POOL_MAX + 5`.
+
+**Trade-offs.**
+- Two pools still exist, but they share one driver and one configuration.
+- `statement_timeout` is sent as a startup option, which some poolers reject. The documented fallback is a role-level setting.
+- Long-running maintenance jobs open their own connections and are not subject to the 5 s cap.
+
+**Future improvements.**
+- Size the pool from measured concurrency (OBS-03 `pool_stats`).
+- Postgres row-level security with `SET app.user_id` per checkout (SEC-13 follow-up).
+
 ## 2026-10-15 — Locked, scanned, non-root builds (SEC-14)
 **Problem.**
 - Every dependency was `>=`, so a build was whatever PyPI served that day. CI already ran WeasyPrint 70 while developers ran 68, and resolving fresh would silently move openai to v3.

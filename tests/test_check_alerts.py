@@ -250,7 +250,7 @@ def test_main_aborts_when_schema_out_of_date(monkeypatch):
     from utils import migrations
 
     monkeypatch.setattr(ca, "market_is_open", lambda: True)
-    monkeypatch.setattr(ca.psycopg2, "connect", lambda *a, **k: _Conn([]))
+    monkeypatch.setattr(ca.psycopg, "connect", lambda *a, **k: _Conn([]))
 
     def _stale(conn, require_checkpointer=True):
         raise migrations.SchemaOutOfDate("schema is at 0001, needs 0002")

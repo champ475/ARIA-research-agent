@@ -3,9 +3,9 @@ scripts/check_alerts.py — standalone alert evaluator.
 
 Run on a schedule by .github/workflows/alert-check.yml (GitHub Actions cron,
 every 5 min). Not part of the Gradio app process — uses a single direct
-psycopg2 connection since this is a short-lived process that opens one
-connection and exits (the app's ThreadedConnectionPool in utils/db.py would
-be pointless here); this is a deliberate, still-valid choice, not something
+psycopg connection since this is a short-lived process that opens one
+connection and exits (the app's pool in utils/db.py would be pointless
+here); this is a deliberate, still-valid choice, not something
 the multi-user Telegram routing below needed to change.
 
 Multi-user Telegram routing: each alert's notification goes to ITS OWNER's
@@ -44,9 +44,9 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import psycopg2
+import psycopg
 import requests
-from psycopg2.extras import RealDictCursor
+from psycopg.rows import dict_row
 
 from config import ALERT_MAX_DELIVERY_ATTEMPTS, DATABASE_URL, TELEGRAM_BOT_TOKEN, check_boot
 from tools.analysis.technical import compute_all
@@ -391,7 +391,7 @@ def main() -> int:
         return 0
     from utils.migrations import SchemaOutOfDate, check_schema
 
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=10)
     try:
         # ARCH-01: this job only reads/writes rows. The schema is migrated by
         # the app's release step; if that hasn't happened yet, stop loudly

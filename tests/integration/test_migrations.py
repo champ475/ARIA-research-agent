@@ -7,9 +7,9 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-import psycopg2
+import psycopg
 import pytest
-from psycopg2.extras import RealDictCursor
+from psycopg.rows import dict_row
 
 from utils import migrations
 
@@ -27,8 +27,7 @@ def _with_db(url: str, dbname: str) -> str:
 def scratch_db(pg_url):
     """A separate, empty database on the same server, dropped afterwards."""
     name = f"mig_{uuid.uuid4().hex[:10]}"
-    admin = psycopg2.connect(pg_url)
-    admin.autocommit = True
+    admin = psycopg.connect(pg_url, autocommit=True)
     admin.cursor().execute(f'CREATE DATABASE "{name}"')
     yield _with_db(pg_url, name)
     admin.cursor().execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
@@ -36,8 +35,7 @@ def scratch_db(pg_url):
 
 
 def _conn(url):
-    conn = psycopg2.connect(url, cursor_factory=RealDictCursor)
-    conn.autocommit = True
+    conn = psycopg.connect(url, row_factory=dict_row, autocommit=True)
     return conn
 
 

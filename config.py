@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     DB_POOL_MAX: int = Field(20, ge=1, le=500)
     DB_POOL_ACQUIRE_TIMEOUT: float = Field(10, gt=0)
+    DB_POOL_MIN: int = Field(2, ge=0)
+    DB_CONNECT_TIMEOUT: int = Field(10, ge=1)
+    # Server-side cap on one statement (REL-04); 0 disables it.
+    DB_STATEMENT_TIMEOUT_MS: int = Field(5000, ge=0)
     RUN_MIGRATIONS_ON_START: bool = False
 
     # ── Secrets (SEC-11) ──────────────────────────────────────────────────────
@@ -268,6 +272,9 @@ DATA_DIR = "data"
 DATABASE_URL = settings.DATABASE_URL
 DB_POOL_MAX = settings.DB_POOL_MAX
 DB_POOL_ACQUIRE_TIMEOUT = settings.DB_POOL_ACQUIRE_TIMEOUT
+DB_POOL_MIN = settings.DB_POOL_MIN
+DB_CONNECT_TIMEOUT = settings.DB_CONNECT_TIMEOUT
+DB_STATEMENT_TIMEOUT_MS = settings.DB_STATEMENT_TIMEOUT_MS
 
 # ── Crypto (encrypts users' BYO LLM keys before storage, utils/crypto.py) ────
 SECRET_KEY = settings.SECRET_KEY

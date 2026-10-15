@@ -12,7 +12,7 @@ langchain-core>=0.3.0
 langchain-groq>=0.2.0
 langchain-google-genai>=2.0.0
 langgraph-checkpoint-postgres>=2.0.0
-psycopg[binary,pool]>=3.1.0
+psycopg[binary,pool]>=3.1.0      # the one Postgres driver: app pool, checkpointer, Alembic (REL-04)
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 yfinance>=0.2.40
@@ -43,7 +43,6 @@ gradio>=6.16.0
 vaderSentiment>=3.3.2
 
 # ── Database ──────────────────────────────────────────────────────────────────
-psycopg2-binary>=2.9.9
 rapidfuzz>=3.6.0                 # instrument-name fuzzy matching (VAL-02)
 alembic>=1.13.0                  # versioned schema migrations (ARCH-01); pulls in SQLAlchemy
 

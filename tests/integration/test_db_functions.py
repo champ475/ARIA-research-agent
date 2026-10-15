@@ -293,7 +293,15 @@ COVERED = {
     "llm_config_ciphertexts": test_secret_key_rotation_rewraps_every_stored_key,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
-INFRASTRUCTURE = {"get_conn", "release_conn", "ensure_schema"}
+# Pool plumbing is exercised by every test and directly in test_db_pool.py.
+INFRASTRUCTURE = {
+    "get_conn",
+    "release_conn",
+    "ensure_schema",
+    "close_pool",
+    "connection_kwargs",
+    "pool_stats",
+}
 
 
 def test_every_public_db_function_has_an_integration_test():

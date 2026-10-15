@@ -24,8 +24,8 @@ def _no_real_database(request, monkeypatch):
     """Unit tests must never open a Postgres connection: locally .env's
     DATABASE_URL is the production database, and in CI there is none. Only
     tests under tests/integration/ (which point utils.db at a throwaway
-    database) may connect. psycopg2's pools connect via psycopg2.connect, so
-    this also covers utils.db.get_conn()."""
+    database) may connect. psycopg_pool opens connections through
+    psycopg.Connection.connect, so this also covers utils.db.get_conn()."""
     if "integration" in request.node.nodeid.split("::")[0].replace("\\", "/").split("/"):
         return
 
@@ -35,7 +35,13 @@ def _no_real_database(request, monkeypatch):
             "mock the utils.db call, or move the test to tests/integration/"
         )
 
-    monkeypatch.setattr("psycopg2.connect", _refuse)
+    monkeypatch.setattr("psycopg.connect", _refuse)
+    monkeypatch.setattr("psycopg.Connection.connect", _refuse)
+    # Fail fast at the pool too: a refused connect inside psycopg_pool's
+    # background worker would otherwise surface as a PoolTimeout only after
+    # DB_POOL_ACQUIRE_TIMEOUT seconds (code that swallows DB errors, like
+    # turn persistence, would make every such test that slow).
+    monkeypatch.setattr("utils.db._get_pool", _refuse)
 
 
 @pytest.fixture(autouse=True)

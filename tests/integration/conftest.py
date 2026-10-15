@@ -60,8 +60,7 @@ def pg_db(pg_url):
     migrations.upgrade(pg_url)
     migrations.setup_checkpointer_tables(pg_url)
     yield db
-    if db._pool is not None:
-        db._pool.closeall()
+    db.close_pool()
     db._pool = saved_pool
     mp.undo()
 

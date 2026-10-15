@@ -10,90 +10,138 @@ import json
 import logging
 import threading
 from datetime import UTC, date
+from typing import Any
 
-import psycopg2
-from psycopg2 import pool
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg import errors as pg_errors
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+from psycopg_pool import PoolTimeout as _PoolTimeout
 
-from config import DATABASE_URL, DB_POOL_ACQUIRE_TIMEOUT, DB_POOL_MAX
+from config import (
+    DATABASE_URL,
+    DB_CONNECT_TIMEOUT,
+    DB_POOL_ACQUIRE_TIMEOUT,
+    DB_POOL_MAX,
+    DB_POOL_MIN,
+    DB_STATEMENT_TIMEOUT_MS,
+)
 
 log = logging.getLogger(__name__)
 
-_pool: "pool.ThreadedConnectionPool | None" = None
+# REL-04: one Postgres driver (psycopg 3) and one waiting pool, sized by
+# DB_POOL_MAX. getconn() *waits* up to DB_POOL_ACQUIRE_TIMEOUT for a free
+# connection (psycopg2's pool raised PoolError immediately, which REL-01's
+# semaphore used to paper over), then raises PoolTimeout.
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
 
-# REL-01: psycopg2's ThreadedConnectionPool *raises* PoolError once maxconn
-# connections are checked out, instead of waiting. With concurrent chat turns
-# each fanning tools out in parallel, that turned a busy moment into failed
-# turns. A semaphore sized to the pool makes callers wait (up to
-# DB_POOL_ACQUIRE_TIMEOUT seconds) for a free connection instead.
-_pool_slots = threading.BoundedSemaphore(DB_POOL_MAX)
+# psycopg_pool's own timeout error — callers catch utils.db.PoolTimeout.
+PoolTimeout = _PoolTimeout
+
+# Driver exceptions callers catch, re-exported so nothing outside this module
+# needs to import the driver.
+OperationalError = psycopg.OperationalError
+InterfaceError = psycopg.InterfaceError
 
 
-class PoolTimeout(psycopg2.OperationalError):
-    """No pooled connection became free within DB_POOL_ACQUIRE_TIMEOUT."""
+def connection_kwargs() -> dict[str, Any]:
+    """Settings every app connection is opened with (REL-04).
+
+    - dict rows, like psycopg2's RealDictCursor;
+    - `statement_timeout` so a runaway query is cancelled server-side instead
+      of pinning a pooled connection (0 disables it, e.g. behind a pooler that
+      rejects startup options — then set it per role);
+    - prepared statements off (`prepare_threshold=None`): Neon's `-pooler`
+      endpoint is PgBouncer in transaction mode, where server-side prepared
+      statements break;
+    - an application name so `pg_stat_activity` shows who holds a connection.
+    """
+    kwargs: dict[str, Any] = {
+        "row_factory": dict_row,
+        "prepare_threshold": None,
+        "connect_timeout": DB_CONNECT_TIMEOUT,
+        "application_name": "aria",
+    }
+    if DB_STATEMENT_TIMEOUT_MS > 0:
+        kwargs["options"] = f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}"
+    return kwargs
 
 
-def _get_pool() -> "pool.ThreadedConnectionPool":
+def _get_pool() -> ConnectionPool:
     global _pool
     if _pool is None:
-        _pool = pool.ThreadedConnectionPool(
-            minconn=1, maxconn=DB_POOL_MAX, dsn=DATABASE_URL, cursor_factory=RealDictCursor
-        )
+        with _pool_lock:
+            if _pool is None:
+                _pool = ConnectionPool(
+                    DATABASE_URL,
+                    min_size=min(DB_POOL_MIN, DB_POOL_MAX),
+                    max_size=DB_POOL_MAX,
+                    timeout=DB_POOL_ACQUIRE_TIMEOUT,
+                    kwargs=connection_kwargs(),
+                    # Neon drops idle connections server-side; check each one
+                    # as it is handed out instead of failing the caller's query.
+                    check=ConnectionPool.check_connection,
+                    name="aria",
+                    open=True,
+                )
     return _pool
 
 
-def get_conn():
+def close_pool() -> None:
+    """Close every pooled connection (graceful shutdown, tests)."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.close()
+            _pool = None
+
+
+def pool_stats() -> dict[str, int]:
+    """Pool usage for metrics / readiness (OBS-03): size, in use, waiting."""
+    if _pool is None:
+        return {"pool_size": 0, "pool_available": 0, "requests_waiting": 0, "pool_max": DB_POOL_MAX}
+    st = _pool.get_stats()
+    return {
+        "pool_size": st.get("pool_size", 0),
+        "pool_available": st.get("pool_available", 0),
+        "requests_waiting": st.get("requests_waiting", 0),
+        "pool_max": DB_POOL_MAX,
+    }
+
+
+def get_conn() -> psycopg.Connection:
     """Returns a pooled connection, waiting for a free one if the pool is
-    fully checked out. Caller MUST release it via release_conn() (not
-    conn.close(), which would just drop the socket instead of returning it to
-    the pool, and would leak a pool slot)."""
-    if not _pool_slots.acquire(timeout=DB_POOL_ACQUIRE_TIMEOUT):
-        raise PoolTimeout(f"no database connection free within {DB_POOL_ACQUIRE_TIMEOUT:.0f}s")
-    try:
-        return _get_pool().getconn()
-    except BaseException:
-        _pool_slots.release()
-        raise
+    fully checked out (PoolTimeout after DB_POOL_ACQUIRE_TIMEOUT). Caller
+    MUST release it via release_conn()."""
+    return _get_pool().getconn(timeout=DB_POOL_ACQUIRE_TIMEOUT)
 
 
-def release_conn(conn, discard: bool = False):
+def release_conn(conn: psycopg.Connection, discard: bool = False) -> None:
     """Rolls back any uncommitted/aborted transaction before returning the
     connection to the pool — without this, a failed statement (e.g. a CHECK
     violation) leaves the connection stuck in an aborted-transaction state
     for whoever borrows it next.
 
-    `discard=True` closes the connection and drops it from the pool instead
-    of returning it — for a connection Neon has already killed server-side
-    (`OperationalError: server closed the connection unexpectedly`, common
-    on a serverless/autosuspend Postgres tier after a period of inactivity).
-    Putting a dead connection back would just hand the same failure to the
-    next caller."""
-    try:
-        if discard:
-            with contextlib.suppress(Exception):
-                conn.close()
-            _get_pool().putconn(conn, close=True)
-            return
-        if not conn.closed:
+    `discard=True` closes the connection first; the pool then drops it and
+    opens a replacement — for a connection Neon has already killed
+    server-side (`server closed the connection unexpectedly`)."""
+    if discard:
+        with contextlib.suppress(Exception):
+            conn.close()
+    elif not conn.closed:
+        with contextlib.suppress(Exception):
             conn.rollback()
-    finally:
-        try:
-            if not discard:
-                _get_pool().putconn(conn)
-        finally:
-            _pool_slots.release()
+    _get_pool().putconn(conn)
 
 
 def _query(sql: str, params: tuple | dict = (), fetch: str | None = "all", commit: bool = False):
     """fetch: 'all' | 'one' | None. Returns list[dict] | dict|None | None.
 
-    A pooled connection Neon has already dropped server-side (idle timeout on
-    the free/autosuspend tier) raises OperationalError/InterfaceError on
-    first use, not at checkout — the pool has no way to know it's dead until
-    something tries to use it. One retry on a fresh connection self-heals
-    that common case instead of surfacing it as a hard failure for whatever
-    the user happened to be doing (this is exactly what crashed a chat
-    turn's post-processing DB save mid-audit, leaving the input locked)."""
+    A pooled connection Neon has already dropped server-side can still fail
+    on first use despite the checkout check (the race is tiny but real). One
+    retry on a fresh connection self-heals that case instead of surfacing it
+    as a hard failure for whatever the user happened to be doing."""
     for attempt in range(2):
         conn = get_conn()
         try:
@@ -109,11 +157,15 @@ def _query(sql: str, params: tuple | dict = (), fetch: str | None = "all", commi
                 conn.commit()
             release_conn(conn)
             return result
-        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+        except pg_errors.QueryCanceled:
+            # statement_timeout fired: retrying would just time out again.
+            release_conn(conn)
+            raise
+        except (psycopg.OperationalError, psycopg.InterfaceError) as e:
             release_conn(conn, discard=True)
             if attempt == 1:
                 raise
-            log.warning(f"[db] stale pooled connection ({e}); retrying once with a fresh one")
+            log.warning("[db] stale pooled connection (%s); retrying once with a fresh one", type(e).__name__)
         except Exception:
             release_conn(conn)
             raise
@@ -423,7 +475,7 @@ def alert_add(
             fetch="one",
             commit=True,
         )
-    except psycopg2.errors.UniqueViolation as e:
+    except pg_errors.UniqueViolation as e:
         raise DuplicateAlert(_existing_alert_id(user_id, symbol, alert_type, threshold, direction)) from e
     if row is None:
         raise AlertLimitReached(f"you already have {MAX_ACTIVE_ALERTS} active alerts")
@@ -469,7 +521,7 @@ def alert_resume(user_id: int, alert_id: int):
             fetch=None,
             commit=True,
         )
-    except psycopg2.errors.UniqueViolation as e:
+    except pg_errors.UniqueViolation as e:
         raise DuplicateAlert(None) from e
 
 

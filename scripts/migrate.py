@@ -31,7 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="only report whether the schema is at head")
     args = parser.parse_args(argv)
 
-    import psycopg2
+    import psycopg
+    from psycopg.rows import dict_row
 
     from config import DATABASE_URL
     from utils import migrations
@@ -42,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.check:
-        conn = psycopg2.connect(url)
+        conn = psycopg.connect(url, row_factory=dict_row, connect_timeout=10)
         try:
             migrations.check_schema(conn)
         except migrations.SchemaOutOfDate as e:
