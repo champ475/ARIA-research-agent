@@ -33,7 +33,8 @@ def saver(pg_db, pg_url, monkeypatch):
     cp.close_checkpointer()
 
 
-def test_tampered_checkpoint_blob_is_rejected_on_resume(saver, pg_db):
+def test_tampered_checkpoint_blob_is_rejected_on_resume(saver, pg_db, monkeypatch):
+    monkeypatch.setattr("graph.nodes.query_analyzer.MAX_ENTITIES_PER_TURN", 10)  # 6 companies (VAL-03)
     from graph.graph import build_graph
     from tests.graph.test_graph import _StubClient
 

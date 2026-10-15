@@ -1,6 +1,7 @@
 import json
 from unittest.mock import patch
 
+import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -313,6 +314,12 @@ class TestHumanInTheLoopGates:
     """Covers Phase 6: ResearchConfirmation and VerificationGate actually
     pause the graph (via a real checkpointer) and resume correctly — both
     the approve and decline paths."""
+
+    @pytest.fixture(autouse=True)
+    def _allow_six_companies(self, monkeypatch):
+        # These use 6 companies to build a >5-task plan; VAL-03 would
+        # otherwise stop at its 5-company cap before the gate is reached.
+        monkeypatch.setattr("graph.nodes.query_analyzer.MAX_ENTITIES_PER_TURN", 10)
 
     def _build_with_many_tasks(self):
         qa = _StubClient(

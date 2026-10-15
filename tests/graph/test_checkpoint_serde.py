@@ -82,10 +82,11 @@ def _graph(checkpointer):
     )
 
 
-def test_full_fan_out_and_hitl_turn_round_trips_through_the_strict_serializer():
+def test_full_fan_out_and_hitl_turn_round_trips_through_the_strict_serializer(monkeypatch):
     """6 entities -> research_confirmation interrupt; approve -> fan-out of 6
     Send tasks -> completion. Every superstep is serialized with the strict
     serde (InMemorySaver stores serde.dumps_typed output)."""
+    monkeypatch.setattr("graph.nodes.query_analyzer.MAX_ENTITIES_PER_TURN", 10)  # 6 companies (VAL-03)
     saver = InMemorySaver(serde=make_serializer())
     graph = _graph(saver)
     config = {"configurable": {"thread_id": "sec09-fanout"}}
