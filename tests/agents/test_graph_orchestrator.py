@@ -12,7 +12,7 @@ def _build_orchestrator(fake_graph):
     process_stream() re-checks this every fresh turn, so it must survive
     past the `with` block construction happens in."""
     with (
-        patch("agents.graph_orchestrator.build_graph", return_value=fake_graph),
+        patch("agents.graph_orchestrator.shared_graph", return_value=fake_graph),
         patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None),
         patch.object(GraphOrchestrator, "_resolve_byo_config", return_value=None),
     ):

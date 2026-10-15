@@ -14,9 +14,19 @@ context isn't lost outright.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 
 log = logging.getLogger(__name__)
+
+# The UI's routing badge ("*🔀 Routed to: Equity*") is presentation, not
+# conversation: it must never be fed back to the model as history.
+_BADGE_RE = re.compile(r"^\s*\*🔀 Routed to:[^*\n]*\*\s*\n*")
+
+
+def strip_badge(text: str) -> str:
+    return _BADGE_RE.sub("", text or "", count=1)
+
 
 # The one summarisation prompt (ARCH-03): every provider's overflow summariser
 # and the orchestrator's history summary format it with old= and chunk=.

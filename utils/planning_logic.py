@@ -262,7 +262,8 @@ def build_strategy(client, profile: dict) -> str:
     from graph.grounding import REGENERATE_INSTRUCTION, check, record, unverified_note
 
     prompt = build_strategy_prompt(profile)
-    out = client.chat(prompt, temperature=0.4, max_tokens=TOKENS_COMPLEX)
+    # Stateless call: node clients are shared across conversations (REL-03).
+    out = client.ask(prompt, temperature=0.4, max_tokens=TOKENS_COMPLEX)
     result = check(out, prompt, mode="planning")
     if not result.ok:
         out = client.ask(

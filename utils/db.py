@@ -288,6 +288,26 @@ def session_list(user_id: int, tab: str, limit: int = 50) -> list[dict]:
     )
 
 
+def session_pending_get(user_id: int, session_id: int) -> str | None:
+    """The LangGraph thread this chat is paused on for a yes/no (VAL-10), if any."""
+    row = _query(
+        "SELECT pending_thread_id FROM chat_sessions WHERE id=%s AND user_id=%s",
+        (session_id, user_id),
+        fetch="one",
+    )
+    return row["pending_thread_id"] if row else None
+
+
+def session_pending_set(user_id: int, session_id: int, thread_id: str | None) -> None:
+    """Record (or clear, with None) the paused thread — only on the user's own session."""
+    _query(
+        "UPDATE chat_sessions SET pending_thread_id=%s WHERE id=%s AND user_id=%s",
+        (thread_id, session_id, user_id),
+        fetch=None,
+        commit=True,
+    )
+
+
 def session_touch(user_id: int, session_id: int, title: str | None = None):
     """Bumps (and optionally retitles) a session — only if `user_id` owns it
     (SEC-13: previously any session id could be touched)."""

@@ -9,6 +9,7 @@ import threading
 import time
 
 from agents.conversation_memory import SUMMARY_PROMPT, ConversationMemory
+from agents.providers.usage import ThreadLocalUsage
 from config import (
     GEMINI_API_KEY,
     GEMINI_MODEL,
@@ -234,7 +235,7 @@ def format_exhausted_message(exc: LLMProvidersExhausted) -> str:
 # ── Provider wrappers ─────────────────────────────────────────────────────────
 
 
-class _GroqProvider:
+class _GroqProvider(ThreadLocalUsage):
     name = "Groq"
 
     def __init__(self, system: str):
@@ -345,7 +346,7 @@ class _GroqProvider:
         self._memory.load(messages)
 
 
-class _GeminiProvider:
+class _GeminiProvider(ThreadLocalUsage):
     name = "Gemini"
 
     def __init__(self, system: str):

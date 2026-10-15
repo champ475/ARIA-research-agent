@@ -58,12 +58,12 @@ def test_lock_is_released_after_turn_and_after_cancel(app_module):
         patch.object(app_module, "_persist_turn"),
     ):
         list(app_module.respond_exclusive(102, "a", [], [], 1, "1M"))
-        assert not app_module._user_turn_lock(102).locked()
+        assert not app_module._user_turn_lock(102, 1).locked()
         gen = app_module.respond_exclusive(102, "b", [], [], 1, "1M")
         next(gen)  # loading frame — lock held
-        assert app_module._user_turn_lock(102).locked()
+        assert app_module._user_turn_lock(102, 1).locked()
         gen.close()  # client disconnected
-        assert not app_module._user_turn_lock(102).locked()
+        assert not app_module._user_turn_lock(102, 1).locked()
 
 
 def test_different_users_run_in_parallel(app_module):
@@ -94,18 +94,18 @@ def test_get_orchestrator_builds_one_instance_under_contention(app_module):
     built = []
 
     class _Slow:
-        def __init__(self, uid):
+        def __init__(self, uid, session_id=None):
             time.sleep(0.05)
             built.append(uid)
 
-    app_module._orchestrators.pop(303, None)
+    app_module._orchestrators.pop((303, None), None)
     with patch("agents.graph_orchestrator.GraphOrchestrator", _Slow):
         threads = [threading.Thread(target=app_module.get_orchestrator, args=(303,)) for _ in range(8)]
         for t in threads:
             t.start()
         for t in threads:
             t.join(5)
-    app_module._orchestrators.pop(303, None)
+    app_module._orchestrators.pop((303, None), None)
     assert built == [303]
 
 

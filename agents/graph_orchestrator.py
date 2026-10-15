@@ -61,13 +61,18 @@ way), and needs no cross-process counter coordination.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
+import threading
 import uuid
+from collections import OrderedDict
+from typing import Any
 
 from langgraph.types import Command
 
-from agents.conversation_memory import ConversationMemory
+from agents.conversation_memory import ConversationMemory, strip_badge
 from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT
 from graph.checkpointer import get_postgres_checkpointer
@@ -237,9 +242,45 @@ def _keyword_route(message: str) -> str:
     return best_tab if scores[best_tab] > 0 else "equity"
 
 
+# REL-03: one compiled graph per provider configuration, shared by every
+# conversation that uses it (all trial users share one). Node LLM clients are
+# stateless (`ask`), and per-call token usage is thread-local, so concurrent
+# turns on one graph don't interfere; each turn has its own thread_id.
+_GRAPH_CACHE_SIZE = 64
+_graphs: OrderedDict[str, Any] = OrderedDict()
+_graphs_lock = threading.Lock()
+
+
+def _config_fingerprint(provider_config: dict | None) -> str:
+    blob = json.dumps(provider_config or {}, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def shared_graph(provider_config: dict | None) -> Any:
+    key = _config_fingerprint(provider_config)
+    with _graphs_lock:
+        graph = _graphs.get(key)
+        if graph is not None:
+            _graphs.move_to_end(key)
+            return graph
+        graph = build_graph(checkpointer=get_postgres_checkpointer(), provider_config=provider_config)
+        _graphs[key] = graph
+        while len(_graphs) > _GRAPH_CACHE_SIZE:
+            _graphs.popitem(last=False)
+        return graph
+
+
+def clear_graph_cache() -> None:
+    with _graphs_lock:
+        _graphs.clear()
+
+
 class GraphOrchestrator:
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, session_id: int | None = None):
         self._user_id = user_id
+        # VAL-10: state belongs to one chat session, not to the user — two
+        # tabs on two chats never share memory or a pending confirmation.
+        self._session_id = session_id
         self._turn = 0
         self._thread_id = self._new_thread_id()
         # BYO key resolved once per session (not re-checked every message) —
@@ -249,9 +290,7 @@ class GraphOrchestrator:
         # existed, rather than rebuilding it (and re-binding every node's
         # LLMClient) on every single turn for a value that rarely changes.
         self._provider_config = self._resolve_byo_config()
-        self._graph = build_graph(
-            checkpointer=get_postgres_checkpointer(), provider_config=self._provider_config
-        )
+        self._graph = shared_graph(self._provider_config)
         self._awaiting_confirmation = False
         # Cross-turn conversation memory the graph itself has none of (each
         # turn mints a fresh thread_id — see module docstring). Owned here,
@@ -260,6 +299,38 @@ class GraphOrchestrator:
         # cap + overflow-summarization behavior every specialist agent's own
         # LLMClient used to give via this exact class.
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize_history)
+        if session_id is not None:
+            self._restore_session()
+
+    def _restore_session(self) -> None:
+        """REL-03/VAL-10: an orchestrator rebuilt after eviction, a restart or
+        on another replica picks the chat up where it was — transcript from
+        chat_history, and a pending confirmation from the session row (the
+        paused graph state itself is in the Postgres checkpointer)."""
+        from utils.db import chat_load, session_pending_get
+
+        try:
+            rows = chat_load(self._user_id, self._session_id)
+            if rows:
+                self._memory.load([{"role": m["role"], "content": strip_badge(m["content"])} for m in rows])
+            pending = session_pending_get(self._user_id, self._session_id)
+        except Exception:
+            log.warning("[GraphOrchestrator] could not restore session state", exc_info=True)
+            return
+        if pending:
+            self._thread_id = pending
+            self._awaiting_confirmation = True
+
+    def _set_pending(self, thread_id: str | None) -> None:
+        """Persist (or clear) the paused thread on the session row."""
+        if self._session_id is None:
+            return
+        from utils.db import session_pending_set
+
+        try:
+            session_pending_set(self._user_id, self._session_id, thread_id)
+        except Exception:
+            log.warning("[GraphOrchestrator] could not save the pending confirmation", exc_info=True)
 
     def _new_thread_id(self) -> str:
         return f"user-{self._user_id}-{uuid.uuid4().hex[:16]}"
@@ -398,6 +469,7 @@ class GraphOrchestrator:
                 if kind == "new_question":
                     log.info("[orchestrator] new question while a confirmation was pending; cancelling it")
                     self._awaiting_confirmation = False
+                    self._set_pending(None)
             if self._awaiting_confirmation:
                 # Must resume on the SAME thread the interrupt paused on — the
                 # config resolved for the turn that raised this interrupt is
@@ -451,12 +523,15 @@ class GraphOrchestrator:
             if result.get("__interrupt__"):
                 rec.status = "gated"
                 self._awaiting_confirmation = True
+                self._set_pending(self._thread_id)
                 prompt = result["__interrupt__"][0].value.get("message", "Proceed?")
                 reply = f"{prompt} (reply yes/no, or use the buttons)"
                 self._memory.add_assistant(reply)
                 yield reply, None, None, None, None, "equity"
                 return
 
+            if self._awaiting_confirmation:
+                self._set_pending(None)
             self._awaiting_confirmation = False
             chart = result.get("chart_html")
             pdf_path = result.get("pdf_path")
@@ -559,6 +634,8 @@ class GraphOrchestrator:
         return ["Analyse a stock", "Compare mutual funds", "Top gainers today", "Set a price alert"]
 
     def reset(self):
+        if self._awaiting_confirmation:
+            self._set_pending(None)
         self._awaiting_confirmation = False
         self._turn = 0
         self._thread_id = self._new_thread_id()

@@ -162,6 +162,18 @@ def test_data_export_rows(db, two_users):
     assert db.user_account_row(b)["id"] == b
 
 
+def test_session_pending(db, two_users):
+    """VAL-10: a paused confirmation is readable and clearable only by its owner."""
+    a, b = two_users
+    sid = db.session_create(a, "chat", title="A")
+    db.session_pending_set(a, sid, "user-a-thread")
+    assert db.session_pending_get(b, sid) is None
+    db.session_pending_set(b, sid, None)  # B can't clear A's pending step
+    assert db.session_pending_get(a, sid) == "user-a-thread"
+    db.session_pending_set(a, sid, None)
+    assert db.session_pending_get(a, sid) is None
+
+
 def test_trial_quota(db, two_users):
     a, b = two_users
     today = date(2026, 10, 14)
@@ -215,6 +227,8 @@ COVERED = {
     "session_create": test_sessions_and_chat_history,
     "session_list": test_sessions_and_chat_history,
     "session_touch": test_sessions_and_chat_history,
+    "session_pending_get": test_session_pending,
+    "session_pending_set": test_session_pending,
     "session_delete": test_sessions_and_chat_history,
     "chat_save": test_sessions_and_chat_history,
     "chat_load": test_sessions_and_chat_history,

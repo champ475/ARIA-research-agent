@@ -116,3 +116,14 @@ def _not_draining():
     lifecycle.reset()
     yield
     lifecycle.reset()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_graph_cache():
+    """Compiled graphs are cached per provider config (REL-03); a test that
+    patches build_graph must not get another test's cached graph."""
+    from agents.graph_orchestrator import clear_graph_cache
+
+    clear_graph_cache()
+    yield
+    clear_graph_cache()

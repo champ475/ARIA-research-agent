@@ -87,3 +87,14 @@ def test_revision_chain_is_linear():
     script = ScriptDirectory.from_config(migrations._alembic_config())
     assert len(script.get_heads()) == 1
     assert list(script.walk_revisions())[-1].down_revision is None  # exactly one baseline
+
+
+def test_revision_ids_fit_alembic_version_column():
+    """alembic_version.version_num is VARCHAR(32); a longer id fails at upgrade time."""
+    import re
+    from pathlib import Path
+
+    versions = Path(__file__).resolve().parents[1] / "migrations" / "versions"
+    for path in versions.glob("*.py"):
+        m = re.search(r'^revision = "([^"]+)"', path.read_text(encoding="utf-8"), re.M)
+        assert m and len(m.group(1)) <= 32, path.name

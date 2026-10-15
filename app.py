@@ -9,6 +9,7 @@ import threading
 import time
 
 import gradio as gr
+from cachetools import TTLCache
 
 from utils.logging_setup import configure_logging, run_in_turn
 
@@ -61,19 +62,40 @@ LOADING_HTML = '<span class="aria-dot"></span><span class="aria-dot"></span><spa
 # orchestration path now (the legacy keyword-routed Orchestrator + its 6
 # specialist agent classes were retired once the graph reached feature parity
 # across all 6 domains — see ARCHITECTURE.md).
-_orchestrators = {}
+#
+# REL-03: a bounded cache (at most ORCHESTRATOR_CACHE_SIZE, evicted after
+# ORCHESTRATOR_IDLE_SECONDS idle). An evicted conversation loses nothing: the
+# next turn rebuilds its memory from chat_history and any pending
+# confirmation from the session row. VAL-10: keyed by (user, chat session),
+# so two tabs on two chats never share memory or a pending yes/no.
+ORCHESTRATOR_CACHE_SIZE = 500
+ORCHESTRATOR_IDLE_SECONDS = 1800
+_orchestrators: TTLCache = TTLCache(maxsize=ORCHESTRATOR_CACHE_SIZE, ttl=ORCHESTRATOR_IDLE_SECONDS)
 _orchestrators_lock = threading.Lock()
 
 
-def get_orchestrator(user_id: int):
+def get_orchestrator(user_id: int, session_id: int | None = None):
     # Concurrent turns (REL-01) mean two threads can race to build the same
-    # user's orchestrator; the lock keeps it to exactly one instance.
+    # conversation's orchestrator; the lock keeps it to exactly one instance.
+    key = (user_id, session_id)
     with _orchestrators_lock:
-        if user_id not in _orchestrators:
+        orch = _orchestrators.get(key)
+        if orch is None:
             from agents.graph_orchestrator import GraphOrchestrator
 
-            _orchestrators[user_id] = GraphOrchestrator(user_id)
-        return _orchestrators[user_id]
+            orch = GraphOrchestrator(user_id, session_id)
+            _orchestrators[key] = orch
+        else:
+            _orchestrators[key] = orch  # refresh the idle timer
+        return orch
+
+
+def evict_user(user_id: int) -> None:
+    """Drop every cached conversation of a user (e.g. after a BYO key change,
+    so the next turn picks up the new provider)."""
+    with _orchestrators_lock:
+        for key in [k for k in list(_orchestrators.keys()) if k[0] == user_id]:
+            _orchestrators.pop(key, None)
 
 
 # ── Concurrency (REL-01) ──────────────────────────────────────────────────────
@@ -85,13 +107,19 @@ def get_orchestrator(user_id: int):
 # threads at once — a second tab's message gets a "still working" reply.
 WATCHLIST_CONCURRENCY = 4
 
-_user_turn_locks: dict[int, threading.Lock] = {}
+# One turn in flight per conversation (VAL-10); bounded like the cache above.
+_user_turn_locks: TTLCache = TTLCache(maxsize=ORCHESTRATOR_CACHE_SIZE * 2, ttl=ORCHESTRATOR_IDLE_SECONDS)
 _user_turn_locks_guard = threading.Lock()
 
 
-def _user_turn_lock(user_id) -> threading.Lock:
+def _user_turn_lock(user_id, session_id=None) -> threading.Lock:
     with _user_turn_locks_guard:
-        return _user_turn_locks.setdefault(user_id, threading.Lock())
+        key = (user_id, session_id)
+        lock = _user_turn_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+        _user_turn_locks[key] = lock
+        return lock
 
 
 def _queue_kwargs() -> dict:
@@ -227,7 +255,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     # process_stream() call below re-attempts orchestrator construction and
     # surfaces the same failure as a proper "API Key Required" message.
     try:
-        if get_orchestrator(user_id).classify(clean) == "equity":
+        if get_orchestrator(user_id, session_id).classify(clean) == "equity":
             kw = _TF_KEYWORDS.get(tf, "")
             if kw and kw not in clean.lower():
                 clean = clean + " " + kw
@@ -257,7 +285,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     csv_update = no_file
     text = ""
     try:
-        orch = get_orchestrator(user_id)
+        orch = get_orchestrator(user_id, session_id)
         tab_used = "equity"
         # Equity Q&A streams token-by-token (see EquityAgent.process_stream);
         # every other specialist yields exactly once with its finished
@@ -350,7 +378,7 @@ def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
         log.info("[respond] rejected: per-user turn rate limit")
         yield _busy_outputs(message, history, suggestions, text=_RATE_LIMITED_TEXT)
         return
-    lock = _user_turn_lock(user_id)
+    lock = _user_turn_lock(user_id, session_id)
     if not lock.acquire(blocking=False):
         log.info("[respond] rejected: user already has a turn in flight")
         yield _busy_outputs(message, history, suggestions)
@@ -413,8 +441,7 @@ def _persist_turn(user_id: int, session_id: int, user_msg: str, assistant_msg: s
 
 
 def clear_chat(user_id: int):
-    if user_id in _orchestrators:
-        _orchestrators[user_id].reset()
+    # "Clear" starts a new chat; the old one stays saved with its own state.
     return ([], gr.update(value=None, visible=False), CHAT_DEFAULTS) + _make_btn_updates(CHAT_DEFAULTS)
 
 
@@ -470,14 +497,15 @@ def _build_chat_sidebar(
         return tuple(core + extras)
 
     def _new_chat(user_id):
-        if user_id:
-            get_orchestrator(user_id).reset()
+        # A new chat gets its own session (and orchestrator) on its first message.
         return _blank_update()
 
     def _load_session(user_id, sid):
         msgs = chat_load(user_id, sid)
         hist = [{"role": m["role"], "content": m["content"]} for m in msgs]
-        get_orchestrator(user_id).load_history(hist)
+        # The session's orchestrator restores its own memory (and any pending
+        # confirmation) from the database (REL-03/VAL-10).
+        get_orchestrator(user_id, sid)
         core = [sid, hist, gr.update(value=None, visible=False), CHAT_DEFAULTS] + list(
             _make_btn_updates(CHAT_DEFAULTS)
         )
@@ -972,24 +1000,24 @@ def _build_chat_tab(user_state: gr.State):
 
     # Both triggers share one "chat" worker pool (REL-01): the limit is on
     # concurrent chat turns server-wide, not per button.
-    def _confirm_visible(user_id, request: gr.Request):
-        """Show Yes/No while this user's graph is paused for confirmation."""
+    def _confirm_visible(user_id, session_id, request: gr.Request):
+        """Show Yes/No while this chat's graph is paused for confirmation."""
         user_id = _request_user(request) or user_id
-        orch = _orchestrators.get(user_id) if user_id else None
+        orch = _orchestrators.get((user_id, session_id)) if user_id else None
         return gr.update(visible=bool(orch and getattr(orch, "_awaiting_confirmation", False)))
 
     chat_kwargs = {"show_progress": "hidden", "concurrency_id": "chat", "concurrency_limit": CHAT_CONCURRENCY}
     msg_box.submit(_respond, chat_inputs, outputs, **chat_kwargs).then(
-        _confirm_visible, [user_state], [confirm_row]
+        _confirm_visible, [user_state, session_state], [confirm_row]
     )
     send_btn.click(_respond, chat_inputs, outputs, **chat_kwargs).then(
-        _confirm_visible, [user_state], [confirm_row]
+        _confirm_visible, [user_state, session_state], [confirm_row]
     )
     for btn, answer in ((yes_btn, "yes"), (no_btn, "no")):
         # A click is the typed answer: fill the box, run the same turn path.
         btn.click(lambda a=answer: a, None, [msg_box]).then(
             _respond, chat_inputs, outputs, **chat_kwargs
-        ).then(_confirm_visible, [user_state], [confirm_row])
+        ).then(_confirm_visible, [user_state, session_state], [confirm_row])
     clear_btn.click(
         _clear,
         [user_state],
@@ -1267,7 +1295,7 @@ def _build_settings_tab(user_state: gr.State):
         # (agents/graph_orchestrator.py), so a stale cached instance would
         # otherwise keep using whatever was configured (or the trial path)
         # when it was first built.
-        _orchestrators.pop(user_id, None)
+        evict_user(user_id)
         return (
             _settings_status_md(user_id),
             model,
@@ -1324,7 +1352,7 @@ def _build_settings_tab(user_state: gr.State):
         from utils.audit import audit
 
         audit("settings.llm_key_cleared", actor_user_id=user_id)
-        _orchestrators.pop(user_id, None)
+        evict_user(user_id)
         return _settings_status_md(user_id), "", "", ""
 
     save_btn.click(

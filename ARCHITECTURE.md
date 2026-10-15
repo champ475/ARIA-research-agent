@@ -16,6 +16,31 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Per-conversation state in a bounded cache, rebuilt from Postgres (REL-03, VAL-10)
+**Problem.**
+- One `GraphOrchestrator` was built per user who had ever chatted, each with its own compiled graph and LLM clients, and kept forever, so memory grew with total users.
+- It was keyed by user, so two tabs shared conversation memory and a pending confirmation: a "yes" typed in one tab resumed the other tab's plan.
+- A restart forgot every pending confirmation.
+
+**Alternatives considered.**
+- *Keep one orchestrator per user and lock it.* Rejected: two chats would still share memory.
+- *Store conversation memory only in Postgres and keep no cache.* That works, but every turn would re-read and re-summarise history, which is slower and costs LLM calls for summaries.
+- *Build a graph per conversation.* Rejected: it multiplies compile cost and memory by conversations, not by provider configurations.
+
+**Final decision.**
+- A bounded TTL cache of orchestrators keyed by `(user, chat session)`.
+- Each orchestrator rebuilds itself from the database on a miss: transcript from `chat_history`, pending thread from `chat_sessions.pending_thread_id`, and graph state from the Postgres checkpointer.
+- Compiled graphs are shared per provider-config fingerprint. Node LLM calls are stateless, and per-call usage is thread-local, to make that safe.
+
+**Trade-offs.**
+- History rebuilt after eviction starts as raw messages: an earlier rolling summary is not persisted.
+- A BYO-config graph stays in the LRU until evicted, holding the decrypted key in memory. The same was true before.
+- State is now stateless across replicas except the 30 s session cache (SEC-04).
+
+**Future improvements.**
+- Persist the rolling summary.
+- ARCH-04: in-memory checkpoints except for interrupted turns.
+
 ## 2026-10-15 — Versioned consent with re-acceptance gate (COMP-02)
 **Problem.** Consent was a bare timestamp. After the terms changed, nobody could say who had agreed to which text, and "continued use = acceptance" is weak consent under DPDP.
 

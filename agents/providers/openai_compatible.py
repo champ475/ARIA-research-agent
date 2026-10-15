@@ -15,12 +15,13 @@ difference.
 from __future__ import annotations
 
 from agents.conversation_memory import SUMMARY_PROMPT, ConversationMemory
+from agents.providers.usage import ThreadLocalUsage
 from config import LLM_STREAM_TIMEOUT_SECONDS, LLM_TIMEOUT_SECONDS, TOKENS_FAST
 from utils.errors import ConfigurationError
 from utils.tracing import usage_from_response
 
 
-class OpenAICompatibleProvider:
+class OpenAICompatibleProvider(ThreadLocalUsage):
     # REL-02 per-request timeouts; LocalLLMProvider overrides both (CPU model).
     _request_timeout: float = LLM_TIMEOUT_SECONDS
     _stream_timeout: float = LLM_STREAM_TIMEOUT_SECONDS
