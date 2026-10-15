@@ -18,6 +18,7 @@ from tests.integration import (
     test_brute_force,
     test_consent,
     test_data_export,
+    test_rate_limits,
     test_sessions,
 )
 from tests.integration.test_tenant_isolation import COVERED as ISOLATION_COVERED
@@ -313,6 +314,7 @@ COVERED = {
     "auth_tokens_purge_expired": test_brute_force.test_housekeeping_keeps_auth_attempts_bounded,
     "terms_version_get": test_consent.test_legal_md_version_is_published,
     "user_scoped_tables": test_data_export.test_export_contains_every_user_table_and_only_the_users_rows,
+    "rate_limit_take": test_rate_limits.test_rate_limit_is_exact_under_a_burst,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.

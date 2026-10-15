@@ -1029,6 +1029,29 @@ def auth_attempt_clear(key: str) -> None:
     _query("DELETE FROM auth_attempts WHERE key=%s", (key,), fetch=None, commit=True)
 
 
+def rate_limit_take(key: str, limit: int, window_seconds: float) -> bool:
+    """Atomically record one event for `key` if fewer than `limit` happened in
+    the last `window_seconds` (SEC-12). True if allowed. One statement, so
+    every replica shares the same budget. A transaction-scoped advisory lock
+    on the key serialises concurrent takes, so a burst can't overshoot."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (key,))
+        cur.execute(
+            "INSERT INTO auth_attempts (key) SELECT %s "
+            "WHERE (SELECT count(*) FROM auth_attempts WHERE key=%s "
+            "       AND attempted_at > now() - make_interval(secs => %s)) < %s "
+            "RETURNING id",
+            (key, key, window_seconds, limit),
+        )
+        allowed = cur.fetchone() is not None
+        conn.commit()
+        return allowed
+    finally:
+        release_conn(conn)
+
+
 def auth_attempt_last(key: str):
     """When `key` last made an attempt (None if never / purged)."""
     row = _query("SELECT max(attempted_at) AS last FROM auth_attempts WHERE key=%s", (key,), fetch="one")

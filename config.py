@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     CHAT_CONCURRENCY: int = Field(8, ge=1, le=256)
     QUEUE_MAX_SIZE: int = Field(100, ge=1)
     TRIAL_DAILY_LIMIT: int = Field(5, ge=0)
+    # SEC-12: chat turns one user may start per minute (everyone, BYO or trial).
+    TURNS_PER_MINUTE: int = Field(10, ge=1)
     BYO_ALLOW_PRIVATE_HOSTS: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     HOST: str = "0.0.0.0"  # noqa: S104  # nosec B104 - container entrypoint; host/proxy controls exposure
@@ -319,6 +321,7 @@ TRUSTED_PROXIES = [p.strip() for p in settings.TRUSTED_PROXIES.split(",") if p.s
 TURNSTILE_SITE_KEY = settings.TURNSTILE_SITE_KEY
 TURNSTILE_SECRET = settings.TURNSTILE_SECRET
 TRIAL_DAILY_LIMIT = settings.TRIAL_DAILY_LIMIT  # free messages/day on the operator's keys
+TURNS_PER_MINUTE = settings.TURNS_PER_MINUTE
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 NSE_SUFFIX = ".NS"

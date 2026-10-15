@@ -15,7 +15,14 @@ from utils.logging_setup import configure_logging, run_in_turn
 # Before anything else logs: JSON lines with turn ids + secret redaction (OBS-01).
 configure_logging()
 
-from config import CHAT_CONCURRENCY, MAX_CHAT_CHARS, QUEUE_MAX_SIZE, TRIAL_DAILY_LIMIT, check_boot
+from config import (
+    CHAT_CONCURRENCY,
+    MAX_CHAT_CHARS,
+    QUEUE_MAX_SIZE,
+    TRIAL_DAILY_LIMIT,
+    TURNS_PER_MINUTE,
+    check_boot,
+)
 from utils import lifecycle
 from utils.db import ensure_schema
 from utils.errors import AriaError, ConfigurationError, UserInputError, error_id_from_turn, render_error
@@ -339,6 +346,10 @@ def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
         log.info("[respond] rejected: server draining for shutdown")
         yield _busy_outputs(message, history, suggestions, text=_DRAINING_TEXT)
         return
+    if not _turn_allowed(user_id):
+        log.info("[respond] rejected: per-user turn rate limit")
+        yield _busy_outputs(message, history, suggestions, text=_RATE_LIMITED_TEXT)
+        return
     lock = _user_turn_lock(user_id)
     if not lock.acquire(blocking=False):
         log.info("[respond] rejected: user already has a turn in flight")
@@ -357,6 +368,25 @@ def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
 
 _BUSY_TEXT = "⏳ Still working on your previous question — send this again once that answer arrives."
 _DRAINING_TEXT = "🔄 ARIA is restarting for an update. Please send this again in a minute."
+_RATE_LIMITED_TEXT = (
+    f"🐢 You're sending messages faster than ARIA can answer them (limit: {TURNS_PER_MINUTE} a minute). "
+    "Please wait a moment and send this again."
+)
+
+
+def _turn_allowed(user_id) -> bool:
+    """SEC-12: at most TURNS_PER_MINUTE turns per user per minute, counted in
+    Postgres so every replica shares the budget. Fails open if the database
+    is unreachable (the turn itself would then fail with a clear error)."""
+    if not user_id:
+        return True
+    from utils.db import rate_limit_take
+
+    try:
+        return rate_limit_take(f"turn:{user_id}", TURNS_PER_MINUTE, 60)
+    except Exception:
+        log.warning("[respond] rate-limit check failed; allowing the turn", exc_info=True)
+        return True
 
 
 def _busy_outputs(message, history: list, suggestions: list, text: str = _BUSY_TEXT) -> tuple:
