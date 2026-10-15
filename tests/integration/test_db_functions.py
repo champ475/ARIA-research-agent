@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from tests.integration import test_account_lifecycle, test_audit, test_sessions
+from tests.integration import test_account_lifecycle, test_audit, test_brute_force, test_sessions
 from tests.integration.test_tenant_isolation import COVERED as ISOLATION_COVERED
 
 pytestmark = pytest.mark.integration
@@ -301,6 +301,9 @@ COVERED = {
     "audit_log_for": test_audit.test_alert_and_screener_writes_are_audited,
     "user_by_email": test_account_lifecycle.test_forgot_password_answers_the_same_for_unknown_addresses,
     "auth_token_consume": test_account_lifecycle.test_reset_with_expired_reused_and_wrong_tokens,
+    "auth_attempt_last": test_brute_force.test_per_account_backoff_after_many_failures,
+    "auth_attempts_purge": test_brute_force.test_housekeeping_keeps_auth_attempts_bounded,
+    "auth_tokens_purge_expired": test_brute_force.test_housekeeping_keeps_auth_attempts_bounded,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.

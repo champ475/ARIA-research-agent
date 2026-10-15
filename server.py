@@ -121,6 +121,9 @@ def serve() -> None:
             lifecycle.begin_drain()
             super().handle_exit(sig, frame)
 
+    from utils.maintenance import start_housekeeping_thread
+
+    start_housekeeping_thread()
     cfg = uvicorn.Config(
         create_app(),
         host=config.HOST,

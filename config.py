@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     SMTP_STARTTLS: bool = True
     # Block the app until the email address is verified; unset = on except dev/test.
     REQUIRE_EMAIL_VERIFICATION: bool | None = None
+    # SEC-05: proxies whose X-Forwarded-For is trusted (comma-separated IPs/CIDRs).
+    TRUSTED_PROXIES: str = ""
+    # Optional Cloudflare Turnstile CAPTCHA after repeated failures (SEC-05).
+    TURNSTILE_SITE_KEY: str = ""
+    TURNSTILE_SECRET: str = ""
 
     # ── Tracing (OBS-02) ──────────────────────────────────────────────────────
     ARIA_TRACING: str = ""
@@ -310,6 +315,9 @@ SMTP_PASSWORD = settings.SMTP_PASSWORD
 SMTP_FROM = settings.SMTP_FROM
 SMTP_STARTTLS = settings.SMTP_STARTTLS
 REQUIRE_EMAIL_VERIFICATION = settings.require_email_verification
+TRUSTED_PROXIES = [p.strip() for p in settings.TRUSTED_PROXIES.split(",") if p.strip()]
+TURNSTILE_SITE_KEY = settings.TURNSTILE_SITE_KEY
+TURNSTILE_SECRET = settings.TURNSTILE_SECRET
 TRIAL_DAILY_LIMIT = settings.TRIAL_DAILY_LIMIT  # free messages/day on the operator's keys
 
 # ── Data ──────────────────────────────────────────────────────────────────────

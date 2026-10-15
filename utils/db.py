@@ -981,6 +981,34 @@ def auth_attempt_clear(key: str) -> None:
     _query("DELETE FROM auth_attempts WHERE key=%s", (key,), fetch=None, commit=True)
 
 
+def auth_attempt_last(key: str):
+    """When `key` last made an attempt (None if never / purged)."""
+    row = _query("SELECT max(attempted_at) AS last FROM auth_attempts WHERE key=%s", (key,), fetch="one")
+    return row["last"] if row else None
+
+
+def auth_attempts_purge(older_than) -> int:
+    """Housekeeping (SEC-05): drop attempt rows older than `older_than`, so the
+    table stays bounded. Returns rows deleted."""
+    rows = _query(
+        "DELETE FROM auth_attempts WHERE attempted_at < %s RETURNING id",
+        (older_than,),
+        fetch="all",
+        commit=True,
+    )
+    return len(rows or [])
+
+
+def auth_tokens_purge_expired() -> int:
+    """Housekeeping: drop verification/reset tokens a day after they expired."""
+    rows = _query(
+        "DELETE FROM auth_tokens WHERE expires_at < now() - interval '1 day' RETURNING id",
+        fetch="all",
+        commit=True,
+    )
+    return len(rows or [])
+
+
 # ── Report content helper (regenerate-on-demand downloads, see app.py) ───────
 
 

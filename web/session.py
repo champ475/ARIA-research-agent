@@ -78,6 +78,34 @@ def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(COOKIE_NAME, path="/", httponly=True, secure=config.COOKIE_SECURE, samesite="lax")
 
 
+def _trusted(addr: str) -> bool:
+    import ipaddress
+
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    for entry in config.TRUSTED_PROXIES:
+        try:
+            if ip in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def client_ip(request: Request) -> str | None:
-    """The connecting client's address (SEC-05 extends this for trusted proxies)."""
-    return request.client.host if request.client else None
+    """The real client address for rate limits and the audit log (SEC-05).
+
+    X-Forwarded-For is honoured only when the direct peer is a configured
+    TRUSTED_PROXIES entry; otherwise anyone could pick their own IP per
+    request and dodge the per-IP limit. Walks the chain from the right and
+    returns the first address that isn't one of our proxies."""
+    peer = request.client.host if request.client else None
+    if not peer or not _trusted(peer):
+        return peer
+    chain = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    for addr in reversed(chain):
+        if not _trusted(addr):
+            return addr
+    return peer

@@ -43,15 +43,15 @@ def _form(client, page, **data):
 
 def test_auth_events_are_audited(client, db):
     _form(client, "/signup", email="carol@example.com", password="long-password-1", agree="yes")
-    client.post("/auth/logout", follow_redirects=False)
     _form(client, "/login", email="carol@example.com", password="wrong-password")
     _form(client, "/login", email="carol@example.com", password="long-password-1")
+    client.post("/auth/logout", follow_redirects=False)
     assert _actions(db) == [
         "auth.signup",
         "auth.terms_accepted",
-        "auth.logout",
         "auth.login_failed",
         "auth.login",
+        "auth.logout",
     ]
     failed = db._query("SELECT * FROM audit_log WHERE action='auth.login_failed'", fetch="one")
     assert failed["actor_user_id"] is None and failed["target"].startswith("email-sha256:")

@@ -48,14 +48,68 @@ _last_touch: TTLCache[str, float] = TTLCache(maxsize=10_000, ttl=_TOUCH_INTERVAL
 _cache_lock = threading.Lock()
 
 
-def _check_rate_limit(email: str):
-    """Raises AuthError if `email` has hit the attempt cap within the window.
+# SEC-05: a second limit keyed on the client IP, so credential stuffing across
+# many emails from one address is bounded too (the per-email limit alone let
+# one IP try every address in a leaked list).
+_IP_WINDOW_S = 5 * 60
+_IP_MAX_ATTEMPTS = 20
+# After this many failed logins for one account within a day, each further
+# attempt must wait exponentially longer (1, 2, 4 ... capped at 60 minutes).
+_BACKOFF_AFTER = 5
+_BACKOFF_CAP_S = 3600
+# Failures from one IP within an hour after which a CAPTCHA is required
+# (only when TURNSTILE_SECRET is configured).
+CAPTCHA_AFTER_FAILURES = 3
+
+_TOO_MANY = "Too many attempts. Please wait a few minutes and try again."
+
+
+def _check_rate_limit(key: str):
+    """Raises AuthError if `key` has hit the attempt cap within the window.
     Call BEFORE the main DB work so a flood doesn't also hammer the rest of
     signup/login."""
     since = datetime.now(UTC) - timedelta(seconds=_RATE_LIMIT_WINDOW_S)
-    if auth_attempt_count(email, since) >= _RATE_LIMIT_MAX_ATTEMPTS:
-        raise AuthError("Too many attempts. Please wait a few minutes and try again.")
-    auth_attempt_record(email)
+    if auth_attempt_count(key, since) >= _RATE_LIMIT_MAX_ATTEMPTS:
+        raise AuthError(_TOO_MANY)
+    auth_attempt_record(key)
+
+
+def _check_ip_limit(ip: str | None) -> None:
+    if not ip:
+        return
+    key = f"ip:{ip}"
+    since = datetime.now(UTC) - timedelta(seconds=_IP_WINDOW_S)
+    if auth_attempt_count(key, since) >= _IP_MAX_ATTEMPTS:
+        raise AuthError(_TOO_MANY)
+    auth_attempt_record(key)
+
+
+def _backoff_seconds(failures: int) -> int:
+    if failures < _BACKOFF_AFTER:
+        return 0
+    return int(min(60 * 2 ** (failures - _BACKOFF_AFTER), _BACKOFF_CAP_S))
+
+
+def _check_backoff(key: str) -> None:
+    """Exponential per-account backoff over the last day of failures."""
+    failures = auth_attempt_count(key, datetime.now(UTC) - timedelta(days=1))
+    wait = _backoff_seconds(failures)
+    if wait:
+        last = db.auth_attempt_last(key)
+        if last is not None and (datetime.now(UTC) - last).total_seconds() < wait:
+            raise AuthError(_TOO_MANY)
+
+
+def captcha_required(ip: str | None) -> bool:
+    """True once this IP has failed CAPTCHA_AFTER_FAILURES logins in the last
+    hour (and a CAPTCHA provider is configured)."""
+    import config
+
+    if not (config.TURNSTILE_SECRET and ip):
+        return False
+    return (
+        auth_attempt_count(f"ipfail:{ip}", datetime.now(UTC) - timedelta(hours=1)) >= CAPTCHA_AFTER_FAILURES
+    )
 
 
 def _clear_rate_limit(email: str):
@@ -86,37 +140,52 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def signup(email: str, password: str) -> int:
-    """Create a new user. Returns the new user_id. Raises AuthError on bad input."""
+def signup(email: str, password: str, ip: str | None = None) -> int | None:
+    """Create a new user and return its id — or None if the email already has
+    an account. Callers must answer both cases identically (SEC-05: no
+    account enumeration); the existing owner is emailed instead. Raises
+    AuthError on bad input or rate limits."""
     email = email.strip().lower()
     if not _EMAIL_RE.match(email):
         raise AuthError("Enter a valid email address.")
     check_new_password(password)
+    _check_ip_limit(ip)
     _check_rate_limit(f"signup:{email}")
 
+    # Hash before looking the email up, so both outcomes take the same time.
+    password_hash = _hash_password(password)
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE email=%s", (email,))
-        if cur.fetchone():
-            raise AuthError("An account with this email already exists.")
-
-        password_hash = _hash_password(password)
         cur.execute(
-            "INSERT INTO users (email, password_hash) VALUES (%s,%s) RETURNING id",
+            "INSERT INTO users (email, password_hash) VALUES (%s,%s) ON CONFLICT (email) DO NOTHING RETURNING id",
             (email, password_hash),
         )
-        user_id = cur.fetchone()["id"]
+        row = cur.fetchone()
         conn.commit()
-        return user_id
     finally:
         release_conn(conn)
+    if row is None:
+        from utils import mailer
+
+        mailer.send_account_exists(email)
+        return None
+    return row["id"]
 
 
-def authenticate(email: str, password: str) -> int:
-    """Check credentials; returns the user id or raises AuthError."""
+# Verified against when the email is unknown, so a miss costs the same time
+# as a wrong password (no timing oracle for which emails exist).
+_DUMMY_HASH = _hash_password("not-a-real-password-" + secrets.token_hex(8))
+
+
+def authenticate(email: str, password: str, ip: str | None = None) -> int:
+    """Check credentials; returns the user id or raises AuthError (the same
+    message for an unknown email and a wrong password)."""
     email = email.strip().lower()
-    _check_rate_limit(f"login:{email}")
+    key = f"login:{email}"
+    _check_ip_limit(ip)
+    _check_backoff(key)
+    _check_rate_limit(key)
     conn = get_conn()
     try:
         cur = conn.cursor()
@@ -124,9 +193,12 @@ def authenticate(email: str, password: str) -> int:
         row = cur.fetchone()
     finally:
         release_conn(conn)
-    if not row or not _verify_password(password, row["password_hash"]):
+    ok = _verify_password(password[: PASSWORD_MAX_LENGTH * 8], row["password_hash"] if row else _DUMMY_HASH)
+    if not row or not ok:
+        if ip:
+            auth_attempt_record(f"ipfail:{ip}")
         raise AuthError("Invalid email or password.")
-    _clear_rate_limit(f"login:{email}")
+    _clear_rate_limit(key)
     return row["id"]
 
 
@@ -141,7 +213,7 @@ def create_session(user_id: int, ip: str | None = None, user_agent: str | None =
 
 def login(email: str, password: str, ip: str | None = None, user_agent: str | None = None) -> str:
     """Verify credentials and return a new session token. Raises AuthError on failure."""
-    return create_session(authenticate(email, password), ip=ip, user_agent=user_agent)
+    return create_session(authenticate(email, password, ip=ip), ip=ip, user_agent=user_agent)
 
 
 def session_info(token: str | None) -> tuple[int, bool] | None:

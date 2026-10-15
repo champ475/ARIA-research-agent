@@ -16,6 +16,36 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-15 — Brute-force and enumeration defences on auth (SEC-05)
+**Problem.**
+- The login limit was per email only, so credential stuffing across many emails from one IP was unlimited.
+- Signup told anyone which emails had accounts.
+- `auth_attempts` grew forever.
+
+**Alternatives considered.**
+- *Reverse-proxy rate limiting only (nginx or Cloudflare).* Useful, but there is no hosted proxy (OPS-03 is skipped), and it can't do per-account backoff.
+- *Lock out an account after N failures.* Rejected: an attacker could lock out any user at will. Exponential backoff slows guessing without a hard lock.
+- *An always-on CAPTCHA.* Rejected: it puts friction on every login. Here it appears only after repeated failures, and only when configured.
+
+**Final decision.**
+- Postgres-backed limits per email and per IP.
+- The IP comes from `X-Forwarded-For` only behind `TRUSTED_PROXIES`.
+- Exponential per-account backoff over 24 hours.
+- Signup always answers "check your email" and never logs in; an existing owner is emailed instead.
+- Constant-work login and signup paths.
+- Optional Turnstile CAPTCHA.
+- Hourly purge of old attempts.
+
+**Trade-offs.**
+- Signup now takes one more step (log in after signup) even in dev.
+- Users behind one carrier-grade NAT share the IP limit (20 per 5 minutes).
+- The CAPTCHA script is loaded from Cloudflare when enabled, and a strict CSP (SEC-15) must allow it.
+
+**Future improvements.**
+- Count only failures toward the IP limit.
+- Breached-password checks (SEC-07).
+- Device-level risk signals.
+
 ## 2026-10-15 — Email verification, reset tokens and hard account deletion (SEC-06)
 **Problem.**
 - Anyone could sign up with someone else's email address.

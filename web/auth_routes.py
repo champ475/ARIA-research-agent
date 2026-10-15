@@ -17,9 +17,10 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+import config
 from utils import auth
 from utils.audit import audit
-from web import csrf
+from web import captcha, csrf
 from web.session import clear_session_cookie, client_ip, current_user_id, session_token, set_session_cookie
 
 log = logging.getLogger(__name__)
@@ -67,11 +68,18 @@ _NOTICES = {
 }
 
 
+def _login_page(request: Request, status_code: int = 200, **ctx: Any) -> HTMLResponse:
+    ip = client_ip(request)
+    if captcha.enabled() and auth.captcha_required(ip):
+        ctx["captcha_site_key"] = config.TURNSTILE_SITE_KEY
+    return render(request, "login.html", status_code, title="Log in", **ctx)
+
+
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, n: str = "") -> Response:
     if current_user_id(request) is not None:
         return RedirectResponse("/", status_code=303)
-    return render(request, "login.html", title="Log in", notice=_NOTICES.get(n))
+    return _login_page(request, notice=_NOTICES.get(n))
 
 
 @router.post("/login", response_class=HTMLResponse)
@@ -80,15 +88,18 @@ def login_submit(
     email: str = Form(""),
     password: str = Form(""),
     csrf_token: str = Form("", alias="csrf"),
+    captcha_token: str = Form("", alias="cf-turnstile-response"),
 ) -> Response:
     if not csrf.valid(request, csrf_token):
-        return render(request, "login.html", 400, title="Log in", error=CSRF_FAILED, email=email)
+        return _login_page(request, 400, error=CSRF_FAILED, email=email)
     ip, ua = client_ip(request), request.headers.get("user-agent")
+    if captcha.enabled() and auth.captcha_required(ip) and not captcha.verify(captcha_token, ip):
+        return _login_page(request, 400, error="Please complete the check below and try again.", email=email)
     try:
-        user_id = auth.authenticate(email[:320], password[:1024])
+        user_id = auth.authenticate(email[:320], password[:1024], ip=ip)
     except auth.AuthError as e:
         audit("auth.login_failed", target=_email_ref(email), ip=ip, user_agent=ua)
-        return render(request, "login.html", 400, title="Log in", error=e.user_message, email=email)
+        return _login_page(request, 400, error=e.user_message, email=email)
     token = auth.create_session(user_id, ip=ip, user_agent=ua)
     audit("auth.login", actor_user_id=user_id, ip=ip, user_agent=ua)
     return _to_app(token)
@@ -120,21 +131,23 @@ def signup_submit(
             error="Please agree to the Terms of Use & Privacy Notice to sign up.",
             email=email,
         )
+    ip, ua = client_ip(request), request.headers.get("user-agent")
     try:
-        user_id = auth.signup(email[:320], password[:1024])
+        user_id = auth.signup(email[:320], password[:1024], ip=ip)
     except auth.AuthError as e:
         return render(request, "signup.html", 400, title="Sign up", error=e.user_message, email=email)
-    from utils.db import accept_terms
+    if user_id is not None:
+        from utils.db import accept_terms
 
-    ip, ua = client_ip(request), request.headers.get("user-agent")
-    accept_terms(user_id)
-    audit("auth.signup", actor_user_id=user_id, ip=ip, user_agent=ua)
-    audit("auth.terms_accepted", actor_user_id=user_id, ip=ip, user_agent=ua)
-    # SEC-06: confirm the address; the app stays locked (verify-pending page)
-    # until the link is used, when verification is required.
-    auth.start_email_verification(user_id, email.strip().lower())
-    token = auth.create_session(user_id, ip=ip, user_agent=ua)
-    return _to_app(token)
+        accept_terms(user_id)
+        audit("auth.signup", actor_user_id=user_id, ip=ip, user_agent=ua)
+        audit("auth.terms_accepted", actor_user_id=user_id, ip=ip, user_agent=ua)
+        # SEC-06: confirm the address before the account can be used.
+        auth.start_email_verification(user_id, email.strip().lower())
+    # SEC-05: identical answer for a new and an already-registered address —
+    # the owner of an existing account gets an email instead, and no session
+    # is started either way (the user logs in after confirming).
+    return render(request, "check_email.html", title="Check your email", email=email.strip().lower())
 
 
 @router.post("/auth/logout")

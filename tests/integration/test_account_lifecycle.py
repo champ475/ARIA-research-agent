@@ -47,7 +47,11 @@ def _last_link(kind: str) -> str:
 
 
 def _signup(client, email="dana@example.com"):
+    """Sign up, then log in (an unverified account may log in; it is held at
+    the verify-pending page)."""
     r = _form(client, "/signup", email=email, password=PASSWORD, agree="yes")
+    assert r.status_code == 200 and "Check your email" in r.text
+    r = _form(client, "/login", email=email, password=PASSWORD)
     assert r.status_code == 303
 
 

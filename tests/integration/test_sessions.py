@@ -44,6 +44,14 @@ def _signup(client: TestClient, email: str = "alice@example.com") -> str:
         data={"email": email, "password": PASSWORD, "agree": "yes", "csrf": token},
         follow_redirects=False,
     )
+    # SEC-05: signup never starts a session (same page for new and existing
+    # addresses); the user logs in. Verification is off in this env.
+    assert r.status_code == 200 and "Check your email" in r.text
+    assert "aria_session" not in client.cookies
+    token = _csrf(client, "/login")
+    r = client.post(
+        "/login", data={"email": email, "password": PASSWORD, "csrf": token}, follow_redirects=False
+    )
     assert r.status_code == 303 and r.headers["location"] == "/"
     cookie = r.headers["set-cookie"]
     assert "aria_session=" in cookie and "HttpOnly" in cookie and "samesite=lax" in cookie.lower()
