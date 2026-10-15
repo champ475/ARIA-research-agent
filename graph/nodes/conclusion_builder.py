@@ -119,6 +119,10 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
     elif ev["evidence_type"] in _DATAFRAME_EVIDENCE_TYPES and isinstance(ev["payload"], pd.DataFrame):
         n = len(ev["payload"])
         label = _DATAFRAME_EVIDENCE_TYPES[ev["evidence_type"]]
+        df = ev["payload"]
+        # DATA-04: a ranked fund list states how it was ranked, so the answer can too.
+        if "ranking_method" in df.columns and n:
+            label = f"{label} — {df['ranking_method'].iloc[0]}"
         conclusions.append(
             {
                 "claim": f"{ev['entity']}: {n} {label}",
@@ -174,24 +178,51 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
 
 _ALERT_DONE_VERB = {"created": "Created", "removed": "Cancelled", "paused": "Paused", "resumed": "Resumed"}
 _ALERT_FAIL_TEXT = {
-    "not_found": "no matching alert was found",
-    "ambiguous": "more than one alert matches — say which one",
+    "not_found": "no matching alert was found — say which one, e.g. 'cancel alert #12'",
     "unrecognized_condition": "the alert condition couldn't be understood",
     "invalid_symbol": "no valid stock symbol was given",
 }
 
 
+def _condition_text(p: dict) -> str:
+    """AlertSpec.describe() already starts with "<SYMBOL>: "; don't repeat it."""
+    condition = p.get("condition") or ""
+    prefix = f"{p.get('symbol')}: "
+    return condition[len(prefix) :] if condition.startswith(prefix) else condition
+
+
 def _alert_action_claim(p: dict) -> str:
     """Every alert write is echoed back in plain words (SEC-03), so the user
-    can see exactly what changed — or that nothing did, and why."""
+    can see exactly what changed — or that nothing did, and why (VAL-04)."""
     action, symbol, result = p.get("action"), p.get("symbol"), p.get("result")
     alert_ref = f"alert #{p['alert_id']}" if p.get("alert_id") is not None else "alert"
+    condition = _condition_text(p)
     if result in _ALERT_DONE_VERB:
-        detail = f": {p['condition']}" if p.get("condition") else ""
-        recurring = " (recurring)" if p.get("recurring") else ""
+        detail = f": {condition}" if condition else ""
+        recurring = " (recurring)" if p.get("recurring") and "(recurring)" not in detail else ""
         return f"{_ALERT_DONE_VERB[result]} {alert_ref} on {symbol}{detail}{recurring}"
     if result == "blocked":
         return f"Did NOT {action} an alert on {symbol} — {p.get('reason')}"
+    if result == "invalid_condition":
+        return f"Did NOT create an alert on {symbol} — {p.get('reason')}"
+    if result == "needs_confirmation":
+        price = p.get("current_price")
+        now = f" (it's at ₹{price:,.2f} now)" if isinstance(price, (int, float)) else ""
+        return (
+            f"Did NOT create the alert on {symbol} yet — the condition is already true{now}, so it would "
+            f"fire on the next check. To create it anyway, ask again and add 'anyway' "
+            f"(alert: {condition})"
+        )
+    if result == "duplicate":
+        return f"Nothing new created — {alert_ref} on {symbol} already watches for {condition or 'that'}"
+    if result == "limit_reached":
+        return f"Did NOT create an alert on {symbol} — you already have {p.get('limit')} active alerts; cancel some first"
+    if result == "ambiguous":
+        listed = "; ".join(
+            f"#{m['id']} {_condition_text({**m, 'symbol': m.get('symbol')}) or m.get('symbol')}"
+            for m in p.get("matches") or []
+        )
+        return f"Could not {action} an alert on {symbol}: several match — {listed}. Say which, e.g. '{action} alert #{(p.get('matches') or [{}])[0].get('id', 'N')}'"
     return f"Could not {action} an alert on {symbol}: {_ALERT_FAIL_TEXT.get(result, result)}"
 
 

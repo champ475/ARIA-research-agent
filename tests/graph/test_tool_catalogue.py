@@ -138,7 +138,13 @@ class TestAlertToolAdapters:
         with patch("graph.tool_catalogue.db_alert_remove") as mock_remove:
             result = get_tool("alert_cancel").fn("TCS", {"_user_id": 1, "alert_list": alerts})
         mock_remove.assert_called_once_with(1, 5)
-        assert result == {"action": "cancel", "symbol": "TCS", "result": "removed", "alert_id": 5}
+        assert result == {
+            "action": "cancel",
+            "symbol": "TCS",
+            "result": "removed",
+            "alert_id": 5,
+            "condition": None,
+        }
 
     def test_alert_cancel_not_found_when_no_match(self):
         with patch("graph.tool_catalogue.db_alert_remove") as mock_remove:
@@ -166,14 +172,26 @@ class TestAlertToolAdapters:
         with patch("graph.tool_catalogue.db_alert_pause") as mock_pause:
             result = get_tool("alert_pause").fn("TCS", {"_user_id": 1, "alert_list": alerts})
         mock_pause.assert_called_once_with(1, 4)
-        assert result == {"action": "pause", "symbol": "TCS", "result": "paused", "alert_id": 4}
+        assert result == {
+            "action": "pause",
+            "symbol": "TCS",
+            "result": "paused",
+            "alert_id": 4,
+            "condition": None,
+        }
 
     def test_alert_resume_succeeds_on_unique_inactive_match(self):
         alerts = [{"id": 3, "symbol": "TCS", "active": False}]
         with patch("graph.tool_catalogue.db_alert_resume") as mock_resume:
             result = get_tool("alert_resume").fn("TCS", {"_user_id": 1, "alert_list": alerts})
         mock_resume.assert_called_once_with(1, 3)
-        assert result == {"action": "resume", "symbol": "TCS", "result": "resumed", "alert_id": 3}
+        assert result == {
+            "action": "resume",
+            "symbol": "TCS",
+            "result": "resumed",
+            "alert_id": 3,
+            "condition": None,
+        }
 
     def test_alert_cancel_and_pause_and_resume_depend_on_alert_list(self):
         assert get_tool("alert_cancel").depends_on == ("alert_list",)
@@ -280,3 +298,70 @@ class TestScreenerToolAdapters:
         with patch("graph.tool_catalogue.get_block_deals", return_value="df") as mock_fn:
             get_tool("fetch_block_deals").fn("market", {})
         mock_fn.assert_called_once_with(None)
+
+
+class TestAlertSpecTools:
+    """VAL-04: alert_create validates before writing; management by #id."""
+
+    def _create(self, query, **patches):
+        with patch("graph.tool_catalogue.db_alert_add", **patches) as add:
+            out = get_tool("alert_create").fn("TCS", {"_query": query, "_user_id": 1})
+        return out, add
+
+    def test_already_true_asks_for_confirmation_instead_of_saving(self, monkeypatch):
+        monkeypatch.setattr("graph.tool_catalogue._current_price", lambda s: 3400.0)
+        out, add = self._create("alert me if TCS falls below 3500", return_value=9)
+        add.assert_not_called()
+        assert out["result"] == "needs_confirmation" and out["current_price"] == 3400.0
+
+    def test_anyway_confirms_an_already_true_alert(self, monkeypatch):
+        monkeypatch.setattr("graph.tool_catalogue._current_price", lambda s: 3400.0)
+        out, add = self._create("alert me if TCS falls below 3500 anyway", return_value=9)
+        assert out["result"] == "created" and add.call_args.kwargs["direction"] is None
+
+    def test_out_of_range_is_refused_with_a_reason(self):
+        out, add = self._create("alert if TCS RSI goes above 150", return_value=9)
+        add.assert_not_called()
+        assert out["result"] == "invalid_condition" and "0 to 100" in out["reason"]
+
+    def test_direction_is_saved_for_percent_alerts(self):
+        out, add = self._create("alert me if TCS drops 5%", return_value=9)
+        assert out["result"] == "created"
+        assert add.call_args.args[2] == "pct_change" and add.call_args.kwargs["direction"] == "down"
+
+    def test_duplicate_and_cap_are_answered_not_raised(self):
+        from utils.db import AlertLimitReached, DuplicateAlert
+
+        out, _ = self._create("alert if TCS goes above 4000", side_effect=DuplicateAlert(3))
+        assert (out["result"], out["alert_id"]) == ("duplicate", 3)
+        out, _ = self._create("alert if TCS goes above 4000", side_effect=AlertLimitReached("50"))
+        assert out["result"] == "limit_reached"
+
+    def test_cancel_by_id_picks_that_alert_even_with_others_on_the_symbol(self):
+        alerts = [{"id": 3, "symbol": "TCS", "active": True}, {"id": 7, "symbol": "TCS", "active": True}]
+        ctx = {"_user_id": 1, "alert_list": alerts, "_query": "cancel alert #7"}
+        with patch("graph.tool_catalogue.db_alert_remove") as rm:
+            out = get_tool("alert_cancel").fn("market", ctx)
+        rm.assert_called_once_with(1, 7)
+        assert out["result"] == "removed" and out["symbol"] == "TCS"
+
+    def test_cancel_by_someone_elses_id_is_not_found(self):
+        alerts = [{"id": 3, "symbol": "TCS", "active": True}]
+        ctx = {"_user_id": 1, "alert_list": alerts, "_query": "cancel alert #99"}
+        with patch("graph.tool_catalogue.db_alert_remove") as rm:
+            out = get_tool("alert_cancel").fn("market", ctx)
+        rm.assert_not_called()
+        assert out["result"] == "not_found"
+
+    def test_ambiguous_lists_the_matching_ids(self):
+        from graph.nodes.conclusion_builder import _alert_action_claim
+
+        alerts = [
+            {"id": 3, "symbol": "TCS", "active": True, "condition": "TCS: price goes above ₹4,000.00"},
+            {"id": 7, "symbol": "TCS", "active": True, "condition": "TCS: RSI(14) crosses below 30"},
+        ]
+        ctx = {"_user_id": 1, "alert_list": alerts, "_query": "pause my TCS alert"}
+        out = get_tool("alert_pause").fn("TCS", ctx)
+        assert out["result"] == "ambiguous" and [m["id"] for m in out["matches"]] == [3, 7]
+        claim = _alert_action_claim(out)
+        assert "#3 price goes above ₹4,000.00" in claim and "#7 RSI(14) crosses below 30" in claim

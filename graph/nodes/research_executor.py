@@ -26,6 +26,7 @@ from typing import Any
 
 from langgraph.types import Send
 
+from graph.deadline import past_research_cutoff, protected_task_ids
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
 from graph.state import GraphState, Task
@@ -63,6 +64,7 @@ def _build_context(
     llm_config: dict | None = None,
     intent: str | None = None,
     secondary_intents: list[str] | None = None,
+    deadline: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Maps each dependency tool's name -> its evidence payload, so
     execute_task's tool fn can read an already-fetched dependency result.
@@ -85,6 +87,9 @@ def _build_context(
         # SEC-03: execute_task re-checks write permission against these.
         "_intent": intent,
         "_secondary_intents": list(secondary_intents or []),
+        # REL-02: execute_task caps each tool call at the time left.
+        "_deadline_ts": (deadline or {}).get("deadline_ts"),
+        "_research_cutoff_ts": (deadline or {}).get("research_cutoff_ts"),
     }
     for dep_id in task["depends_on"]:
         dep_task = tasks_by_id.get(dep_id)
@@ -101,6 +106,18 @@ def _build_context(
 
 def research_executor(state: GraphState) -> dict:
     tasks = state.get("tasks", [])
+    if past_research_cutoff(state):
+        protected = protected_task_ids(tasks)
+        late = [t for t in tasks if t["status"] == "pending" and t["id"] not in protected]
+        if late:
+            return {
+                "tasks": [{**t, "status": "skipped", "error": "deadline"} for t in late],
+                **log_decision(
+                    "ResearchExecutor",
+                    f"skipped {len(late)} task(s)",
+                    "turn deadline reached — answering with the evidence gathered so far",
+                ),
+            }
     stuck = _stuck_tasks(tasks)
     if stuck:
         failed_updates = [{**t, "status": "failed"} for t in stuck]
@@ -148,6 +165,10 @@ def route_after_research_executor(state: GraphState):
                     llm_config,
                     state.get("intent"),
                     state.get("secondary_intents"),
+                    {
+                        "deadline_ts": state.get("deadline_ts"),
+                        "research_cutoff_ts": state.get("research_cutoff_ts"),
+                    },
                 ),
             },
         )

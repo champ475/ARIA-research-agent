@@ -27,11 +27,15 @@ from typing import Any
 
 import pandas as pd
 
+from config import TOOL_TIMEOUT_SECONDS
+from graph.deadline import remaining_seconds
 from graph.journal import log_decision
 from graph.state import Evidence, Task
 from graph.tool_catalogue import get_tool
 from graph.write_policy import write_allowed
 from tools.data import evidence_cache
+from utils import tracing
+from utils.resilience import CallTimeout, CircuitOpen, call_with_timeout
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +106,21 @@ def _blocked_evidence(task: Task, evidence_type: str, reason: str) -> Evidence:
     }
 
 
+def _tool_budget(context: dict[str, Any]) -> float:
+    """REL-02: one tool call waits at most TOOL_TIMEOUT_SECONDS, and never past
+    the turn's deadline."""
+    left = remaining_seconds(context)
+    return TOOL_TIMEOUT_SECONDS if left is None else max(0.0, min(TOOL_TIMEOUT_SECONDS, left))
+
+
+def _failure_reason(e: Exception) -> str:
+    if isinstance(e, CallTimeout):
+        return "timeout"
+    if isinstance(e, CircuitOpen):
+        return "circuit_open"
+    return "error"
+
+
 def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
     """
     Runs one Task: cache check, fall back to the bound tool on a miss, always
@@ -128,11 +147,21 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
         if spec.cacheable
         else None
     )
+    rec = tracing.current()
+    if rec is not None:
+        rec.add_tool_call(cache_hit=cached is not None)
     if cached is not None:
         cacheable_payload = cached["payload"]
         confidence = cached["confidence"]
     else:
-        raw_payload = spec.fn(task["entity"], context)
+        if spec.side_effect:
+            # Never abandon a write mid-flight: a timed-out caller could
+            # report "failed" while the write still lands in the background.
+            raw_payload = spec.fn(task["entity"], context)
+        else:
+            raw_payload = call_with_timeout(
+                spec.fn, task["entity"], context, timeout=_tool_budget(context), pool="tool"
+            )
         confidence = 1.0
         cacheable_payload = _to_cacheable(raw_payload)
         if spec.cacheable:
@@ -173,7 +202,7 @@ def execute_task_node(send_state: dict) -> dict:
     try:
         evidence = execute_task(task, context)
     except Exception as e:
-        failed_task = {**task, "status": "failed"}
+        failed_task = {**task, "status": "failed", "error": _failure_reason(e)}
         return {
             "tasks": [failed_task],
             **log_decision("execute_task", f"failed: {task['id']}", str(e)),

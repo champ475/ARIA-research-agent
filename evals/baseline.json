@@ -1,0 +1,76 @@
+{
+  "sha": "825e01b",
+  "mode": "replay",
+  "cases": 240,
+  "recorded": 22,
+  "seconds": 2.0,
+  "metrics": {
+    "guard_accuracy": 100.0,
+    "intent_accuracy": 33.33,
+    "blocking_accuracy": 100.0,
+    "complexity_accuracy": 100.0,
+    "tool_recall": 100.0,
+    "write_safety": 100.0,
+    "entity_f1": 100.0
+  },
+  "judge_score": null,
+  "judge": "not run",
+  "failures": [
+    {
+      "id": "equity-001",
+      "metric": "intent_accuracy",
+      "query": "How is TCS doing?",
+      "expected": "equity",
+      "got": "report"
+    },
+    {
+      "id": "equity-003",
+      "metric": "intent_accuracy",
+      "query": "what's the PE of Infosys",
+      "expected": "equity",
+      "got": "mf"
+    },
+    {
+      "id": "equity-004",
+      "metric": "intent_accuracy",
+      "query": "HDFC Bank technical analysis",
+      "expected": "equity",
+      "got": "screener"
+    },
+    {
+      "id": "equity-007",
+      "metric": "intent_accuracy",
+      "query": "latest news on ITC",
+      "expected": "equity",
+      "got": "report"
+    },
+    {
+      "id": "equity-008",
+      "metric": "intent_accuracy",
+      "query": "compare TCS and Infosys",
+      "expected": "equity",
+      "got": "screener"
+    },
+    {
+      "id": "equity-010",
+      "metric": "intent_accuracy",
+      "query": "is Titan overvalued",
+      "expected": "equity",
+      "got": "mf"
+    },
+    {
+      "id": "equity-011",
+      "metric": "intent_accuracy",
+      "query": "Maruti Suzuki 52 week high and low",
+      "expected": "equity",
+      "got": "mf"
+    },
+    {
+      "id": "equity-012",
+      "metric": "intent_accuracy",
+      "query": "Bharti Airtel debt to equity",
+      "expected": "equity",
+      "got": "mf"
+    }
+  ]
+}

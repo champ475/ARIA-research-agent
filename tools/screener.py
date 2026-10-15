@@ -2,9 +2,8 @@
 
 import re
 
-import yfinance as yf
-
 from config import SECTOR_UNIVERSE, STOCK_UNIVERSE
+from tools.data.fetcher import get_info
 from utils.helpers import safe_float
 
 
@@ -58,7 +57,7 @@ def run(filters: dict, max_stocks: int = 30) -> list[dict]:
     results = []
     for sym in universe:
         try:
-            info = yf.Ticker(f"{sym}.NS").info
+            info = get_info(sym)
             if not info:
                 continue
             pe = safe_float(info.get("trailingPE"))

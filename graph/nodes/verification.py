@@ -30,6 +30,7 @@ from collections.abc import Callable
 
 from agents.llm_client import LLMClient, LLMProvidersExhausted
 from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
+from graph.deadline import past_research_cutoff
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
 from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
@@ -228,6 +229,12 @@ def build_verification_node(
     def verification(state: GraphState) -> dict:
         evidence = state.get("evidence", [])
         tasks = state.get("tasks", [])
+        if past_research_cutoff(state):
+            # Another loop can't fit; the answer names its data gaps instead.
+            return {
+                "verification_issues": [],
+                **log_decision("Verification", "skipped", "turn deadline reached — no further loop"),
+            }
 
         stage1_issues = _stage1_deterministic(evidence, tasks)
         if stage1_issues:

@@ -15,13 +15,17 @@ from config import (
     GROQ_API_KEYS,
     GROQ_MODEL,
     GROQ_MODEL_FAST,
+    LLM_STREAM_TIMEOUT_SECONDS,
     LLM_TEMPERATURE,
+    LLM_TIMEOUT_SECONDS,
     MAX_RETRIES,
     PREFERRED_PROVIDER,
     PROVIDER_ZERO_QUOTA_TTL_SECONDS,
     TOKENS_FAST,
     TOKENS_SYNTHESIS,
 )
+from utils import tracing
+from utils.tracing import usage_from_response
 
 _SUMMARY_PROMPT = (
     "Existing summary of earlier conversation (may be empty):\n{old}\n\n"
@@ -253,7 +257,10 @@ class _GroqProvider:
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
 
     def _client(self):
-        return self._Groq(api_key=_groq_rotator.next())
+        # REL-02: explicit timeout (the SDK default is 60 s), and no SDK-level
+        # retries — LLMClient._call owns retry/fallback, so SDK retries would
+        # multiply every slow failure.
+        return self._Groq(api_key=_groq_rotator.next(), timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
 
     def _summarize(self, old_summary: str, chunk_text: str) -> str:
         prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
@@ -263,6 +270,7 @@ class _GroqProvider:
             temperature=0.2,
             max_tokens=TOKENS_FAST,
         )
+        self.last_usage = usage_from_response(r)
         return r.choices[0].message.content.strip()
 
     def ask(
@@ -279,6 +287,7 @@ class _GroqProvider:
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        self.last_usage = usage_from_response(r)
         return r.choices[0].message.content.strip()
 
     def chat(
@@ -296,6 +305,7 @@ class _GroqProvider:
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        self.last_usage = usage_from_response(r)
         reply = r.choices[0].message.content.strip()
         self._memory.add_assistant(reply)
         return reply
@@ -317,6 +327,8 @@ class _GroqProvider:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
+                # Longest gap between chunks, so also the time-to-first-token cap.
+                timeout=LLM_STREAM_TIMEOUT_SECONDS,
             )
             for event in events:
                 delta = event.choices[0].delta.content
@@ -348,7 +360,11 @@ class _GeminiProvider:
             from google import genai
             from google.genai import types as gt
 
-            self._client = genai.Client(api_key=GEMINI_API_KEY)
+            # REL-02: HttpOptions.timeout is in milliseconds.
+            self._client = genai.Client(
+                api_key=GEMINI_API_KEY,
+                http_options=gt.HttpOptions(timeout=int(LLM_TIMEOUT_SECONDS * 1000)),
+            )
             self._types = gt
         except ImportError as e:
             raise ImportError("Run: pip install google-genai") from e
@@ -359,6 +375,7 @@ class _GeminiProvider:
         prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         cfg = self._types.GenerateContentConfig(temperature=0.2, max_output_tokens=TOKENS_FAST)
         r = self._client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=cfg)
+        self.last_usage = usage_from_response(r)
         return r.text.strip()
 
     def ask(
@@ -380,6 +397,7 @@ class _GeminiProvider:
             contents=prompt,
             config=cfg,
         )
+        self.last_usage = usage_from_response(r)
         return r.text.strip()
 
     def _system_and_contents(self):
@@ -420,6 +438,7 @@ class _GeminiProvider:
             contents=contents,
             config=cfg,
         )
+        self.last_usage = usage_from_response(r)
         reply = r.text.strip()
         self._memory.add_assistant(reply)
         return reply
@@ -490,9 +509,25 @@ class LLMClient:
     """
 
     _local = None  # class default: tests build bare instances via __new__
+    _prompt_version = ""
+
+    def _record_llm_call(self, provider, prompt: str, output: str, streamed: bool = False) -> None:
+        """OBS-02: count this call on the current turn's record (tokens from
+        the provider's usage when it reported any, else estimated)."""
+        rec = tracing.current()
+        if rec is None:
+            return
+        usage = None if streamed else getattr(provider, "last_usage", None)
+        if isinstance(usage, tuple):
+            tokens_in, tokens_out, estimated = usage[0], usage[1], False
+        else:
+            tokens_in = tracing.estimate_tokens(getattr(self, "_system", "") + prompt)
+            tokens_out, estimated = tracing.estimate_tokens(output), True
+        rec.add_llm_call(str(provider.name), self._prompt_version, tokens_in, tokens_out, estimated)
 
     def __init__(self, system_prompt: str = "", provider_config: dict | None = None):
         self._system = system_prompt or _DEFAULT_SYSTEM
+        self._prompt_version = tracing.prompt_version(self._system)
         self._primary = None
         self._secondary = None
         self._active = "none"
@@ -601,11 +636,21 @@ class LLMClient:
                 continue
             attempted += 1
             started = False
+            streamed: list[str] = []
             try:
-                for chunk in provider.stream(prompt, temperature, max_tokens, model):
-                    started = True
-                    self._active = provider.name
-                    yield chunk
+                with tracing.span(
+                    f"llm {provider.name}",
+                    "llm",
+                    inputs={"prompt": prompt},
+                    metadata={"model": model or "", "prompt_version": self._prompt_version, "stream": True},
+                ) as span_out:
+                    for chunk in provider.stream(prompt, temperature, max_tokens, model):
+                        started = True
+                        self._active = provider.name
+                        streamed.append(chunk)
+                        yield chunk
+                    span_out["output"] = "".join(streamed)
+                self._record_llm_call(provider, prompt, "".join(streamed), streamed=True)
                 return
             except Exception as e:
                 last_err = e
@@ -653,8 +698,16 @@ class LLMClient:
                 if _provider_health.is_unavailable(provider.name):
                     continue
                 try:
-                    result = getattr(provider, method)(prompt, temperature, max_tokens, model)
+                    with tracing.span(
+                        f"llm {provider.name}",
+                        "llm",
+                        inputs={"prompt": prompt},
+                        metadata={"model": model or "", "prompt_version": self._prompt_version},
+                    ) as span_out:
+                        result = getattr(provider, method)(prompt, temperature, max_tokens, model)
+                        span_out["output"] = result
                     self._active = provider.name
+                    self._record_llm_call(provider, prompt, result)
                     return result
                 except Exception as e:
                     last_err = e

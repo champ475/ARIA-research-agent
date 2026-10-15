@@ -15,17 +15,16 @@ branches and by GraphOrchestrator's tab_used label). This field only exists
 so those two consumers know a second domain was named, not to change what
 tools Planner considers.
 
-Entity validation: `extract_all_entities()`'s raw output is gated through
-`filter_valid_entities()` (utils/helpers.py) before it's trusted for
-anything — the previous behavior (any capitalized 2-15 char token not in
-the necessarily-incomplete STOP_WORDS blocklist became a candidate ticker)
-let ordinary English words in free-text queries (planning intake, mutual
-fund names like "HDFC Flexicap") reach Planner's per-entity task fan-out,
-`tool_catalogue.py::_alert_create`'s DB write, and
-`communication_layer.py`'s filename derivation — confirmed in production to
-both waste yfinance calls on non-tickers and write garbage alert rows for
-words like "AN"/"SET"/"ALSO". Filtering happens once, here, since every
-downstream consumer reads `entities` from `GraphState`.
+Entities (VAL-02, graph/entity_resolution.py): company mentions are found
+deterministically, plus the mentions this node's LLM call reports as written
+by the user (typos included), and every one is resolved against the NSE
+instrument master (tools/data/instruments.py) — found / ambiguous /
+not_found. Only resolved symbols reach `entities`, so ordinary words never
+fan out into tasks or alert rows, and the LLM can never invent a ticker.
+Unresolved mentions go to `entity_resolutions` for Planner/CommunicationLayer
+to ask about. History supplies the entity only when the message names no
+company at all — an unknown name no longer silently becomes the previous
+turn's ticker.
 """
 
 from __future__ import annotations
@@ -36,9 +35,10 @@ from collections.abc import Callable
 
 from agents.llm_client import LLMClient
 from config import GROQ_MODEL_FAST, TOKENS_FAST
+from graph.data_questions import min_complexity
+from graph.entity_resolution import add_llm_mentions, history_entities, resolve_mentions
 from graph.journal import log_decision
 from graph.state import GraphState
-from utils.helpers import extract_all_entities, filter_valid_entities, validate_ticker
 
 log = logging.getLogger(__name__)
 
@@ -52,33 +52,25 @@ _SYSTEM = (
     'ALSO names — e.g. "generate a report on TCS and alert me if it drops 5%" is '
     'intent="report", secondary_intents=["alert"]; empty list if only one domain applies, '
     '"objective": a one-sentence statement of what the user actually wants answered, '
-    '"complexity": one of ["simple","moderate","complex"]}\n'
+    '"complexity": one of ["simple","moderate","complex"], '
+    '"companies": every company or stock the user names, copied exactly as written '
+    "(keep typos; not mutual funds, indices or sectors); empty list if none}\n"
     '"simple" = no data lookup needed (definitions, greetings, generic advice). '
     '"moderate" = one entity, one kind of analysis. '
     '"complex" = multiple entities, multiple kinds of analysis, or an action plus '
     "analysis (e.g. compare two stocks and set an alert)."
 )
 
-_FALLBACK = {"intent": "chat", "secondary_intents": [], "objective": "", "complexity": "simple"}
+_FALLBACK = {
+    "intent": "chat",
+    "secondary_intents": [],
+    "objective": "",
+    "complexity": "simple",
+    "companies": [],
+}
 
 
 _HISTORY_TURNS_IN_PROMPT = 6  # last N history messages included verbatim — keeps this cheap call cheap
-
-
-def _recent_entity(history: list[dict]) -> list[str]:
-    """Falls back to the most recently mentioned valid ticker in prior USER
-    turns when the current message names none (e.g. "what about its RSI"
-    following "analyse TCS") — mirrors the last-known-entity carry-over the
-    deleted agents/equity_agent.py did via self._last_symbol, but sourced
-    from `history` (owned by GraphOrchestrator) since the graph itself has
-    no per-instance state of its own."""
-    for msg in reversed(history):
-        if msg.get("role") != "user":
-            continue
-        for entity in extract_all_entities(msg.get("content", "")):
-            if validate_ticker(entity):
-                return [entity]
-    return []
 
 
 def _build_prompt(query: str, entities: list[str], history: list[dict]) -> str:
@@ -119,11 +111,13 @@ def _parse(raw: str) -> dict:
             if s in _VALID_INTENTS and s not in seen:
                 seen.add(s)
                 clean_secondary.append(s)
+        companies = parsed.get("companies") or []
         return {
             "intent": intent,
             "secondary_intents": clean_secondary,
             "objective": parsed.get("objective", _FALLBACK["objective"]),
             "complexity": parsed.get("complexity", _FALLBACK["complexity"]),
+            "companies": [c for c in companies if isinstance(c, str)] if isinstance(companies, list) else [],
         }
     except (json.JSONDecodeError, AttributeError, TypeError):
         log.warning("QueryAnalyzer: failed to parse LLM output as JSON: %r", raw)
@@ -142,24 +136,32 @@ def build_query_analyzer_node(
     def query_analyzer(state: GraphState) -> dict:
         query = state["query"]
         history = state.get("history", [])
-        entities = filter_valid_entities(extract_all_entities(query)) or _recent_entity(history)
+        resolved = resolve_mentions(query)
         raw = client.ask(
-            _build_prompt(query, entities, history),
+            _build_prompt(query, resolved.entities, history),
             model=GROQ_MODEL_FAST,
             max_tokens=TOKENS_FAST,
             temperature=0.0,
         )
         classification = _parse(raw)
+        add_llm_mentions(resolved, classification["companies"])
+        entities = resolved.entities if resolved.mentioned else history_entities(history)
+        # LLM-06: a data question never takes the no-research path.
+        complexity, raised = min_complexity(query, entities, classification["complexity"])
         return {
             "entities": entities,
+            "entity_resolutions": resolved.unresolved,
+            "entity_notes": resolved.notes,
             "intent": classification["intent"],
             "secondary_intents": classification["secondary_intents"],
             "objective": classification["objective"],
-            "complexity": classification["complexity"],
+            "complexity": complexity,
             **log_decision(
                 "QueryAnalyzer",
-                f"intent={classification['intent']}, complexity={classification['complexity']}",
+                f"intent={classification['intent']}, complexity={complexity}"
+                + (f" (raised from simple: {raised})" if raised else ""),
                 f"entities={entities or 'none'}"
+                + (f", unresolved={[u['query'] for u in resolved.unresolved]}" if resolved.unresolved else "")
                 + (
                     f", secondary_intents={classification['secondary_intents']}"
                     if classification["secondary_intents"]

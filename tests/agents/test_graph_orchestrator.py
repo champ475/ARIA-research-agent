@@ -1,3 +1,4 @@
+import contextlib
 from unittest.mock import MagicMock, patch
 
 from agents.graph_orchestrator import GraphOrchestrator
@@ -313,3 +314,80 @@ class TestGraphOrchestratorMisc:
         orch._awaiting_confirmation = True
         orch.reset()
         assert orch._awaiting_confirmation is False
+
+
+class TestTurnDeadline:
+    """REL-02: every turn carries a deadline, a resume after a gate gets a
+    fresh one, and research that didn't make it is named in the answer."""
+
+    def test_fresh_turn_is_stamped_with_a_deadline(self):
+        import time
+
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {"final_report": "x"}
+        orch = _build_orchestrator(fake_graph)
+        list(orch.process_stream("analyse TCS"))
+        state = fake_graph.invoke.call_args[0][0]
+        assert state["research_cutoff_ts"] < state["deadline_ts"]
+        assert state["deadline_ts"] > time.time()
+
+    def test_resume_gets_a_fresh_deadline(self):
+        fake_graph = MagicMock()
+        fake_interrupt = MagicMock()
+        fake_interrupt.value = {"type": "research_confirmation", "message": "Proceed?"}
+        fake_graph.invoke.side_effect = [{"__interrupt__": [fake_interrupt]}, {"final_report": "done"}]
+        orch = _build_orchestrator(fake_graph)
+        list(orch.process_stream("compare six stocks"))
+        list(orch.process_stream("yes"))
+        resume = fake_graph.invoke.call_args_list[1][0][0]
+        assert set(resume.update) == {"deadline_ts", "research_cutoff_ts"}
+
+    def test_missing_data_is_named_in_the_answer(self):
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {
+            "final_report": "TCS trades at 4000.",
+            "tasks": [
+                {"tool": "fetch_info", "entity": "TCS", "status": "done"},
+                {"tool": "fetch_news", "entity": "TCS", "status": "failed", "error": "timeout"},
+            ],
+        }
+        orch = _build_orchestrator(fake_graph)
+        text = list(orch.process_stream("TCS price and news"))[-1][0]
+        assert text.startswith("TCS trades at 4000.")
+        assert "news for TCS (timed out)" in text
+
+
+class TestTurnRecords:
+    """OBS-02: every process_stream call writes exactly one turns row, with a
+    status that says how the turn ended."""
+
+    def _statuses(self, fake_graph, messages, quota_exceeded=False):
+        orch = _build_orchestrator(fake_graph)
+        if quota_exceeded:
+            orch._trial_quota_exceeded = lambda: True
+        with patch("utils.db.turn_record") as row:
+            for m in messages:
+                with contextlib.suppress(RuntimeError):
+                    list(orch.process_stream(m))
+        return [c.kwargs["status"] for c in row.call_args_list]
+
+    def test_ok_and_partial(self):
+        g = MagicMock()
+        g.invoke.side_effect = [
+            {"final_report": "fine", "intent": "equity", "tasks": [{"tool": "fetch_info", "status": "done"}]},
+            {"final_report": "half", "tasks": [{"tool": "fetch_news", "entity": "TCS", "status": "failed"}]},
+        ]
+        assert self._statuses(g, ["a", "b"]) == ["ok", "partial"]
+
+    def test_gated_then_resumed(self):
+        g = MagicMock()
+        interrupt = MagicMock()
+        interrupt.value = {"message": "Proceed?"}
+        g.invoke.side_effect = [{"__interrupt__": [interrupt]}, {"final_report": "done"}]
+        assert self._statuses(g, ["compare", "yes"]) == ["gated", "ok"]
+
+    def test_quota_and_unexpected_error(self):
+        assert self._statuses(MagicMock(), ["hi"], quota_exceeded=True) == ["quota"]
+        g = MagicMock()
+        g.invoke.side_effect = RuntimeError("graph blew up")
+        assert self._statuses(g, ["hi"]) == ["error"]

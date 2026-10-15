@@ -84,6 +84,8 @@ class TestBuildContext:
             "_llm_config": None,
             "_intent": None,
             "_secondary_intents": [],
+            "_deadline_ts": None,
+            "_research_cutoff_ts": None,
         }
 
     def test_query_injected_regardless_of_dependencies(self):

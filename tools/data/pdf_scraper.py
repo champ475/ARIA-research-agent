@@ -4,10 +4,10 @@ Scrapes annual reports and quarterly results PDFs from NSE/BSE.
 Extracts text using pdfplumber. Caches in Postgres (pdf_cache table).
 """
 
-import requests
 import pdfplumber
 import io
 import logging
+from utils import http
 from utils.db import pdf_cache_get, pdf_cache_set
 
 log = logging.getLogger(__name__)
@@ -42,8 +42,7 @@ def fetch_nse_filings_list(symbol: str, filing_type: str = "Quarterly Results") 
     filing_type: 'Quarterly Results' | 'Annual Report' | 'Investor Presentation'
     """
     try:
-        s = requests.Session()
-        s.headers.update(HEADERS)
+        s = http.session("nse", headers=HEADERS)
         s.get("https://www.nseindia.com", timeout=10)
 
         url = (
@@ -82,7 +81,7 @@ def fetch_bse_filings_list(symbol: str, bse_code: str = "") -> list[dict]:
             f"https://api.bseindia.com/BseIndiaAPI/api/AnnualReport/w"
             f"?scripcode={bse_code}&type=Quarterly"
         )
-        r = requests.get(url, headers=HEADERS, timeout=15)
+        r = http.get(url, source="bse", headers=HEADERS, timeout=(3, 15))
         if r.status_code != 200:
             return []
         data = r.json()
@@ -114,8 +113,7 @@ def fetch_pdf_text(symbol: str, url: str, doc_type: str, period: str = None) -> 
         return ""
 
     try:
-        s = requests.Session()
-        s.headers.update(HEADERS)
+        s = http.session("nse", headers=HEADERS)
         s.get("https://www.nseindia.com", timeout=10)
 
         r = s.get(url, timeout=30)

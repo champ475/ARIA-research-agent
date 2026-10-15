@@ -18,7 +18,8 @@ cp .env.example .env
 # SECRET_KEY: any random string (e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`) —
 # encrypts BYO LLM keys (Settings tab) before they're stored; without it, saving a key fails.
 
-# Run the app
+# Create/upgrade the database schema, then run the app
+python scripts/migrate.py
 python app.py
 # Opens at http://localhost:7860
 ```
@@ -61,10 +62,21 @@ Primary model: `llama-3.3-70b-versatile`. Fast model: `llama-3.1-8b-instant`. Fa
 Central source of truth for: LLM token budgets (`TOKENS_SYNTHESIS=2000`, `TOKENS_COMPLEX=3000`, `TOKENS_AGENT=800`, `TOKENS_FAST=200`), sector universe (~100 NSE stocks across 9 sectors, `NIFTY200`/`SECTOR_UNIVERSE`), technical analysis defaults (RSI 14, MACD 12/26/9, BB 20), risk thresholds, and data source URLs.
 
 ### Persistence (`utils/db.py`)
-Postgres (Neon), via `psycopg2.pool.ThreadedConnectionPool`. Tables: `users`, `sessions`, `portfolio`, `watchlist`, `alerts`, `chat_sessions`, `chat_history`, `saved_screeners`, `reports`, `pdf_cache`, `financial_profiles`, `cache_meta`. Initialized at startup via `init_db()`. A leftover `data/aria.db` SQLite file exists in-repo but is unread by current code.
+Postgres (Neon), via `psycopg2.pool.ThreadedConnectionPool`. Tables: `users`, `sessions`, `portfolio`, `watchlist`, `alerts`, `notifications`, `chat_sessions`, `chat_history`, `saved_screeners`, `reports`, `pdf_cache`, `financial_profiles`, `evidence_cache`, `user_llm_config`, `telegram_link_codes`, `auth_attempts`, plus LangGraph's `checkpoint*` tables. **Schema = Alembic migrations** (`migrations/versions/`, ARCH-01): add a new revision for any schema change (never DDL in app code); `python scripts/migrate.py` applies them (Docker runs it before the app); startup only checks the version (`utils/db.py::ensure_schema`). A leftover `data/aria.db` SQLite file exists in-repo but is unread by current code.
 
-### Ticker Resolution (`utils/helpers.py`)
-Maps common aliases to NSE symbols (e.g. `"SBI"` → `"SBIN"`, `"HUL"` → `"HINDUNILVR"`). All tickers must be suffixed with `.NS` for NSE or `.BO` for BSE when passed to yfinance.
+### Ticker Resolution (VAL-02: `tools/data/instruments.py`, `graph/entity_resolution.py`)
+Every company mention resolves against the vendored NSE/BSE instrument master (`data/instruments/`, refresh with `scripts/refresh_instruments.py`) to found / ambiguous / not_found — never trust a guessed or LLM-produced ticker. Aliases (`"SBI"` → `"SBIN"`) live in `utils/helpers.py::TICKER_ALIASES`; renamed symbols in `instruments.RENAMED`. `config.STOCK_UNIVERSE` and alias targets must be listed symbols (a test enforces it). All tickers must be suffixed with `.NS` for NSE or `.BO` for BSE when passed to yfinance.
+
+## Roadmap
+
+Work follows the production-readiness PRD, which is a living Claude Doc:
+https://claude.ai/code/artifact/9bae50e1-07a3-44c1-a152-133336d4b915.
+
+- An offline snapshot is at `docs/PRD_PRODUCTION_READINESS.md`. Re-export it from the doc if the doc has changed.
+- The PRD's "Roadmap and release gates" section lists the items for each phase, by ID (SEC-, VAL-, LLM-, DATA-, REL-, TEST-, OBS-, ARCH-, UX-, COMP-, OPS-).
+- Phases 0 and 1 are done (PR #1, PR #2). Phase 2 is next.
+- Tasks only the repo owner can do (keys, migrations on production, GitHub settings, sign-offs) are in `C:\Users\arnav\Desktop\Arnav\PROJECTS\TODO_ARIA.md`, which lives outside the repo.
+- `docs/PRD.md` is the older July product PRD and is not the current plan.
 
 ## Production-readiness contracts (Phase 0, see ARCHITECTURE.md)
 
@@ -73,6 +85,11 @@ Maps common aliases to NSE symbols (e.g. `"SBI"` → `"SBIN"`, `"HUL"` → `"HIN
 - **Write tools**: run only when `graph/write_policy.py::write_allowed` passes (intent owns the tool AND the user's message has an explicit verb). Wrap third-party text in prompts with `graph/prompt_safety.py::wrap_untrusted`.
 - **User input**: chat text goes through `utils/input_guard.py::clean_message` first; user-supplied URLs through `utils/url_safety.py`.
 - **Tenant isolation**: every new `utils/db.py` function taking `user_id` needs a case in `tests/integration/test_tenant_isolation.py::COVERED` (a meta-test fails otherwise).
+- **External calls** (REL-02): HTTP goes through `utils/http.py` (default timeouts, retry with jitter, per-source circuit breaker); libraries without a timeout (yfinance) go through `utils/resilience.py::guarded_call`. Never add a bare `requests.get` / `yf.Ticker(...).info` in app code. Each turn has a deadline (`graph/deadline.py`): research stops at 70% of `TURN_DEADLINE_SECONDS` and the answer names missing data.
+- **Tracing** (OBS-02): each turn runs inside `utils/tracing.turn` (opened by `GraphOrchestrator.process_stream`) and writes one `turns` row; LLM calls, tools and graph nodes are counted/spanned automatically. Only `utils/tracing.py` talks to LangSmith, and only redacted data (`redact_for_trace`). User-facing errors show `Error ID` = turn id prefix (`scripts/find_turn.py`).
+- **Advice boundary** (COMP-01 / LLM-09): education-only (`docs/ADVICE_POLICY.md`). Requests go through `graph/guardrails.py::check_input` before the graph (refuse / reframe); every answer goes through `finalize` (removes promise / buy-sell-call sentences, appends the footer from `graph/advice_policy.py`). Never ask the LLM to add disclaimers, and never prompt for personal picks.
+- **Evaluation** (LLM-01): `make eval` (or `python evals/runner.py --replay --compare evals/baseline.json`) must stay green; CI blocks a >2-point drop. Changing a node prompt invalidates its recorded fixtures — re-record with `python evals/runner.py --record`, then `make eval-baseline`. Add golden cases in `evals/build_golden.py` and re-run it.
+- **Schema** (ARCH-01): schema changes are new Alembic revisions in `migrations/versions/`; app code never runs DDL.
 - **Concurrency**: chat turns run concurrently (`CHAT_CONCURRENCY`), one per user (`respond_exclusive`); module-level mutable state must be thread-safe.
 
 ## Changelog

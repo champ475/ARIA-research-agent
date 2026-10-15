@@ -17,12 +17,13 @@ from config import TOKENS_COMPLEX, TOKENS_FAST
 from tools.data.amfi import format_fund_search_results, get_category_funds
 from tools.data.fetcher import get_macro
 from tools.data.news_fetcher import market_news
-from tools.screener import run as screener_run
-from tools.screener import to_markdown as screener_md
+from utils.financial_profile import REQUIRED_FIELDS as _PROFILE_REQUIRED
+from utils.financial_profile import is_complete, rejected_note, validate_updates
 from utils.helpers import now_ist
 
-# Minimum fields needed before a first strategy can be generated at all.
-REQUIRED_FIELDS = ["age", "capital", "horizon_years", "goal", "risk_tolerance"]
+# Minimum fields needed before a first strategy can be generated at all
+# (VAL-05: the schema and the build trigger live in utils/financial_profile.py).
+REQUIRED_FIELDS = list(_PROFILE_REQUIRED)
 
 # Full field vocabulary shown to the intake LLM so it knows what's worth
 # asking about — not a rigid checklist, it decides pacing/phrasing itself.
@@ -67,25 +68,6 @@ Return ONLY valid JSON, no markdown fences:
 {{"updates": {{...fields extracted this turn...}}, "minimum_complete": true or false, "reply": "..."}}
 """
 
-BUILD_TRIGGER_KW = [
-    "build my plan",
-    "build the plan",
-    "generate my plan",
-    "generate the plan",
-    "create my plan",
-    "go ahead",
-    "build it",
-    "yes build",
-    "generate strategy",
-    "build my strategy",
-    "create my strategy",
-    "ready",
-    "sounds good",
-    "let's go",
-    "proceed",
-    "make the plan",
-]
-
 # Standard fund categories to ground the strategy in real AMFI data —
 # refined slightly by risk tolerance/horizon inside fetch_fund_data().
 CORE_CATEGORIES = ["large cap", "flexi cap", "mid cap", "small cap", "debt", "elss"]
@@ -110,7 +92,13 @@ def intake_turn(client, msg: str, profile: dict) -> tuple[dict, bool, str]:
     """One combined LLM call: extract any profile fields from `msg`, decide
     whether the minimum viable profile is now complete, and draft a
     conversational reply. `client` is a caller-owned LLMClient (equity_agent/
-    report_agent-style dependency injection, not a new provider instance)."""
+    report_agent-style dependency injection, not a new provider instance).
+
+    VAL-05: the LLM only proposes `updates`; each field is validated on its
+    own (utils/financial_profile.py) and only valid ones are returned for
+    saving. Rejected values are asked about in the reply, never stored, and
+    completeness is judged on validated values only — the LLM's own
+    "minimum_complete" isn't trusted."""
     prompt = _INTAKE_PROMPT.format(
         field_guide=FIELD_GUIDE,
         profile_json=json.dumps(profile) if profile else "{}",
@@ -122,16 +110,23 @@ def intake_turn(client, msg: str, profile: dict) -> tuple[dict, bool, str]:
 
         raw = strip_code_fence(raw)
         data = json.loads(raw)
-        updates = data.get("updates") or {}
-        if not isinstance(updates, dict):
-            updates = {}
-        merged = {**profile, **updates}
-        minimum_complete = all(merged.get(f) not in (None, "") for f in REQUIRED_FIELDS)
-        reply = data.get("reply") or fallback_question(merged)
-        return updates, minimum_complete, reply
+        proposed = data.get("updates") or {}
+        if not isinstance(proposed, dict):
+            proposed = {}
+        clean, rejected = validate_updates(proposed)
+        merged = {**profile, **clean}
+        minimum_complete = is_complete(merged)
+        reply = (data.get("reply") if not rejected else None) or fallback_question(merged)
+        return clean, minimum_complete, reply + rejected_note(rejected, proposed)
     except Exception:
-        minimum_complete = all(profile.get(f) not in (None, "") for f in REQUIRED_FIELDS)
-        return {}, minimum_complete, fallback_question(profile)
+        return {}, is_complete(profile), fallback_question(profile)
+
+
+def _horizon(profile: dict) -> float | None:
+    try:
+        return float(profile.get("horizon_years"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def fetch_fund_data(profile: dict) -> str:
@@ -143,19 +138,12 @@ def fetch_fund_data(profile: dict) -> str:
     blocks = []
     for cat in categories:
         try:
-            funds = get_category_funds(cat, top_n=5)
+            # DATA-04: ranked by the CAGR that matches the investor's horizon.
+            funds = get_category_funds(cat, top_n=5, horizon_years=_horizon(profile))
             blocks.append(f"--- {cat.title()} (AMFI NAV data) ---\n{format_fund_search_results(funds)}")
         except Exception as e:
             blocks.append(f"--- {cat.title()} ---\nUnavailable: {e}")
     return "\n\n".join(blocks)
-
-
-def fetch_equity_screen() -> str:
-    try:
-        results = screener_run({"min_roe": 15, "max_de": 1.5, "min_roce": 12}, max_stocks=40)
-        return screener_md(results[:15], {"min_roe": 15, "max_de": 1.5, "min_roce": 12})
-    except Exception as e:
-        return f"Equity quality screen unavailable: {e}"
 
 
 def fetch_macro_news() -> str:
@@ -199,66 +187,86 @@ def sanity_note(profile: dict) -> str:
 
 
 def build_strategy_prompt(profile: dict) -> str:
+    """COMP-01 (docs/ADVICE_POLICY.md): education-only. The plan is a MODEL
+    PORTFOLIO for the investor's risk band, adapted to their horizon —
+    asset classes and fund categories, with named funds only as examples of
+    a category, never "buy this fund/stock". No direct-equity picks for a
+    person. The disclaimer footer is appended in code (graph/guardrails.py),
+    not requested from the model."""
     fund_data = fetch_fund_data(profile)
-    equity_screen = fetch_equity_screen()
     from graph.prompt_safety import wrap_untrusted
 
     # Headlines are third-party text: fenced as data (SEC-03).
     macro_news = wrap_untrusted("news", fetch_macro_news())
+    band = profile.get("risk_tolerance", "moderate")
 
-    return f"""Build a complete, personalised long-term investment strategy for this investor.
+    return f"""Write an EDUCATIONAL model-portfolio explanation for this investor's risk band.
+ARIA is not a SEBI-registered adviser: describe what a typical {band} portfolio for this horizon
+looks like and why, so they can make their own decision. Never tell them to buy a specific fund or
+stock; never promise returns.
 
 INVESTOR PROFILE:
 {json.dumps(profile, indent=2)}
 
-=== RESEARCH DATA (ground every fund/stock name and macro claim in this — never invent one) ===
+=== RESEARCH DATA (fund names may only appear as EXAMPLES of a category, taken from this data) ===
 
---- Mutual Fund Options (AMFI) ---
+--- Mutual Fund Categories and Example Funds (AMFI) ---
 {fund_data}
-
---- Quality-Factor Equity Screen (ROE>15, D/E<1.5, ROCE>12 — candidates for direct equity sleeve) ---
-{equity_screen}
 
 --- Macro & Market Context ---
 {macro_news}
 
 === INSTRUCTIONS ===
-Design the allocation yourself based on this specific person — don't apply a
-generic template. Cover:
-
-## Investment Strategy — {now_ist()}
+## Model Portfolio — {band.title()} risk band — {now_ist()}
 
 ### Profile Summary
-(Restate their situation in 2-3 lines, note anything concerning — e.g. missing
-insurance/emergency fund, risk tolerance mismatched with age/horizon — before the plan)
+(Restate their situation in 2-3 lines; note anything concerning — e.g. missing insurance or
+emergency fund, a risk tolerance that doesn't fit their age or horizon — before anything else)
 
-### Asset Allocation
-(Your recommended equity/debt/gold/international/cash split with % — justify
-each number against THIS profile, not a rule of thumb)
+### Model Allocation for a {band} investor
+(The typical equity/debt/gold/cash split for this risk band, as ranges, and how a horizon of
+{profile.get("horizon_years", "N/A")} years shifts it. Explain the reasoning for each asset class.)
 
-### Equity Sleeve
-(Direct stocks and/or equity mutual funds — pick from the data above, explain why)
+### Fund Categories in Each Sleeve
+(For each sleeve, the SEBI fund categories that fit it — e.g. large cap / flexi cap / index for core
+equity, short-duration or corporate-bond funds for debt — what each category does, and what to
+compare when choosing within it: expense ratio, 5-year returns versus the category, consistency,
+fund size. You may name 1-2 funds per category from the data above, explicitly as examples.)
 
-### Debt & Stability Sleeve
-(Funds from the data above appropriate for their horizon and risk tolerance)
+### Deployment Approach
+(Lump sum vs phased/STP vs SIP for capital of {profile.get("capital", "N/A")} — how investors in this
+band commonly phase in a large amount, and why)
 
-### Deployment Plan
-(Lump sum vs phased/STP-in vs SIP — how to actually put the capital {profile.get("capital", "N/A")} to work
-given the horizon of {profile.get("horizon_years", "N/A")} years; a 30-year horizon with a large lump sum
-usually warrants phased deployment over 6-12 months, not investing it all on day one)
-
-### Glide Path / Rebalancing Checkpoints
-(How the allocation should shift as the goal approaches — give 2-3 concrete
-checkpoints across the horizon, not just day-1 numbers)
+### Rebalancing and Glide Path
+(2-3 checkpoints across the horizon showing how the mix typically becomes more conservative as the
+goal approaches)
 
 ### Gaps to Address First
 (Insurance, emergency fund, high-interest debt — only if relevant to this profile)
 
-### Risks & Assumptions
-*This is educational analysis, not SEBI-registered investment advice.*
+### Risks and What to Ask an Adviser
+(The main risks of this model portfolio, and the questions worth taking to a SEBI-registered adviser)
 """
 
 
 def build_strategy(client, profile: dict) -> str:
-    out = client.chat(build_strategy_prompt(profile), temperature=0.4, max_tokens=TOKENS_COMPLEX)
+    """LLM-03: rupee amounts and return/performance figures in the plan must
+    trace to the prompt's data (the allocation percentages are the model
+    portfolio's design, not data claims). One regeneration, then a note."""
+    from graph.grounding import REGENERATE_INSTRUCTION, check, record, unverified_note
+
+    prompt = build_strategy_prompt(profile)
+    out = client.chat(prompt, temperature=0.4, max_tokens=TOKENS_COMPLEX)
+    result = check(out, prompt, mode="planning")
+    if not result.ok:
+        out = client.ask(
+            prompt + REGENERATE_INSTRUCTION.format(figures=", ".join(result.unsupported)),
+            temperature=0.2,
+            max_tokens=TOKENS_COMPLEX,
+        )
+        result = check(out, prompt, mode="planning")
+        result.regenerated = True
+        if not result.ok:
+            out += unverified_note(result.unsupported)
+    record(result)
     return out + sanity_note(profile)

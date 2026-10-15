@@ -52,7 +52,6 @@ from config import DATABASE_URL, TELEGRAM_BOT_TOKEN
 from tools.analysis.technical import compute_all
 from tools.data.fetcher import get_info, get_ohlcv
 from tools.data.nse_scraper import get_bulk_deals
-from utils.db import ALERT_DELIVERY_SCHEMA_SQL
 from utils.helpers import IST
 from utils.logging_setup import configure_logging
 
@@ -155,12 +154,26 @@ def _price_alert(cache: RunCache, symbol: str, alert_type: str, threshold: float
     return None
 
 
-def _pct_change_alert(cache: RunCache, symbol: str, threshold: float) -> str | None:
+def _moved_enough(pct: float, threshold: float, direction: str | None) -> bool:
+    """VAL-04: a "down 5%" alert fires on -5% or worse, never on +5% (the old
+    abs() comparison fired on either). Rows from before the direction column
+    are migrated to 'either', which keeps their old behaviour."""
+    t = abs(threshold)
+    if direction == "down":
+        return pct <= -t
+    if direction == "up":
+        return pct >= t
+    return abs(pct) >= t
+
+
+def _pct_change_alert(
+    cache: RunCache, symbol: str, threshold: float, direction: str | None = None
+) -> str | None:
     df = cache.ohlcv(symbol, "5d", "1d")
     if df is None or len(df) < 2 or threshold is None:
         return None
     pct = (df["Close"].iloc[-1] - df["Close"].iloc[-2]) / df["Close"].iloc[-2] * 100
-    if abs(pct) >= abs(threshold):
+    if _moved_enough(pct, threshold, direction):
         return f"🔔 {symbol} moved {pct:+.2f}% — beyond your {threshold}% alert"
     return None
 
@@ -225,7 +238,7 @@ def _bulk_deal_alert(cache: RunCache, symbol: str) -> str | None:
 
 
 def _portfolio_pnl_alert(
-    conn, cache: RunCache, user_id: int, symbol: str, threshold: float | None
+    conn, cache: RunCache, user_id: int, symbol: str, threshold: float | None, direction: str | None = None
 ) -> str | None:
     if threshold is None:
         return None
@@ -243,7 +256,7 @@ def _portfolio_pnl_alert(
     if cost == 0:
         return None
     pnl_pct = (qty * price - cost) / cost * 100
-    if abs(pnl_pct) >= abs(threshold):
+    if _moved_enough(pnl_pct, threshold, direction):
         return f"🔔 {symbol} portfolio P&L is {pnl_pct:+.2f}% — beyond your {threshold}% alert"
     return None
 
@@ -280,13 +293,13 @@ def evaluate(conn, alert: dict, cache: RunCache | None = None) -> str | None:
     if atype in ("price_above", "price_below"):
         return _price_alert(cache, symbol, atype, threshold)
     if atype == "pct_change":
-        return _pct_change_alert(cache, symbol, threshold)
+        return _pct_change_alert(cache, symbol, threshold, alert.get("direction"))
     if atype in _INDICATOR_TYPES:
         return _indicator_alert(cache, symbol, atype, threshold)
     if atype == "bulk_deal":
         return _bulk_deal_alert(cache, symbol)
     if atype == "portfolio_pnl":
-        return _portfolio_pnl_alert(conn, cache, alert["user_id"], symbol, threshold)
+        return _portfolio_pnl_alert(conn, cache, alert["user_id"], symbol, threshold, alert.get("direction"))
     return None
 
 
@@ -328,15 +341,8 @@ def deliver(cur, alert: dict, msg: str) -> str:
     return "retry"
 
 
-def ensure_alert_delivery_schema(conn) -> None:
-    cur = conn.cursor()
-    cur.execute(ALERT_DELIVERY_SCHEMA_SQL)
-    conn.commit()
-
-
 def run_once(conn) -> dict[str, int]:
     """Evaluate every active alert once. Returns outcome counts."""
-    ensure_alert_delivery_schema(conn)
     cur = conn.cursor()
     # JOIN pulls each alert owner's linked Telegram chat_id in the same
     # query — every alert notifies ITS OWNER's own chat, not a single
@@ -380,17 +386,28 @@ def run_once(conn) -> dict[str, int]:
     return counts
 
 
-def main():
+def main() -> int:
     if not market_is_open():
         log.info("Market closed — skipping.")
-        return
+        return 0
+    from utils.migrations import SchemaOutOfDate, check_schema
+
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     try:
+        # ARCH-01: this job only reads/writes rows. The schema is migrated by
+        # the app's release step; if that hasn't happened yet, stop loudly
+        # rather than half-work against an old schema.
+        try:
+            check_schema(conn, require_checkpointer=False)
+        except SchemaOutOfDate as e:
+            log.error(f"Alert check aborted: {e}")
+            return 1
         run_once(conn)
     finally:
         conn.close()
+    return 0
 
 
 if __name__ == "__main__":
     configure_logging()
-    main()
+    sys.exit(main())

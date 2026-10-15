@@ -4,6 +4,7 @@ from unittest.mock import patch
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
+from graph.entity_resolution import EntityResult
 from graph.graph import build_graph
 
 
@@ -484,7 +485,8 @@ class TestReportDomainEndToEnd:
 
     def test_report_query_final_report_from_stub(self):
         result, _, _ = self._run()
-        assert result["final_report"] == "Full IC report body."
+        assert result["final_report"].startswith("Full IC report body.")
+        assert "not a SEBI-registered research analyst" in result["final_report"]
 
 
 class TestMfDomainEndToEnd:
@@ -588,7 +590,7 @@ class TestScreenerDomainEndToEnd:
         verification = _StubClient(json.dumps({"issues": []}))
         communication = _StubClient("Here are 2 IT stocks under PE 25.")
         with (
-            patch("graph.nodes.query_analyzer.extract_all_entities", return_value=[]),
+            patch("graph.nodes.query_analyzer.resolve_mentions", side_effect=lambda q: EntityResult()),
             patch("graph.tool_catalogue.screener_parse_query", return_value={"max_pe": 25}),
             patch("graph.tool_catalogue.run_screener", return_value=[{"symbol": "TCS"}, {"symbol": "INFY"}]),
             patch("graph.tool_catalogue.screener_to_markdown", return_value="| TCS |\n| INFY |"),
@@ -631,7 +633,7 @@ class TestPlanningDomainEndToEnd:
         verification = _StubClient(json.dumps({"issues": []}))
         communication = _StubClient("unused")  # intake_turn call is separately mocked below
         with (
-            patch("graph.nodes.query_analyzer.extract_all_entities", return_value=[]),
+            patch("graph.nodes.query_analyzer.resolve_mentions", side_effect=lambda q: EntityResult()),
             patch("graph.nodes.communication_layer.profile_get", return_value={}),
             patch(
                 "graph.nodes.communication_layer._planning_intake_turn",
@@ -672,7 +674,7 @@ class TestPlanningDomainEndToEnd:
             "risk_tolerance": "moderate",
         }
         with (
-            patch("graph.nodes.query_analyzer.extract_all_entities", return_value=[]),
+            patch("graph.nodes.query_analyzer.resolve_mentions", side_effect=lambda q: EntityResult()),
             patch("graph.nodes.communication_layer.profile_get", return_value={}),
             patch(
                 "graph.nodes.communication_layer._planning_intake_turn",
@@ -688,7 +690,9 @@ class TestPlanningDomainEndToEnd:
                 verification_client=verification,
                 communication_client=communication,
             )
-            result = graph.invoke({"query": "here's everything you need", "max_loops": 2, "user_id": 5})
+            result = graph.invoke(
+                {"query": "here's everything you need, build my plan", "max_loops": 2, "user_id": 5}
+            )
         assert result["final_report"] == "Full strategy"
 
 
@@ -737,7 +741,7 @@ class TestMultiIntentEndToEnd:
         assert result["intent"] == "report"
         assert result["secondary_intents"] == ["alert"]
         assert result["md_path"] == "/tmp/r.md"
-        assert result["final_report"] == "Report + alert note."
+        assert result["final_report"].startswith("Report + alert note.")
 
 
 class TestAlertCancelQuery:

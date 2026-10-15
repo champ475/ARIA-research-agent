@@ -71,7 +71,13 @@ from agents.conversation_memory import ConversationMemory
 from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS
 from graph.checkpointer import get_postgres_checkpointer
+from graph.deadline import data_gaps_note, new_deadline
+from graph.entity_resolution import entity_notes_text
 from graph.graph import build_graph
+from graph.grounding import check as grounding_check
+from graph.grounding import record as record_grounding
+from graph.grounding import unverified_note
+from graph.guardrails import check_input, finalize
 
 log = logging.getLogger(__name__)
 
@@ -347,6 +353,28 @@ class GraphOrchestrator:
         return result
 
     def process_stream(self, message: str):
+        """OBS-02 wrapper: runs the turn inside a utils/tracing TurnRecord
+        (one `turns` row per turn, plus a LangSmith trace when enabled). The
+        turn's id comes from the logging context app.py's run_in_turn set, so
+        log lines, the turns row and the user-facing error ID all agree."""
+        from utils import tracing
+        from utils.logging_setup import session_id_var, turn_id_var
+
+        turn_id = turn_id_var.get() or uuid.uuid4().hex
+        with tracing.turn(turn_id, self._user_id, session_id_var.get() or None, message) as rec:
+            try:
+                for out in self._process_stream(message, rec):
+                    if out[0]:
+                        rec.first_output()
+                    yield out
+            except GeneratorExit:
+                rec.status = "cancelled"
+                raise
+            except Exception:
+                rec.status = "error"
+                raise
+
+    def _process_stream(self, message: str, rec):
         """Yields (text, chart, pdf_path, md_path, csv_path, tab_used), text
         growing on each yield for equity/chat turns (CommunicationLayer
         deferred its LLM call to `pending_synthesis_prompt` — see that
@@ -368,9 +396,22 @@ class GraphOrchestrator:
                 # still current in self._provider_config, no need to re-resolve.
                 config = {"configurable": {"thread_id": self._thread_id}}
                 approved = message.strip().lower() in _APPROVE_WORDS
-                result = self._graph.invoke(Command(resume=approved), config=config)
+                # A fresh deadline: the user's think time at the gate mustn't
+                # count against the research budget (REL-02).
+                result = self._graph.invoke(Command(resume=approved, update=new_deadline()), config=config)
             else:
+                # LLM-09: refused requests get a fixed reply — no research, no
+                # LLM call, and no trial quota spent.
+                verdict = check_input(message)
+                if verdict.action == "refuse":
+                    rec.status = "refused"
+                    log.info(f"[guardrails] refused ({verdict.category})")
+                    self._memory.add_user(message)
+                    self._memory.add_assistant(verdict.reply or "")
+                    yield verdict.reply, None, None, None, None, "chat"
+                    return
                 if self._trial_quota_exceeded():
+                    rec.status = "quota"
                     self._memory.add_user(message)
                     self._memory.add_assistant(_TRIAL_EXHAUSTED_MESSAGE)
                     yield _TRIAL_EXHAUSTED_MESSAGE, None, None, None, None, "equity"
@@ -390,11 +431,17 @@ class GraphOrchestrator:
                         "user_id": self._user_id,
                         "history": self._memory.context(),
                         "llm_config": self._provider_config,
+                        "advice_mode": "reframe" if verdict.action == "reframe" else None,
+                        "advice_caution": verdict.caution,
+                        **new_deadline(),
                     },
                     config=config,
                 )
 
+            rec.intent = result.get("intent") or rec.intent
+            rec.complexity = result.get("complexity") or rec.complexity
             if result.get("__interrupt__"):
+                rec.status = "gated"
                 self._awaiting_confirmation = True
                 prompt = result["__interrupt__"][0].value.get("message", "Proceed?")
                 reply = f"{prompt} (reply yes/no)"
@@ -417,6 +464,11 @@ class GraphOrchestrator:
             secondary = result.get("secondary_intents") or []
             tab_used = "+".join([intent] + [s for s in secondary if s != intent])
 
+            gaps_note = entity_notes_text(result) + data_gaps_note(result.get("tasks"))
+            rec.data_gaps = sum(
+                1 for t in result.get("tasks") or [] if t.get("status") in ("failed", "skipped")
+            )
+            rec.status = "partial" if rec.data_gaps else "ok"
             pending_prompt = result.get("pending_synthesis_prompt")
             if pending_prompt:
                 from agents.llm_client import LLMClient
@@ -431,19 +483,27 @@ class GraphOrchestrator:
                     chunks.append(delta)
                     yield "".join(chunks), chart, None, None, None, tab_used
                 text = "".join(chunks)
+                # LLM-03, streamed path: checked once the stream ends; anything
+                # unsupported gets a note in the final text.
+                grounded = grounding_check(text, pending_prompt)
+                record_grounding(grounded)
+                if not grounded.ok:
+                    text += unverified_note(grounded.unsupported)
                 fundamental_payload = result.get("pending_fundamental_payload")
                 if fundamental_payload:
                     text = text + cited_footnotes(text, fundamental_payload)
+                text = finalize(text, result) + gaps_note
                 self._memory.add_assistant(text)
                 yield text, chart, pdf_path, md_path, csv_path, tab_used
                 return
 
-            text = result.get("final_report", "") or ""
+            text = finalize(result.get("final_report", "") or "", result) + gaps_note
             self._memory.add_assistant(text)
             yield text, chart, pdf_path, md_path, csv_path, tab_used
         except LLMProvidersExhausted as e:
             from agents.llm_client import format_exhausted_message
 
+            rec.status = "llm_unavailable"
             text = format_exhausted_message(e)
             self._memory.add_assistant(text)
             yield text, None, None, None, None, "equity"
@@ -456,6 +516,11 @@ class GraphOrchestrator:
         whichever provider the last-resolved turn used (BYO or trial) —
         never a separate hardcoded client."""
         import json
+
+        # VAL-05: a planning reply waiting for an explicit build gets a real
+        # "Build my plan" button (suggestion chips are buttons) — no LLM call.
+        if "say **build my plan**" in (last_response or ""):
+            return ["Build my plan", "Show my profile", "Start over", "Change my risk tolerance"]
 
         from agents.llm_client import LLMClient
         from config import GROQ_MODEL_FAST, TOKENS_FAST

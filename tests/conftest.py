@@ -9,12 +9,12 @@ import pytest
 
 
 def import_app_without_side_effects():
-    """Import app.py without its import-time side effects: init_db() against
-    whatever DATABASE_URL .env holds, and the Telegram polling thread. Unit
-    tests must never touch a real database."""
+    """Import app.py without its import-time side effects: the schema check
+    against whatever DATABASE_URL .env holds, and the Telegram polling
+    thread. Unit tests must never touch a real database."""
     if "app" in sys.modules:
         return sys.modules["app"]
-    with patch("utils.db.init_db"), patch("utils.telegram_link.start_polling_thread"):
+    with patch("utils.db.ensure_schema"), patch("utils.telegram_link.start_polling_thread"):
         import app
     return app
 
@@ -36,6 +36,14 @@ def _no_real_database(request, monkeypatch):
         )
 
     monkeypatch.setattr("psycopg2.connect", _refuse)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_alert_price(monkeypatch):
+    """alert_create checks the live price (VAL-04 "already true"). Tests
+    never reach yfinance for it: the price is "unknown" unless a test sets
+    one, so creation proceeds as if the check couldn't run."""
+    monkeypatch.setattr("graph.tool_catalogue._current_price", lambda symbol: None)
 
 
 @pytest.fixture(autouse=True)

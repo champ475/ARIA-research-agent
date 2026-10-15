@@ -38,8 +38,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S", "T20", "B011", "E741"]
+"tests/**" = ["S", "T20", "B011", "E741", "SIM117"]  # SIM117: nested with-blocks read clearer around a turn
 "scripts/**" = ["T20", "E402"]       # CLI output; sys.path bootstrap before imports
+"migrations/**" = ["S608"]           # reviewed DDL composed only from constants in the revision file
+"evals/**" = ["T20", "E402", "S603", "S607"]  # CLI output; sys.path bootstrap; a fixed `git rev-parse` call
 "app.py" = ["E402", "T201"]          # logging must be configured before other imports; T201: the __main__
                                      # startup banner (tests/test_logging_setup.py forbids print elsewhere)
 

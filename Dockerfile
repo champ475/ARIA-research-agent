@@ -16,4 +16,8 @@ COPY . .
 
 EXPOSE 7860
 
-CMD ["python", "app.py"]
+# Release step, then the app (ARCH-01): migrations run once per container
+# start, before the server accepts traffic. For several replicas, run
+# `python scripts/migrate.py` as a separate one-off release job instead and
+# start replicas with `python app.py`.
+CMD ["sh", "-c", "python scripts/migrate.py && exec python app.py"]

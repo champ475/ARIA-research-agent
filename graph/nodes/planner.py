@@ -30,6 +30,7 @@ from collections.abc import Callable
 
 from agents.llm_client import LLMClient
 from config import GROQ_MODEL_FAST, TOKENS_AGENT
+from graph.entity_resolution import blocking_resolutions
 from graph.journal import log_decision
 from graph.state import GraphState, ResearchPlan, Task
 from graph.tool_catalogue import NO_ENTITY_SENTINEL, catalogue_summary, get_tool, list_tools
@@ -122,6 +123,20 @@ def build_planner_node(
         objective = state.get("objective", "")
         entities = state.get("entities", [])
         complexity = state.get("complexity", "simple")
+
+        blocking = blocking_resolutions(state)
+        if blocking:
+            # VAL-02: ask which company first; researching a guess is how the
+            # wrong company used to get a confident answer.
+            return {
+                "plan": {"objective": objective, "tasks": [], "complexity": complexity},
+                "tasks": [],
+                **log_decision(
+                    "Planner",
+                    "skip ResearchExecutor",
+                    f"unresolved company names: {[u['query'] for u in blocking]}",
+                ),
+            }
 
         if complexity == "simple":
             plan: ResearchPlan = {"objective": objective, "tasks": [], "complexity": complexity}

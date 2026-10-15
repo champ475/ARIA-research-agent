@@ -43,6 +43,7 @@ from graph.nodes.reflection import build_reflection_node
 from graph.nodes.research_executor import research_executor, route_after_research_executor
 from graph.nodes.verification import build_verification_node
 from graph.state import GraphState
+from utils.tracing import traced_node
 
 
 def build_graph(
@@ -59,19 +60,21 @@ def build_graph(
     passed — tests inject stub clients directly and are unaffected."""
     graph = StateGraph(GraphState)
 
-    graph.add_node("QueryAnalyzer", build_query_analyzer_node(query_analyzer_client, provider_config))
-    graph.add_node("Planner", build_planner_node(planner_client, provider_config))
-    graph.add_node("ResearchConfirmation", research_confirmation)
-    graph.add_node("ResearchExecutor", research_executor)
-    graph.add_node("execute_task_node", execute_task_node)
-    graph.add_node("EvidenceSummarizer", evidence_summarizer)
-    graph.add_node("Reflection", build_reflection_node(reflection_client, provider_config))
-    graph.add_node("Verification", build_verification_node(verification_client, provider_config))
-    graph.add_node("VerificationGate", verification_gate)
-    graph.add_node("ConclusionBuilder", conclusion_builder)
-    graph.add_node(
-        "CommunicationLayer", build_communication_layer_node(communication_client, provider_config)
-    )
+    def _add(name: str, fn) -> None:
+        # OBS-02: every node gets a trace span and its wall time on the turn record.
+        graph.add_node(name, traced_node(name, fn))
+
+    _add("QueryAnalyzer", build_query_analyzer_node(query_analyzer_client, provider_config))
+    _add("Planner", build_planner_node(planner_client, provider_config))
+    _add("ResearchConfirmation", research_confirmation)
+    _add("ResearchExecutor", research_executor)
+    _add("execute_task_node", execute_task_node)
+    _add("EvidenceSummarizer", evidence_summarizer)
+    _add("Reflection", build_reflection_node(reflection_client, provider_config))
+    _add("Verification", build_verification_node(verification_client, provider_config))
+    _add("VerificationGate", verification_gate)
+    _add("ConclusionBuilder", conclusion_builder)
+    _add("CommunicationLayer", build_communication_layer_node(communication_client, provider_config))
 
     graph.add_edge(START, "QueryAnalyzer")
     graph.add_edge("QueryAnalyzer", "Planner")

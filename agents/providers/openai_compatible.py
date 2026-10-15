@@ -15,7 +15,8 @@ difference.
 from __future__ import annotations
 
 from agents.conversation_memory import ConversationMemory
-from config import TOKENS_FAST
+from config import LLM_STREAM_TIMEOUT_SECONDS, LLM_TIMEOUT_SECONDS, TOKENS_FAST
+from utils.tracing import usage_from_response
 
 _SUMMARY_PROMPT = (
     "Existing summary of earlier conversation (may be empty):\n{old}\n\n"
@@ -27,6 +28,10 @@ _SUMMARY_PROMPT = (
 
 
 class OpenAICompatibleProvider:
+    # REL-02 per-request timeouts; LocalLLMProvider overrides both (CPU model).
+    _request_timeout: float = LLM_TIMEOUT_SECONDS
+    _stream_timeout: float = LLM_STREAM_TIMEOUT_SECONDS
+
     def __init__(self, system: str, api_key: str, model: str, base_url: str | None = None):
         if not api_key:
             raise ValueError(
@@ -47,9 +52,13 @@ class OpenAICompatibleProvider:
 
         if base_url:
             base_url = validate_public_https_url(base_url)
-        self._bind(
-            _OpenAI(api_key=api_key, base_url=base_url or None, http_client=safe_http_client()), model, system
+        client = _OpenAI(
+            api_key=api_key,
+            base_url=base_url or None,
+            http_client=safe_http_client(timeout=LLM_TIMEOUT_SECONDS),
+            max_retries=0,  # LLMClient owns retries (REL-02)
         )
+        self._bind(client, model, system)
         # Instance attribute (not the usual class-level `name`) since the
         # displayed provider name should reflect what the user configured.
         self.name = f"{model} ({base_url})" if base_url else model
@@ -70,6 +79,7 @@ class OpenAICompatibleProvider:
             temperature=0.2,
             max_tokens=TOKENS_FAST,
         )
+        self.last_usage = usage_from_response(r)
         return r.choices[0].message.content.strip()
 
     def ask(
@@ -85,7 +95,9 @@ class OpenAICompatibleProvider:
             messages=msgs,
             temperature=temperature,
             max_tokens=max_tokens,
+            timeout=self._request_timeout,
         )
+        self.last_usage = usage_from_response(r)
         return r.choices[0].message.content.strip()
 
     def chat(
@@ -98,7 +110,9 @@ class OpenAICompatibleProvider:
             messages=msgs,
             temperature=temperature,
             max_tokens=max_tokens,
+            timeout=self._request_timeout,
         )
+        self.last_usage = usage_from_response(r)
         reply = r.choices[0].message.content.strip()
         self._memory.add_assistant(reply)
         return reply
@@ -114,6 +128,7 @@ class OpenAICompatibleProvider:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
+                timeout=self._stream_timeout,
             )
             for event in events:
                 delta = event.choices[0].delta.content

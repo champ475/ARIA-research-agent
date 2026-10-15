@@ -82,6 +82,9 @@ class _Conn:
     def rollback(self):
         pass
 
+    def close(self):
+        pass
+
 
 def _alert(**kw):
     base = {
@@ -235,10 +238,27 @@ def test_indicator_alerts_share_one_ohlcv_fetch(bot):
     assert go.call_count == 1
 
 
-def test_run_applies_delivery_schema_first(bot):
-    conn = _Conn([])
-    ca.run_once(conn)
-    assert "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS delivery_attempts" in conn.cur.executed[0][0]
+def test_run_issues_no_ddl(bot):
+    """ARCH-01: the checker never creates or alters tables."""
+    conn = _Conn([_alert()])
+    with patch.object(ca, "get_info", return_value={"currentPrice": 50.0}):
+        ca.run_once(conn)
+    assert not [s for s, _ in conn.cur.executed if s.split()[0].upper() in ("CREATE", "ALTER", "DROP")]
+
+
+def test_main_aborts_when_schema_out_of_date(monkeypatch):
+    from utils import migrations
+
+    monkeypatch.setattr(ca, "market_is_open", lambda: True)
+    monkeypatch.setattr(ca.psycopg2, "connect", lambda *a, **k: _Conn([]))
+
+    def _stale(conn, require_checkpointer=True):
+        raise migrations.SchemaOutOfDate("schema is at 0001, needs 0002")
+
+    monkeypatch.setattr(migrations, "check_schema", _stale)
+    with patch.object(ca, "run_once") as run:
+        assert ca.main() == 1
+    run.assert_not_called()
 
 
 def test_inbox_markdown_escapes_and_marks_unread(app_module):
@@ -261,3 +281,32 @@ def test_inbox_markdown_escapes_and_marks_unread(app_module):
     assert md.splitlines()[0].startswith("- 🔵") and not md.splitlines()[1].startswith("- 🔵")
     assert "10:30 IST" in md
     assert app_module._inbox_md([]) == "*No alert notifications.*"
+
+
+# ── VAL-04: percent alerts honour their direction ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "pct,direction,fires",
+    [
+        (-5.2, "down", True),
+        (5.2, "down", False),
+        (5.2, "up", True),
+        (-5.2, "up", False),
+        (5.2, "either", True),
+        (-5.2, "either", True),
+        (4.9, "either", False),
+        (5.2, None, True),
+    ],
+)
+def test_percent_alert_direction(pct, direction, fires):
+    assert ca._moved_enough(pct, 5.0, direction) is fires
+
+
+def test_minus_five_percent_alert_does_not_fire_on_a_five_percent_rise(bot):
+    import pandas as pd
+
+    cache = MagicMock()
+    cache.ohlcv.return_value = pd.DataFrame({"Close": [100.0, 105.0]})
+    assert ca._pct_change_alert(cache, "TCS", 5.0, "down") is None
+    assert ca._pct_change_alert(cache, "TCS", 5.0, "up") is not None

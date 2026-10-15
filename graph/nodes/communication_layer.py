@@ -61,7 +61,15 @@ from collections.abc import Callable
 import pandas as pd
 
 from agents.llm_client import LLMClient
-from config import TOKENS_SYNTHESIS
+from config import SYNTHESIS_EVIDENCE_CHAR_BUDGET, TOKENS_SYNTHESIS
+from graph.advice_policy import REFRAME_INSTRUCTION
+from graph.data_questions import NO_LIVE_DATA_INSTRUCTION
+from graph.entity_resolution import blocking_resolutions, clarification_text
+from graph.evidence_render import render_evidence_block
+from graph.grounding import REGENERATE_INSTRUCTION, unverified_note
+from graph.grounding import check as grounding_check
+from graph.grounding import record as record_grounding
+from graph.guardrails import finalize
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
 from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
@@ -69,13 +77,11 @@ from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
 from utils.db import profile_clear, profile_get, profile_upsert, report_get, report_list, report_save
+from utils.financial_profile import is_complete as _profile_complete
+from utils.financial_profile import profile_summary as _profile_summary
+from utils.financial_profile import sanitize_profile as _sanitize_profile
+from utils.financial_profile import wants_build as _wants_build
 from utils.helpers import detect_report_type
-from utils.planning_logic import (
-    BUILD_TRIGGER_KW as _PLANNING_BUILD_TRIGGER_KW,
-)
-from utils.planning_logic import (
-    REQUIRED_FIELDS as _PLANNING_REQUIRED,
-)
 from utils.planning_logic import (
     build_strategy as _planning_build_strategy,
 )
@@ -106,8 +112,10 @@ _SYSTEM = (
     "ratio using its exact [^key] marker where one is given, right after the "
     'number (e.g. "P/E of 24.3 [^pe]") — never invent a marker, never attach '
     "one to a value that has none. Do not introduce any number that isn't in "
-    "the conclusions list. If the conclusions don't fully cover the "
-    "objective, say so plainly rather than filling the gap." + UNTRUSTED_NOTICE
+    "the conclusions list or the evidence data. You may quote names, rows and "
+    "headlines from the evidence data section; never invent a fund, company, "
+    "headline or figure that isn't there. If the conclusions and evidence don't "
+    "fully cover the objective, say so plainly rather than filling the gap." + UNTRUSTED_NOTICE
 )
 
 
@@ -128,12 +136,37 @@ def _render_history(history: list[dict]) -> str:
     return "Recent conversation (oldest first):\n" + wrap_untrusted("history", "\n".join(lines)) + "\n"
 
 
-def _build_prompt(objective: str, conclusions: list[Conclusion], history: list[dict]) -> str:
+def _build_prompt(
+    objective: str, conclusions: list[Conclusion], history: list[dict], evidence_block: str = ""
+) -> str:
     lines = [_render_history(history), f"Objective: {objective}", "", "Verified conclusions:"]
     for c in conclusions:
         marker = f" [^{c['citation_key']}]" if c["citation_key"] in _CANONICAL_RATIO_KEYS else ""
         lines.append(f"- {c['claim']}{marker} (confidence: {c['confidence']:.2f})")
+    if evidence_block:
+        # LLM-02: the actual rows, headlines and passages behind the conclusions.
+        lines += ["", "Evidence data:", evidence_block]
     return "\n".join(lines)
+
+
+def _grounded_ask(client: LLMClient, prompt: str) -> str:
+    """LLM-03, sync path: every figure in the answer must be traceable to the
+    prompt it was written from. One regeneration with the unsupported list;
+    whatever is still unsupported gets a visible note."""
+    answer = client.ask(prompt, max_tokens=TOKENS_SYNTHESIS)
+    result = grounding_check(answer, prompt)
+    if not result.ok:
+        retry = client.ask(
+            prompt + REGENERATE_INSTRUCTION.format(figures=", ".join(result.unsupported)),
+            max_tokens=TOKENS_SYNTHESIS,
+        )
+        result = grounding_check(retry, prompt)
+        result.regenerated = True
+        answer = retry
+        if not result.ok:
+            answer += unverified_note(result.unsupported)
+    record_grounding(result)
+    return answer
 
 
 def _confidence_summary(conclusions: list[Conclusion]) -> dict:
@@ -305,23 +338,30 @@ def _handle_planning(client: LLMClient, state: GraphState) -> dict:
             f"user_id={user_id}",
         )
 
-    profile = profile_get(user_id)
+    # VAL-05: stored rows from before validation may hold invalid values —
+    # never plan on them; they're simply asked for again.
+    profile = _sanitize_profile(profile_get(user_id))
     updates, minimum_complete, reply = _planning_intake_turn(client, query, profile)
     if updates:
-        profile = profile_upsert(user_id, updates)
-
-    was_already_complete = all(profile.get(f) not in (None, "") for f in _PLANNING_REQUIRED) and not updates
-    wants_build = any(k in lower for k in _PLANNING_BUILD_TRIGGER_KW)
+        profile = _sanitize_profile(profile_upsert(user_id, updates))
+    minimum_complete = _profile_complete(profile)
 
     if not minimum_complete:
         return _empty_result(
             reply, "planning: intake incomplete", f"user_id={user_id}, updates={list(updates)}"
         )
 
-    if updates or wants_build or not was_already_complete:
+    if _wants_build(query):
         strategy = _planning_build_strategy(client, profile)
         return _empty_result(strategy, "planning: built strategy", f"user_id={user_id}")
-    return _empty_result(reply, "planning: intake reply, no build triggered", f"user_id={user_id}")
+
+    # Complete but not asked for: show exactly what was saved first (the
+    # capital-allocation check), and build only on an explicit request.
+    text = (
+        f"{reply}\n\n**Here's what I've saved — please check it:**\n\n{_profile_summary(profile)}\n\n"
+        "When this looks right, say **build my plan** (or correct anything above)."
+    )
+    return _empty_result(text, "planning: profile complete, awaiting explicit build", f"user_id={user_id}")
 
 
 def build_communication_layer_node(
@@ -331,6 +371,21 @@ def build_communication_layer_node(
     client = client or LLMClient(_SYSTEM, provider_config)
 
     def communication_layer(state: GraphState) -> dict:
+        blocking = blocking_resolutions(state)
+        if blocking:
+            return {
+                "final_report": clarification_text(blocking),
+                "pending_synthesis_prompt": None,
+                "pending_fundamental_payload": None,
+                "chart_html": None,
+                "confidence_summary": {},
+                **log_decision(
+                    "CommunicationLayer",
+                    "asked which company",
+                    f"unresolved: {[u['query'] for u in blocking]}",
+                ),
+            }
+
         if state.get("intent") == "planning":
             return _handle_planning(client, state)
 
@@ -348,6 +403,9 @@ def build_communication_layer_node(
 
         intent = state.get("intent") or "equity"
         intents = _intents(state)
+        # LLM-09: a request for a personal call is answered as analysis.
+        advice = REFRAME_INSTRUCTION if state.get("advice_mode") == "reframe" else ""
+        evidence_block = render_evidence_block(evidence, SYNTHESIS_EVIDENCE_CHAR_BUDGET, intents, query)
 
         if not conclusions and state.get("complexity") == "simple":
             # Trivial path: Planner deliberately generated no tasks (RFC's
@@ -355,7 +413,8 @@ def build_communication_layer_node(
             # evidence to build conclusions from — this isn't a research
             # failure, just a question that doesn't need research. Answer
             # directly instead of reporting a gap that was never a gap.
-            prompt = _render_history(history) + (query or objective)
+            # LLM-06: nothing was fetched, so the model must not state figures.
+            prompt = NO_LIVE_DATA_INSTRUCTION + _render_history(history) + (query or objective) + advice
             if _is_streamable(intent, intents):
                 return {
                     "final_report": "",
@@ -367,7 +426,7 @@ def build_communication_layer_node(
                         "CommunicationLayer", "deferred to streaming, no research needed", "complexity=simple"
                     ),
                 }
-            report = client.ask(prompt, max_tokens=TOKENS_SYNTHESIS)
+            report = _grounded_ask(client, prompt)
             return {
                 "final_report": report,
                 "pending_synthesis_prompt": None,
@@ -408,7 +467,8 @@ def build_communication_layer_node(
             # agents/equity_agent.py's streaming behavior.
             return {
                 "final_report": "",
-                "pending_synthesis_prompt": _build_prompt(objective, conclusions, history),
+                "pending_synthesis_prompt": _build_prompt(objective, conclusions, history, evidence_block)
+                + advice,
                 "pending_fundamental_payload": fundamental_payload or None,
                 "chart_html": chart,
                 "pdf_path": None,
@@ -420,13 +480,18 @@ def build_communication_layer_node(
                 ),
             }
 
-        report = client.ask(_build_prompt(objective, conclusions, history), max_tokens=TOKENS_SYNTHESIS)
+        report = _grounded_ask(
+            client, _build_prompt(objective, conclusions, history, evidence_block) + advice
+        )
         if fundamental_payload:
             report = report + cited_footnotes(report, fundamental_payload)
 
         pdf_path = md_path = None
         if "report" in intents and primary_entity:
             rtype = detect_report_type((query or objective).lower())
+            # LLM-09: the saved/downloaded report carries the same checks and
+            # footer as the chat answer (finalize() is idempotent).
+            report = finalize(report, state)
             md_path, pdf_path = render_report(primary_entity, rtype, report)
             user_id = state.get("user_id")
             if user_id is not None:

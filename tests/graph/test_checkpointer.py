@@ -1,5 +1,10 @@
 from unittest.mock import MagicMock, patch
 
+# Import before any test patches psycopg_pool.ConnectionPool: the module binds
+# ConnectionPool at import time, and importing it under that patch would leave
+# a mock in it for the rest of the session (breaking the real saver later).
+import langgraph.checkpoint.postgres  # noqa: F401
+
 import graph.checkpointer as checkpointer_module
 
 
@@ -15,14 +20,16 @@ class TestGetPostgresCheckpointer:
     def teardown_method(self):
         _reset_singleton()
 
-    def test_calls_setup_exactly_once(self):
+    def test_never_calls_setup(self):
+        """ARCH-01: checkpoint tables are created by scripts/migrate.py, not by
+        the app process."""
         fake_saver = MagicMock()
         with (
             patch("psycopg_pool.ConnectionPool"),
             patch("langgraph.checkpoint.postgres.PostgresSaver", return_value=fake_saver),
         ):
             checkpointer_module.get_postgres_checkpointer()
-        fake_saver.setup.assert_called_once()
+        fake_saver.setup.assert_not_called()
 
     def test_returns_singleton_on_repeated_calls(self):
         fake_saver = MagicMock()
@@ -33,4 +40,3 @@ class TestGetPostgresCheckpointer:
             first = checkpointer_module.get_postgres_checkpointer()
             second = checkpointer_module.get_postgres_checkpointer()
         assert first is second
-        fake_saver.setup.assert_called_once()  # not called again on second access

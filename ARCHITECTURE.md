@@ -16,6 +16,592 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-14 — Golden-set evaluation with record/replay LLM fixtures (LLM-01)
+
+**Problem.** Prompt, model and graph changes shipped with no measurement of
+whether routing, entity resolution, tool choice or safety got better or
+worse, and model deprecations (Groq has already retired two of ours) went
+unnoticed until users hit errors.
+
+**Alternatives considered.**
+- *promptfoo or DeepEval.* Rejected: another toolchain (Node, or a large
+  dependency tree), and our scoring is mostly graph-specific (write gate,
+  entity resolution, blocking) rather than generic text metrics.
+- *Live LLM in CI.* Rejected: it is non-deterministic, needs keys in CI,
+  costs quota, and is slow on the local fallback.
+
+**Final decision.**
+- **Golden set.** `evals/cases/golden.jsonl` holds 240 cases authored in
+  `evals/build_golden.py`: 32 equity, 20 report, 25 MF, 21 screener,
+  25 alert, 20 planning, 15 chat, 30 VAL edge cases, 20 Hinglish/typo,
+  32 red-team.
+- **What it runs.** `evals/runner.py` drives the real path: guardrails →
+  QueryAnalyzer → Planner → write gate.
+- **LLM calls** go through a record/replay client keyed by
+  sha256(node, system prompt, prompt):
+  - `--replay` (CI) is deterministic and needs no network;
+  - `--record` fills in missing responses from whatever provider chain is
+    configured and is resumable.
+- **Metrics:**
+  - always computed: guardrail accuracy and entity F1;
+  - computed on recorded cases: intent, blocking, complexity, tool recall,
+    and write safety (no forbidden tool would *execute*).
+- **Results** go to `evals/results/<sha>.json`.
+- **CI.** An `eval` job compares against `evals/baseline.json`, fails on a
+  drop of more than 2 points, and comments the diff on the PR. `make eval`
+  runs it locally.
+- **First use.** The harness found real defects on its first run: a
+  guardrail false positive on "should I invest…", and "Kotak Mahindra Bank"
+  resolving to KOTAKBANK *and* M&M. Also generic words before "stocks"
+  becoming companies, Hinglish particles breaking extraction, and multi-word
+  typos. All are fixed in this change; deterministic metrics are now 100%.
+
+**Trade-offs.**
+- **Small-model baseline.** The baseline LLM responses come from the local
+  3B model (no cloud key). Re-record with the production model once keys
+  work; fixtures are keyed by prompt, so any prompt change invalidates its
+  fixtures, and those cases show as "unrecorded" until re-recorded.
+- **Not yet end-to-end.** Answers aren't generated and judged yet: the
+  LLM-as-judge needs a stronger model than the one under test plus 50
+  human-labelled calibration answers (the PRD asks for ≥80% agreement). The
+  runner reports it as "not configured".
+- **Grounding and disclaimers** are covered by unit tests rather than
+  answer-level eval metrics.
+
+**Future improvements.**
+- An end-to-end subset with recorded tool outputs and synthesis.
+- The judge, once a cloud key and labels exist.
+- A nightly run against the live model to catch provider deprecations.
+
+---
+
+## 2026-10-14 — Mutual fund rankings from SEBI categories and computed returns (DATA-04)
+
+**Problem.**
+- **Arbitrary picks.** "Best ELSS funds" returned the first rows of AMFI's
+  NAVAll whose name contained the keyword (alphabetical by AMC), with no
+  performance data, and planning allocations were built from those.
+- **Comparisons said nothing.** They showed NAV levels only.
+- **Live outage.** AMFI moved NAVAll to an 8-field layout, so the old
+  6-field parser kept only NAV-less rows and category lookups returned
+  nothing at all.
+
+**Alternatives considered.**
+- *A paid data vendor* (Value Research or Morningstar APIs). Not for now:
+  cost and licensing (COMP-05).
+- *Store full daily NAV history in Postgres.* Rejected: about 1,500
+  direct-growth schemes × years of daily data would outgrow Neon's free
+  tier, and rankings only need summary metrics.
+- *Rank by AUM or expense ratio.* Rejected: neither is in NAVAll or mfapi,
+  and they need another source (left for later).
+
+**Final decision.**
+- **`tools/data/mf_data.py`:**
+  - parses both NAVAll layouts, the SEBI category header (variants merged
+    into canonical names), plan, option and open/closed-ended status;
+  - takes NAV history from mfapi.in through the guarded session;
+  - computes point-to-point 1-year return, 3/5-year CAGR, 1-year volatility,
+    3-year max drawdown and rolling 1-year consistency;
+  - `rank_funds` ranks open-ended direct-growth plans of the category by the
+    CAGR that matches the horizon, then lower volatility, and carries
+    `ranking_method` so the answer states it.
+- **Caching.** Metrics are cached daily in `mf_metrics` (migration 0006),
+  with a fetch budget of 18 s inside the 25 s tool budget.
+  `scripts/refresh_mf.py` warms the common categories.
+- **Wiring.** AMFI's `get_category_funds`, `get_mf_comparison`, planning
+  (horizon-aware), ConclusionBuilder (method in the claim) and the evidence
+  renderer all use it.
+- **Accuracy.** `scripts/verify_mf_returns.py` compares against AMFI's own
+  published NAVs. On 2026-10-14: 36 returns across 12 schemes in ELSS, Large
+  Cap and Flexi Cap, largest difference 0.006 pp (PRD bar 0.1 pp).
+
+**Trade-offs.**
+- **mfapi.in is a free community API** with no SLA. Its NAVs matched AMFI in
+  the check, and a circuit breaker protects us when it is down.
+- **The first ranking of a category per day** fetches every scheme's history
+  (about 10 s for ELSS) unless warmed.
+- **Missing ranking factors.** Expense ratio and AUM aren't factored in yet.
+
+**Future improvements.**
+- A nightly refresh job.
+- TER and AUM from AMFI's disclosure files.
+- Category-relative consistency (beating the category median rather than
+  being positive).
+
+---
+
+## 2026-10-14 — Every figure in an answer is checked against what the model was given (LLM-03)
+
+**Problem.** "Never introduce a number not in the conclusions" was only an
+instruction. A hallucinated P/E, target or return reached users looking as
+confident as a real one.
+
+**Alternatives considered.**
+- *An LLM judge per answer.* Rejected: an extra call, non-deterministic, and
+  the judge itself can be fooled.
+- *Check against conclusions only.* Rejected: LLM-02 now gives the model
+  evidence rows and headlines it may legitimately quote.
+
+**Final decision.**
+- **What "grounded" means.** `graph/grounding.py` takes the *prompt the
+  model actually saw* as the source of truth: conclusions, rendered
+  evidence, history and the user's message.
+- **Extraction.** Figures with units are extracted (₹ / % / x / k / lakh /
+  crore / lakh crore). Dates, years, ordinals, citation markers, indicator
+  periods and small bare counts are skipped, unless a metric word precedes
+  them ("P/E of 99").
+- **Matching.** A figure matches when it is exact, within rounding (±0.5%
+  or half the last shown digit), after a unit change (ratio↔%,
+  rupees↔lakh/crore), or a narrow derivation: a difference or % change of
+  two same-scale numbers, or x% of y. Derivations are never rescaled; an
+  early version let a 5.0% move "support" ₹5,000.
+- **Sync answers** are regenerated once with the unsupported list. Anything
+  still unsupported, and anything on the streamed path once the stream
+  ends, gets "⚠️ Unverified figures: …".
+- **Planning** checks rupee amounts and return claims, but not the model
+  portfolio's own allocation percentages.
+- **Recording.** Results go to `turns.grounding` and are logged.
+
+**Trade-offs.**
+- **Heuristic coverage.** Extraction rules can miss an unusually written
+  number, or skip a small figure without a metric word.
+- **Grounded is not correct.** A number copied from history counts as
+  grounded even if that earlier answer was wrong (it would have been
+  flagged then).
+- **Streamed text isn't corrected.** The streamed path only annotates; it
+  can't take back text already shown.
+
+**Future improvements.**
+- Report the ungrounded-number rate on the OBS-03 dashboard (PRD target
+  below 0.5%).
+- Buffer the streamed last sentence.
+- Map each figure to its claim for per-claim citations (UX-07).
+
+---
+
+## 2026-10-14 — The answer model reads rendered evidence, not just claim strings (LLM-02)
+
+**Problem.** CommunicationLayer passed only each Conclusion's one-line
+claim. Fund searches, movers and deals became counts, news became a headline
+count, and filings were cut to 150 words. Asked for "best ELSS funds" or "why
+TCS is down", the model had nothing to quote, so it either refused or
+invented names. The system prompt forbade inventing them, but nothing
+supplied the real ones.
+
+**Alternatives considered.**
+- *Make conclusions richer* (one claim per fund or headline). Rejected: it
+  blows up Verification and Reflection, which also read conclusions and are
+  budgeted to about 6k characters.
+- *Dump the raw payloads.* Rejected: unbounded size (a filing can be
+  hundreds of kilobytes), and third-party text would arrive unfenced.
+
+**Final decision.**
+- **`graph/evidence_render.py`** renders each evidence type in a bounded
+  form:
+  - tables: the top 15 rows of the relevant columns, as Markdown;
+  - news: 8 deduplicated headlines with source and date;
+  - filings: the passages around results, segment and commentary
+    headings;
+  - pre-rendered Markdown: truncated at a row boundary.
+- **Budget.** `SYNTHESIS_EVIDENCE_CHAR_BUDGET` (12k characters) is split by
+  relevance to the intent and question, with unused share redistributed.
+- **Fencing.** Third-party text is wrapped as untrusted, and numbers are
+  kept verbatim for LLM-03.
+- **Prompt.** CommunicationLayer appends an "Evidence data" section, and its
+  system prompt allows quoting it but nothing outside it. Conclusions
+  (Reflection/Verification's view) are unchanged.
+
+**Trade-offs.**
+- **Bigger prompts.** Up to about 3k extra tokens per synthesis, more
+  latency on the local model.
+- **Heuristic passage choice.** Filing passages are picked by heading
+  keywords, so an unusually formatted filing can fall back to its opening
+  text.
+- **Quality gain not yet measured.** The PRD's "completeness +1.0 judge
+  point" needs the LLM-01 judge, which needs a cloud key.
+
+**Future improvements.**
+- Relevance by embedding similarity, using a local `nomic-embed` model.
+- Table-aware PDF extraction.
+- Budget by tokens rather than characters.
+
+---
+
+## 2026-10-14 — Education-only advice boundary, enforced in code (COMP-01, LLM-09)
+
+**Problem.** Planning named specific funds and percentages for one person,
+reports and "should I buy" answers could carry calls or targets, and the only
+disclaimer was a line the prompt *asked* the model to add. Nothing stopped
+"guaranteed 30% returns", insider-information or pump-scheme requests.
+Personalised advice to the public can fall under SEBI's IA/RA regulations
+whatever a footer says.
+
+**Alternatives considered.**
+- *Regulated posture (RIA/RA partner).* Rejected by the user for now: it
+  needs registration or a partner, records, suitability and grievance
+  handling.
+- *Rely on prompt instructions.* Rejected: they aren't enforceable, and
+  small local models ignore them.
+- *An LLM classifier on every turn.* Not used: it adds an extra call and
+  latency, especially on the local fallback, and deterministic rules are
+  testable.
+
+**Final decision.**
+- **Posture.** Education-only, written up in `docs/ADVICE_POLICY.md`
+  (**DRAFT, pending counsel review**) and linked from LEGAL.md.
+- **`graph/advice_policy.py`** holds the fixed footers, refusal texts and
+  the reframe instruction.
+- **`graph/guardrails.py`:**
+  - `check_input` runs before the graph. It refuses insider, manipulation
+    and guaranteed-return requests with no research, no LLM call and no
+    quota spent. It reframes personal buy/sell calls and tips (the answer
+    prompt gets an explicit no-call instruction) and adds a caution for
+    unlisted, penny and grey-market requests.
+  - Rules separate "asking about" from "wanting to do".
+  - `finalize` runs on every answer, streamed and sync, and inside
+    generated report files. It removes promise and personal-call sentences
+    (except negated warnings) with a note, and appends the footer by answer
+    kind in code.
+- **Planning** is now a model portfolio for the risk band: categories, with
+  named funds only as examples, and no direct-stock picks.
+- **Tests.** A red-team set of 46 prompts is 100% correct; footers are
+  verified for every planning, report and research answer kind.
+
+**Trade-offs.**
+- **Rules miss novel phrasings.** The red-team set must grow with every
+  miss found in traces (OBS-02).
+- **Streamed answers can flicker.** A removed sentence is visible while
+  streaming until the final text replaces it.
+- **"Personal" is approximate.** "Should I buy X" is reframed even when the
+  user only wants analysis. Analysis is still delivered.
+- **Not legal sign-off.** The policy needs counsel review before a public
+  launch.
+
+**Future improvements.**
+- An optional classifier for borderline phrasings, measured against the
+  golden set (LLM-01).
+- Buffer the last sentence of a stream before showing it (LLM-03 does the
+  same for numbers).
+- Versioned consent and terms (COMP-02).
+
+---
+
+## 2026-10-14 — Alerts are a validated AlertSpec before they're saved (VAL-04)
+
+**Problem.** Alert creation took the last number in the sentence ("below
+3500 by Friday 2026" → 2026). It accepted impossible values (RSI 150,
+negative prices) and saved alerts that would fire on the next check. It
+also saved exact duplicates, had no per-user cap, and `pct_change` used
+`abs()`, so a "drops 5%" alert fired on a 5% rise. With two alerts on one
+stock, cancel/pause/resume could only answer "ambiguous".
+
+**Alternatives considered.**
+- *Let the LLM extract every condition.* Rejected: it needs a network call
+  per alert, the output is unvalidated, and small local models are worse
+  at it.
+- *Validate only in the database* (CHECK constraints). Rejected: users
+  would get a raw error instead of a reason, and the database can't know
+  the live price.
+
+**Final decision.**
+- **`graph/alert_spec.py`:**
+  - A pydantic `AlertSpec` (14 types; per-type ranges; `direction`
+    up/down/either for percent and P&L alerts).
+  - A deterministic `parse_alert` that reads the number next to the
+    comparator, understands Indian amounts (`utils/indian_numbers.py`), and
+    returns a spec or an `AlertRefusal` with a reason. The LLM extractor is
+    only a fallback, and its JSON passes the same validation.
+  - `describe()` produces the plain-words echo in code.
+- **Creation** checks the live price. A condition that is already true asks
+  for confirmation ("add 'anyway'") instead of saving.
+- **Migration `0005`:**
+  - adds `direction`, with existing percent rows set to 'either' so their
+    behaviour is unchanged;
+  - deactivates pre-existing duplicate active alerts, keeping the oldest
+    and deleting nothing;
+  - adds a partial unique index on active alerts.
+- **`utils/db.py::alert_add`** raises `DuplicateAlert` (naming the existing
+  id) and `AlertLimitReached`. The cap of 50 active alerts is checked
+  inside the INSERT.
+- **Management.** Cancel, pause and resume honour "alert #id", restricted
+  to the user's own list. When several alerts match a symbol they are
+  listed with their ids.
+- **Checker.** `scripts/check_alerts.py` honours direction.
+
+**Trade-offs.**
+- **Confirmation is a re-ask.** Confirming an already-true alert means
+  sending the request again with "anyway"; the pending spec isn't held
+  across turns.
+- **The cap can be overshot slightly.** It is a count inside the INSERT,
+  not a lock, so it could only be exceeded by concurrent creates from the
+  same user, and per-user turns are serialised.
+- **No live-price check** for indicator alerts: there's no "already true"
+  check for those.
+
+**Future improvements.**
+- Hold the pending spec in state so "yes" confirms it.
+- Add UX-06's alert management screen.
+- Let users edit an alert's threshold in place.
+
+---
+
+## 2026-10-14 — Company names resolve against a vendored NSE/BSE instrument master (VAL-02)
+
+**Problem.**
+- **Wrong company.** An unrecognised name silently became the previous turn's
+  ticker: "XYZQ" after a TCS question was answered about TCS.
+- **Guessed entities.** Entities were guessed from capitalised tokens plus a
+  live yfinance lookup, so typos, BSE codes and group names ("HDFC",
+  "Tata Motors" after the demerger) behaved inconsistently.
+- **Stale symbols.** The curated universe had gone stale: `TVS MOTOR`
+  (space), `TATAMOTORS` (demerged), `LTIM` (renamed LTM), `KPIT`, `IPCA`.
+
+**Alternatives considered.**
+- *Ask the LLM to output tickers.* Rejected: it invents symbols, and local
+  models invent more.
+- *Live NSE/BSE lookups per turn.* Rejected: slow, rate-limited, and BSE's
+  API sits behind bot protection.
+- *yfinance Search.* Rejected: networked, fuzzy in undocumented ways, with
+  no ambiguity signal.
+
+**Final decision.**
+- **Vendored snapshots.** NSE `EQUITY_L.csv` (2,605 instruments) and BSE
+  scrip code → ISIN taken from BSE's public daily bhavcopy (5,033 codes,
+  2,410 also on NSE), refreshed by `scripts/refresh_instruments.py`.
+- **`tools/data/instruments.py::resolve`** returns a typed Resolution
+  (found / ambiguous / not_found). Stages, in order:
+  1. exact symbol
+  2. renamed symbol, with a note (ZOMATO → ETERNAL, TATAMOTORS → TMPV,
+     LTIM → LTM)
+  3. BSE code via ISIN
+  4. alias
+  5. company name: an exact name wins unless it is known-ambiguous; a bare
+     group name asks
+  6. rapidfuzz: the average of a distinctive-word score and a full-name
+     score; ≥90 with a margin resolves, 75–90 asks, otherwise not_found
+     with suggestions
+- **Mentions** (`graph/entity_resolution.py`):
+  - **Found deterministically:** aliases and names, `.NS`/`.BO`, BSE
+    codes, tickers typed in capitals, curated symbols in any case, and
+    words before "share"/"stock".
+  - **Masked first:** fund names and market jargon.
+  - **From the LLM:** QueryAnalyzer's call returns the companies *as
+    written*, and they are only resolved against the master.
+- **History** supplies an entity only when the message names no company.
+- **Blocking.** For company intents (equity, report, alert), an ambiguous
+  name, or a not-found one when nothing resolved, skips research.
+  CommunicationLayer then asks deterministically, with no LLM call.
+- **Notes.** Renamed-symbol notes and partially unresolved names are
+  appended to answers.
+
+**Trade-offs.**
+- **Snapshots go stale until refreshed.** A brand-new listing is
+  not_found until the next refresh.
+- **NSE only.** BSE-only companies are not_found with an explanation,
+  because the data layer is NSE-centric.
+- **One honest miss in the 200-name table** (99.5%): a made-up name one
+  word from a real one gets a weak "did you mean".
+- **Re-ask after clarifying.** After a clarification the user restates the
+  company. The original question isn't replayed automatically.
+
+**Future improvements.**
+- Refresh the snapshots nightly in CI with a PR for review.
+- Carry the pending question across a clarification.
+- Add an index and ETF master (DATA-05).
+
+---
+
+## 2026-10-14 — Per-turn records in Postgres, optional redacted LangSmith traces (OBS-02)
+
+**Problem.** When an answer was wrong or slow, nothing showed which node,
+prompt, tool or provider caused it. `research_journal` was never persisted,
+and an error showed users raw exception text with no way to find the turn
+behind it.
+
+**Alternatives considered.**
+- *Self-hosted Langfuse.* Its stack (ClickHouse, Redis, S3, Postgres) needs
+  about 8 GB of RAM, more than the dev machine has.
+- *OpenTelemetry only.* No UI until we run a backend.
+- *LangSmith via LangChain auto-tracing (`LANGSMITH_TRACING=true`).* This
+  uploads LangGraph's full state, including chat history and financial
+  profiles, unredacted. Rejected.
+- *LangSmith via our own spans.* Chosen, with the user's agreement.
+
+**Final decision.**
+- **`utils/tracing.py` is the only LangSmith-aware module.**
+- **Turn record.** Each turn opens a `TurnRecord` (a contextvar, so worker
+  threads see it). It accumulates:
+  - LLM calls, tokens (provider usage, or estimates flagged as such),
+    providers, and prompt versions (content hashes of system prompts, so
+    there is nothing to bump);
+  - tool calls and cache hits;
+  - per-node wall time and data gaps;
+  - later, the LLM-03 grounding result.
+- **Turns row.** Migration `0004_turns` adds the table, and every turn
+  writes one row (ok / partial / gated / quota / llm_unavailable / error /
+  cancelled). This happens even on exceptions, and DB failures never break
+  a turn.
+- **Error IDs.** User-facing errors show the turn id prefix as an Error ID.
+  `scripts/find_turn.py` finds the row, then the trace link: 2 clicks.
+- **LangSmith** (opt-in: `ARIA_TRACING=langsmith` plus `LANGSMITH_API_KEY`):
+  - Spans are explicit RunTrees whose parents we track ourselves. We never
+    make a run "current" in LangSmith's context, so LangChain auto-tracing
+    stays off; a test asserts this.
+  - Inputs and outputs pass through `redact_for_trace` (secrets, emails,
+    length caps). Node spans record counts and routing facts, never raw
+    state.
+  - The startup check warns if `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2`
+    are set.
+
+**Trade-offs.**
+- **Coarser tree.** Our own spans give a coarser tree than LangChain's
+  automatic one: no per-step LangGraph internals.
+- **Estimated stream tokens.** Streamed calls estimate tokens (characters
+  ÷ 4) because providers report usage only on non-streaming calls here.
+- **The trace URL arrives later.** A background thread resolves it after
+  the row is written.
+- **Not verified live.** LangSmith hasn't been exercised against a real
+  account: there is no key yet. The adapter is tested against the
+  installed `RunTree` API with a mocked client.
+- **Data leaves India.** LangSmith stores traces in the US or EU. Before
+  enabling it in production, the processor goes in the COMP-03 register.
+
+**Future improvements.**
+- Put turns-table metrics on the OBS-03 dashboard.
+- Request usage on streams (`stream_options.include_usage`) where every
+  provider supports it.
+- Sample full prompts in staging only.
+
+---
+
+## 2026-10-14 — Every external call is bounded; turns have a deadline (REL-02)
+
+**Problem.** yfinance's `.info` / `.financials` and `feedparser.parse(url)` take
+no timeout at all. The LLM SDKs used library defaults (the OpenAI SDK waits
+600 s), plus their own hidden retries on top of `LLMClient`'s. One stalled
+upstream could hold a chat turn for minutes with the input locked, and a
+source that was down got hit again on every turn.
+
+**Alternatives considered.**
+- *`pybreaker`.* Rejected: it is about 100 lines to write ourselves, and we
+  need half-open handling that is thread-safe under concurrent turns
+  (REL-01).
+- *Kill stalled work.* Not possible for Python threads. Instead we bound how
+  long the caller waits, in bounded pools; a stuck worker finishes or dies
+  on its own.
+- *An asyncio rewrite with real cancellation.* Rejected: far too invasive
+  for the gain.
+
+**Final decision.**
+- **`utils/resilience.py`:**
+  - a thread-safe `CircuitBreaker` (closed → open after N failures within a
+    window → half-open with exactly one trial call);
+  - `call_with_timeout`, with separate "io" and "tool" pools so nesting
+    can't deadlock, and caller contextvars carried over so `turn_id`
+    survives in logs;
+  - `guarded_call(source, fn, timeout=)`.
+- **`utils/http.py::GuardedSession`:** default (3, 10) s timeouts, urllib3
+  `Retry` with jitter for idempotent requests, and the breaker. A network
+  error, 429 or 5xx counts as a failure.
+- **Applied to:** AMFI, NSE and BSE (bhavcopy, filings, PDFs), and Google
+  News and RSS (fetched with a timeout, then parsed from bytes).
+- **yfinance:** every touch goes through `fetcher._yf` (10 s and the
+  "yfinance" breaker). Errors fall into the existing BSE → bhavcopy
+  fallbacks.
+- **LLM calls:**
+  - cloud: 30 s per call, 15 s maximum gap between streamed chunks, SDK
+    retries off;
+  - local CPU model: 300 s.
+- **Turn deadline** (`graph/deadline.py`, `TURN_DEADLINE_SECONDS`, default 90):
+  - Stamped on each turn and each gate resume.
+  - Past 70% of it, ResearchExecutor skips unstarted tasks, except writes
+    and their dependencies, and Reflection and Verification stop looping.
+  - `execute_task` caps each tool call at `min(25 s, time left)`.
+  - Failed or skipped tasks carry a reason, and the orchestrator appends a
+    deterministic "Some data is missing: news for TCS (timed out)" line.
+
+**Trade-offs.**
+- **Background threads.** A timed-out call keeps running in the background
+  until it finishes on its own. The pools are bounded, so a long outage can
+  queue work behind stuck workers until the breaker opens.
+- **One shared yfinance breaker.** One flaky symbol can temporarily push
+  every symbol onto the bhavcopy fallback.
+- **LLM calls aren't cut by the deadline.** Only their own timeouts bound
+  them, so a slow synthesis can still overrun the turn budget.
+- **Local-LLM deployments** get a 600 s default deadline, because a CPU model
+  can't answer in 90 s.
+
+**Future improvements.**
+- Report breaker state on the OBS-03 dashboard.
+- Give the LLM synthesis step a share of the deadline.
+- Add per-symbol yfinance breakers if a shared one proves too coarse.
+
+---
+
+## 2026-10-14 — Schema changes are Alembic migrations run as a release step (ARCH-01)
+
+**Problem.** `utils/db.py::init_db()` ran about 30 `CREATE ... IF NOT EXISTS` /
+`ALTER ... ADD COLUMN IF NOT EXISTS` statements on every app boot, and
+`scripts/check_alerts.py` ran its own DDL on every cron tick.
+- No record of which schema version a database is on.
+- No way to roll back.
+- No safe path for type changes, constraints or foreign-key changes. Phase 1
+  needs these: the VAL-04 unique index, DATA-04 tables, the OBS-02 turns
+  table.
+- Every replica raced to run DDL at startup.
+
+**Alternatives considered.**
+- *Keep idempotent DDL in `init_db`.* Rejected: it can't express reversible
+  or data-moving changes and has no version record.
+- *yoyo or plain numbered SQL files with a home-made runner.* Rejected:
+  Alembic is the standard and adds only a light SQLAlchemy dependency. We
+  use it with raw SQL (`op.execute`), not models.
+- *`alembic stamp` production at the baseline.* Rejected: it needs a manual,
+  error-prone step on the production DB. Instead the baseline is written
+  idempotently (`IF NOT EXISTS`), so production simply runs `upgrade head`.
+
+**Final decision.**
+- **Revisions.** `migrations/versions/` holds:
+  - `0001_baseline`: the exact old `init_db` DDL, plus DATA-08's delivery
+    columns and the DATA-01 purge.
+  - `0002_fk_cascade_indexes`: every user-owned FK becomes `ON DELETE
+    CASCADE`, found by catalog lookup rather than an assumed name. Adds
+    indexes on `chat_history(session_id, ts)`, `alerts(user_id)` and
+    `reports(user_id, created_at)`.
+- **Release step.** `scripts/migrate.py` runs `alembic upgrade head`, then
+  creates LangGraph's checkpoint tables (moved out of
+  `get_postgres_checkpointer`). The Dockerfile runs it before `app.py`.
+- **Startup.** `utils/db.py::ensure_schema()` only reads `alembic_version`
+  and the checkpoint table, and refuses to start with "run `python
+  scripts/migrate.py`" when the database is behind.
+  `RUN_MIGRATIONS_ON_START=true` exists for single-instance hosts.
+- **Alert job.** The checker checks the schema and exits 1 if it is behind;
+  it never runs DDL.
+- **Tests.** Integration tests migrate the test database the same way a
+  deploy does. They also prove:
+  - a database built from a frozen copy of the old DDL
+    (`tests/integration/legacy_schema.sql`) upgrades in place and keeps its
+    rows;
+  - cascades work;
+  - the last revision downgrades and re-applies;
+  - a re-run is a no-op.
+
+**Trade-offs.**
+- **Deploy order matters.** Code that needs a new revision fails fast
+  against an un-migrated database, by design.
+- **The alert job depends on the deploy.** The GitHub Actions alert job
+  stops working until production has been migrated. Deploying means running
+  `scripts/migrate.py` against Neon, and that is the operator's step.
+- **The baseline can't be undone safely.** Downgrading it drops everything,
+  so it refuses unless `ALEMBIC_ALLOW_DESTRUCTIVE=1`.
+
+**Future improvements.**
+- Run the migration as a dedicated release job in the TEST-07 pipeline
+  instead of on container start once there are several replicas.
+- Add row-level security policies (SEC-13 backstop) as a revision.
+
+---
+
 ## 2026-10-14 — Inbox-delivered alerts stay pending until read (supersedes part of "Alert delivery contract")
 
 **Problem.** The first DATA-08 implementation (entry below) wrote the inbox

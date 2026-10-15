@@ -144,6 +144,22 @@ def test_accept_terms(db, two_users):
     assert rows[b]["accepted_terms_at"] is not None
 
 
+def test_turns(db, two_users):
+    """A turn row belongs to the user who took the turn; recording B's turns
+    never touches A's rows."""
+    import uuid
+
+    from tests.integration.test_db_functions import _turn_kwargs
+
+    a, b = two_users
+    ta, tb = uuid.uuid4().hex, uuid.uuid4().hex
+    db.turn_record(**_turn_kwargs(ta, a))
+    db.turn_record(**_turn_kwargs(tb, b, status="error"))
+    assert db.turns_by_error_id(ta[:8])[0]["user_id"] == a
+    assert db.turns_by_error_id(ta[:8])[0]["status"] == "ok"
+    assert db.turns_by_error_id(tb[:8])[0]["user_id"] == b
+
+
 COVERED = {
     "portfolio_add": test_portfolio,
     "portfolio_remove": test_portfolio,
@@ -182,6 +198,7 @@ COVERED = {
     "telegram_chat_id_set": test_telegram_linking,
     "telegram_chat_id_get": test_telegram_linking,
     "accept_terms": test_accept_terms,
+    "turn_record": test_turns,
 }
 
 
@@ -191,7 +208,9 @@ def test_every_user_scoped_db_function_is_covered():
     user_scoped = {
         name
         for name, fn in inspect.getmembers(db_module, inspect.isfunction)
-        if fn.__module__ == db_module.__name__ and "user_id" in inspect.signature(fn).parameters
+        if fn.__module__ == db_module.__name__
+        and not name.startswith("_")  # private helpers are reached only through covered functions
+        and "user_id" in inspect.signature(fn).parameters
     }
     missing = sorted(user_scoped - set(COVERED))
     assert missing == [], f"user-scoped db functions without an isolation test: {missing}"
@@ -260,10 +279,14 @@ def test_two_users_creating_same_alert_within_a_minute_get_two_rows(db, two_user
 
 
 def test_same_user_creating_two_alerts_gets_two_rows(db, two_users):
+    """DATA-01: a second create is never served from the cache — and since
+    VAL-04 an identical one is reported as a duplicate rather than saved twice."""
     a, _ = two_users
-    q = "alert me if TCS drops below 3500"
-    _run("alert_create", "TCS", a, q)
-    _run("alert_create", "TCS", a, q)
+    first = _run("alert_create", "TCS", a, "alert me if TCS drops below 3500")
+    second = _run("alert_create", "TCS", a, "alert me if TCS drops below 3400")
+    same_again = _run("alert_create", "TCS", a, "alert me if TCS drops below 3500")
+    assert (first["result"], second["result"]) == ("created", "created")
+    assert same_again["result"] == "duplicate" and same_again["alert_id"] == first["alert_id"]
     assert len(db.alert_list(a)) == 2
 
 

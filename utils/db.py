@@ -1,8 +1,8 @@
 """
-utils/db.py — Postgres (Neon) schema and query helpers.
+utils/db.py — Postgres (Neon) query helpers.
 Single shared DB: read/written by the local Gradio app AND by
 scripts/check_alerts.py (run on a schedule via GitHub Actions).
-Creates the DB and all tables on first run.
+The schema itself lives in Alembic migrations (migrations/versions/, ARCH-01).
 """
 
 import contextlib
@@ -122,217 +122,23 @@ def _query(sql: str, params: tuple | dict = (), fetch: str | None = "all", commi
             raise
 
 
-# DATA-08: alert delivery tracking + the in-app notification inbox. Kept as a
-# standalone constant because scripts/check_alerts.py (a separate GitHub
-# Actions process that never runs init_db) applies it too. Idempotent.
-ALERT_DELIVERY_SCHEMA_SQL = """
-    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS delivery_attempts   INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS last_delivery_error TEXT;
-    ALTER TABLE alerts ADD COLUMN IF NOT EXISTS delivery_status     TEXT;
-    CREATE TABLE IF NOT EXISTS notifications (
-        id          SERIAL PRIMARY KEY,
-        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        alert_id    INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
-        message     TEXT NOT NULL,
-        created_at  TIMESTAMPTZ DEFAULT now(),
-        read_at     TIMESTAMPTZ
-    );
-    CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications (user_id) WHERE read_at IS NULL;
-"""
+def ensure_schema() -> None:
+    """Startup check (ARCH-01): the app no longer creates or alters tables.
+    Schema lives in Alembic revisions (migrations/versions/), applied by
+    `python scripts/migrate.py` as a release step. Raises
+    utils.migrations.SchemaOutOfDate if the database isn't at head, so the
+    app fails at boot with an instruction instead of on a missing column
+    mid-turn. RUN_MIGRATIONS_ON_START=true migrates first (single-instance
+    deployments only — never with several replicas starting at once)."""
+    from utils import migrations
 
-
-def init_db():
-    """Create all tables if they don't exist."""
+    if migrations.run_migrations_on_start_enabled():
+        log.warning("[db] RUN_MIGRATIONS_ON_START is set — applying migrations in-process")
+        migrations.upgrade(DATABASE_URL)
+        migrations.setup_checkpointer_tables(DATABASE_URL)
     conn = get_conn()
     try:
-        cur = conn.cursor()
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id            SERIAL PRIMARY KEY,
-            email         TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at    TIMESTAMPTZ DEFAULT now()
-        );
-        -- Free-trial quota (users without a user_llm_config row get N free
-        -- messages/day on the app's own Groq/Gemini keys), Telegram alert
-        -- linking, and signup ToS consent record — all additive, all
-        -- nullable/defaulted so existing rows need no backfill.
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS free_msgs_used_today INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS free_msgs_reset_at DATE;
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT;
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS accepted_terms_at TIMESTAMPTZ;
-
-        CREATE TABLE IF NOT EXISTS sessions (
-            id          SERIAL PRIMARY KEY,
-            user_id     INTEGER NOT NULL REFERENCES users(id),
-            token       TEXT UNIQUE NOT NULL,
-            expires_at  TIMESTAMPTZ NOT NULL,
-            created_at  TIMESTAMPTZ DEFAULT now()
-        );
-
-        CREATE TABLE IF NOT EXISTS portfolio (
-            id          SERIAL PRIMARY KEY,
-            user_id     INTEGER NOT NULL REFERENCES users(id),
-            symbol      TEXT NOT NULL,
-            qty         REAL NOT NULL,
-            avg_price   REAL NOT NULL,
-            added_at    TIMESTAMPTZ DEFAULT now()
-        );
-
-        CREATE TABLE IF NOT EXISTS watchlist (
-            id          SERIAL PRIMARY KEY,
-            user_id     INTEGER NOT NULL REFERENCES users(id),
-            symbol      TEXT NOT NULL,
-            added_at    TIMESTAMPTZ DEFAULT now(),
-            UNIQUE(user_id, symbol)
-        );
-
-        CREATE TABLE IF NOT EXISTS alerts (
-            id            SERIAL PRIMARY KEY,
-            user_id       INTEGER NOT NULL REFERENCES users(id),
-            symbol        TEXT NOT NULL,
-            alert_type    TEXT NOT NULL CHECK (alert_type IN (
-                'price_above','price_below','pct_change',
-                'rsi_cross_above','rsi_cross_below',
-                'macd_bullish_cross','macd_bearish_cross',
-                'ma_cross','bb_breakout','volume_spike',
-                'week52_high','week52_low','bulk_deal','portfolio_pnl'
-            )),
-            condition     TEXT,
-            threshold     REAL,
-            active        BOOLEAN DEFAULT TRUE,
-            created_at    TIMESTAMPTZ DEFAULT now(),
-            triggered_at  TIMESTAMPTZ,
-            recurring     BOOLEAN DEFAULT FALSE,
-            cooldown_hours INTEGER DEFAULT 24
-        );
-        CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts (active) WHERE active = TRUE;
-        -- Migration for DBs created before recurring alerts existed.
-        ALTER TABLE alerts ADD COLUMN IF NOT EXISTS recurring BOOLEAN DEFAULT FALSE;
-        ALTER TABLE alerts ADD COLUMN IF NOT EXISTS cooldown_hours INTEGER DEFAULT 24;
-
-        CREATE TABLE IF NOT EXISTS chat_sessions (
-            id          SERIAL PRIMARY KEY,
-            user_id     INTEGER NOT NULL REFERENCES users(id),
-            tab         TEXT NOT NULL,
-            title       TEXT NOT NULL DEFAULT 'New chat',
-            created_at  TIMESTAMPTZ DEFAULT now(),
-            updated_at  TIMESTAMPTZ DEFAULT now()
-        );
-
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id          SERIAL PRIMARY KEY,
-            user_id     INTEGER NOT NULL REFERENCES users(id),
-            session_id  INTEGER REFERENCES chat_sessions(id),
-            tab         TEXT NOT NULL,
-            role        TEXT NOT NULL,
-            content     TEXT NOT NULL,
-            ts          TIMESTAMPTZ DEFAULT now()
-        );
-
-        CREATE TABLE IF NOT EXISTS saved_screeners (
-            id            SERIAL PRIMARY KEY,
-            user_id       INTEGER NOT NULL REFERENCES users(id),
-            name          TEXT NOT NULL,
-            filters_json  TEXT NOT NULL,
-            created_at    TIMESTAMPTZ DEFAULT now()
-        );
-
-        CREATE TABLE IF NOT EXISTS reports (
-            id          SERIAL PRIMARY KEY,
-            user_id     INTEGER NOT NULL REFERENCES users(id),
-            symbol      TEXT,
-            report_type TEXT NOT NULL,
-            title       TEXT NOT NULL,
-            content     TEXT NOT NULL,
-            created_at  TIMESTAMPTZ DEFAULT now()
-        );
-
-        -- pdf_cache is a shared, symbol-keyed fetch cache (not per-tenant data),
-        -- so it intentionally has no user_id.
-        CREATE TABLE IF NOT EXISTS pdf_cache (
-            id            SERIAL PRIMARY KEY,
-            symbol        TEXT NOT NULL,
-            doc_type      TEXT NOT NULL,
-            period        TEXT,
-            url           TEXT,
-            text_content  TEXT,
-            fetched_at    TIMESTAMPTZ DEFAULT now(),
-            UNIQUE (symbol, doc_type, period)
-        );
-
-        -- One profile per user. Stored as a flexible JSON blob (not fixed
-        -- columns) since the field set is LLM-extracted and open-ended
-        -- (age/capital/horizon are core, but anything from dependents to
-        -- past panic-selling behavior can show up depending on conversation).
-        CREATE TABLE IF NOT EXISTS financial_profiles (
-            user_id     INTEGER PRIMARY KEY REFERENCES users(id),
-            profile     JSONB NOT NULL DEFAULT '{}',
-            updated_at  TIMESTAMPTZ DEFAULT now()
-        );
-
-        -- Shared, tool-keyed evidence cache for the research graph (see
-        -- graph/tool_catalogue.py, RFC_AGENTIC_RESEARCH_GRAPH.md Sec8). Not
-        -- per-tenant — same reasoning as pdf_cache, a fundamental
-        -- ratio for RELIANCE is the same fact regardless of which user asked.
-        -- TTL enforcement is application-side (tools/data/evidence_cache.py)
-        -- keyed by evidence_type, not a DB-level expiry.
-        CREATE TABLE IF NOT EXISTS evidence_cache (
-            id             SERIAL PRIMARY KEY,
-            tool           TEXT NOT NULL,
-            args_hash      TEXT NOT NULL,
-            entity         TEXT NOT NULL,
-            evidence_type  TEXT NOT NULL,
-            payload        JSONB NOT NULL,
-            confidence     REAL NOT NULL DEFAULT 1.0,
-            fetched_at     TIMESTAMPTZ DEFAULT now(),
-            UNIQUE (tool, args_hash)
-        );
-        CREATE INDEX IF NOT EXISTS idx_evidence_cache_entity ON evidence_cache (entity, evidence_type);
-        -- DATA-01 purge (idempotent): rows that should never have been cached —
-        -- write tools and user-scoped/query-dependent tools written before the
-        -- cache key covered their inputs. Pre-fix rows for every other tool are
-        -- orphaned by the key-version bump in tools/data/evidence_cache.py.
-        DELETE FROM evidence_cache WHERE tool IN (
-            'alert_create', 'alert_cancel', 'alert_pause', 'alert_resume', 'alert_list',
-            'screener_save', 'screener_to_markdown'
-        );
-
-        -- Bring-your-own LLM key. One row per user; provider is a free-text
-        -- tag ("openai_compatible" today) rather than an enum since new
-        -- providers are meant to be addable without a migration.
-        CREATE TABLE IF NOT EXISTS user_llm_config (
-            user_id           INTEGER PRIMARY KEY REFERENCES users(id),
-            provider          TEXT NOT NULL,
-            base_url          TEXT,
-            model             TEXT NOT NULL,
-            api_key_encrypted TEXT NOT NULL,
-            updated_at        TIMESTAMPTZ DEFAULT now()
-        );
-
-        -- Short-lived deep-link codes for the Telegram /start linking flow
-        -- (utils/telegram_link.py). A code is single-use and expires quickly;
-        -- old rows are harmless clutter, not cleaned up here.
-        CREATE TABLE IF NOT EXISTS telegram_link_codes (
-            code        TEXT PRIMARY KEY,
-            user_id     INTEGER NOT NULL REFERENCES users(id),
-            expires_at  TIMESTAMPTZ NOT NULL,
-            created_at  TIMESTAMPTZ DEFAULT now()
-        );
-
-        -- Postgres-backed signup/login rate limiting (utils/auth.py) —
-        -- durable across restarts, unlike the in-memory dict it replaces.
-        -- Old rows outside any window are inert (never matched by the
-        -- time-bounded query in _check_rate_limit) and cheap to leave.
-        CREATE TABLE IF NOT EXISTS auth_attempts (
-            id           SERIAL PRIMARY KEY,
-            key          TEXT NOT NULL,
-            attempted_at TIMESTAMPTZ DEFAULT now()
-        );
-        CREATE INDEX IF NOT EXISTS idx_auth_attempts_key_time ON auth_attempts (key, attempted_at);
-        """)
-        cur.execute(ALERT_DELIVERY_SCHEMA_SQL)
-        conn.commit()
+        migrations.check_schema(conn)
     finally:
         release_conn(conn)
 
@@ -501,21 +307,27 @@ def report_list(user_id: int, limit: int = 20) -> list[dict]:
 # ── PDF cache helpers ─────────────────────────────────────────────────────────
 
 
-def pdf_cache_get(symbol: str, doc_type: str, period: str = None) -> str | None:
+# "No period" is stored as '' (migration 0003): a NULL period made the unique
+# key never match, so every refetch inserted a duplicate row.
+
+
+def pdf_cache_get(symbol: str, doc_type: str, period: str | None = None) -> str | None:
+    """The cached text for exactly this period, else the period-less entry."""
     row = _query(
-        "SELECT text_content FROM pdf_cache WHERE symbol=%s AND doc_type=%s AND (period=%s OR period IS NULL) LIMIT 1",
-        (symbol.upper(), doc_type, period),
+        "SELECT text_content FROM pdf_cache WHERE symbol=%s AND doc_type=%s AND period IN (%s, '') "
+        "ORDER BY (period = %s) DESC, fetched_at DESC LIMIT 1",
+        (symbol.upper(), doc_type, period or "", period or ""),
         fetch="one",
     )
     return row["text_content"] if row else None
 
 
-def pdf_cache_set(symbol: str, doc_type: str, text: str, period: str = None, url: str = None):
+def pdf_cache_set(symbol: str, doc_type: str, text: str, period: str | None = None, url: str | None = None):
     _query(
         "INSERT INTO pdf_cache (symbol, doc_type, period, url, text_content) VALUES (%s,%s,%s,%s,%s) "
         "ON CONFLICT (symbol, doc_type, period) DO UPDATE SET "
         "url=EXCLUDED.url, text_content=EXCLUDED.text_content, fetched_at=now()",
-        (symbol.upper(), doc_type, period, url, text),
+        (symbol.upper(), doc_type, period or "", url, text),
         fetch=None,
         commit=True,
     )
@@ -553,6 +365,31 @@ def screener_list(user_id: int) -> list[dict]:
 # ── Alert helpers ─────────────────────────────────────────────────────────────
 
 
+class DuplicateAlert(ValueError):
+    """The same alert is already active (uq_alerts_active_spec, VAL-04)."""
+
+    def __init__(self, existing_id: int | None):
+        self.existing_id = existing_id
+        super().__init__(f"duplicate of active alert #{existing_id}")
+
+
+class AlertLimitReached(ValueError):
+    """The user already has MAX_ACTIVE_ALERTS active alerts (VAL-04)."""
+
+
+MAX_ACTIVE_ALERTS = 50
+
+
+def _existing_alert_id(user_id: int, symbol: str, alert_type: str, threshold, direction) -> int | None:
+    row = _query(
+        "SELECT id FROM alerts WHERE user_id=%s AND symbol=%s AND alert_type=%s AND active "
+        "AND COALESCE(threshold, -1) = COALESCE(%s, -1) AND COALESCE(direction, '') = COALESCE(%s, '')",
+        (user_id, symbol.upper(), alert_type, threshold, direction),
+        fetch="one",
+    )
+    return row["id"] if row else None
+
+
 def alert_add(
     user_id: int,
     symbol: str,
@@ -561,14 +398,38 @@ def alert_add(
     threshold: float | None,
     recurring: bool = False,
     cooldown_hours: int = 24,
+    direction: str | None = None,
 ) -> int:
-    row = _query(
-        "INSERT INTO alerts (user_id, symbol, alert_type, condition, threshold, recurring, cooldown_hours) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-        (user_id, symbol.upper(), alert_type, condition, threshold, recurring, cooldown_hours),
-        fetch="one",
-        commit=True,
-    )
+    """Raises DuplicateAlert if the same alert is already active, and
+    AlertLimitReached once the user has MAX_ACTIVE_ALERTS active alerts.
+    The cap is checked in the INSERT itself, so a burst can't overshoot it
+    by more than its own concurrency (and per-user turns run one at a time)."""
+    try:
+        row = _query(
+            "INSERT INTO alerts (user_id, symbol, alert_type, condition, threshold, recurring, cooldown_hours, "
+            "direction) "
+            "SELECT %s,%s,%s,%s,%s,%s,%s,%s "
+            "WHERE (SELECT count(*) FROM alerts WHERE user_id=%s AND active) < %s "
+            "RETURNING id",
+            (
+                user_id,
+                symbol.upper(),
+                alert_type,
+                condition,
+                threshold,
+                recurring,
+                cooldown_hours,
+                direction,
+                user_id,
+                MAX_ACTIVE_ALERTS,
+            ),
+            fetch="one",
+            commit=True,
+        )
+    except psycopg2.errors.UniqueViolation as e:
+        raise DuplicateAlert(_existing_alert_id(user_id, symbol, alert_type, threshold, direction)) from e
+    if row is None:
+        raise AlertLimitReached(f"you already have {MAX_ACTIVE_ALERTS} active alerts")
     return row["id"]
 
 
@@ -603,32 +464,16 @@ def alert_pause(user_id: int, alert_id: int):
 
 
 def alert_resume(user_id: int, alert_id: int):
-    _query(
-        "UPDATE alerts SET active=TRUE WHERE id=%s AND user_id=%s",
-        (alert_id, user_id),
-        fetch=None,
-        commit=True,
-    )
-
-
-def alert_mark_triggered(alert_id: int, recurring: bool = False):
-    """Called only by scripts/check_alerts.py. One-shot alerts deactivate on
-    fire; recurring alerts stay active — check_alerts.py's cooldown_hours
-    check prevents them from re-firing on every 5-min cron tick."""
-    if recurring:
+    """Raises DuplicateAlert if an identical alert is already active."""
+    try:
         _query(
-            "UPDATE alerts SET triggered_at=now() WHERE id=%s",
-            (alert_id,),
+            "UPDATE alerts SET active=TRUE WHERE id=%s AND user_id=%s",
+            (alert_id, user_id),
             fetch=None,
             commit=True,
         )
-    else:
-        _query(
-            "UPDATE alerts SET active=FALSE, triggered_at=now() WHERE id=%s",
-            (alert_id,),
-            fetch=None,
-            commit=True,
-        )
+    except psycopg2.errors.UniqueViolation as e:
+        raise DuplicateAlert(None) from e
 
 
 # ── In-app notification inbox (DATA-08) ───────────────────────────────────────
@@ -792,33 +637,26 @@ def trial_quota_check_and_increment(user_id: int, daily_limit: int, today: "date
     every caller uses the same clock read). Returns True if this message is
     allowed. Resets the counter the first time a new day is seen — no
     separate cron/cleanup job needed, the reset just happens lazily on next
-    use, same pattern as the alert cooldown check in scripts/check_alerts.py."""
+    use, same pattern as the alert cooldown check in scripts/check_alerts.py.
+
+    One conditional UPDATE, so the check and the increment can't interleave:
+    the old read-then-write let concurrent messages (two tabs, two replicas)
+    all see "under the limit" and all get through (SEC-12)."""
+    if daily_limit <= 0:
+        return False
     row = _query(
-        "SELECT free_msgs_used_today, free_msgs_reset_at FROM users WHERE id=%s",
-        (user_id,),
+        "UPDATE users SET "
+        "  free_msgs_used_today = CASE WHEN free_msgs_reset_at IS DISTINCT FROM %(today)s "
+        "                              THEN 1 ELSE free_msgs_used_today + 1 END, "
+        "  free_msgs_reset_at = %(today)s "
+        "WHERE id = %(uid)s "
+        "  AND (free_msgs_reset_at IS DISTINCT FROM %(today)s OR free_msgs_used_today < %(limit)s) "
+        "RETURNING free_msgs_used_today",
+        {"today": today, "uid": user_id, "limit": daily_limit},
         fetch="one",
-    )
-    if row is None:
-        return False
-    used = row["free_msgs_used_today"]
-    reset_at = row["free_msgs_reset_at"]
-    if reset_at != today:
-        used = 0
-    if used >= daily_limit:
-        _query(
-            "UPDATE users SET free_msgs_used_today=%s, free_msgs_reset_at=%s WHERE id=%s",
-            (used, today, user_id),
-            fetch=None,
-            commit=True,
-        )
-        return False
-    _query(
-        "UPDATE users SET free_msgs_used_today=%s, free_msgs_reset_at=%s WHERE id=%s",
-        (used + 1, today, user_id),
-        fetch=None,
         commit=True,
     )
-    return True
+    return row is not None
 
 
 # ── Telegram linking helpers (utils/telegram_link.py) ─────────────────────────
@@ -836,13 +674,14 @@ def telegram_link_code_create(user_id: int, code: str, expires_at) -> None:
 def telegram_link_code_resolve(code: str):
     """Returns the owning user_id if `code` exists and hasn't expired, else
     None. Deletes the code either way (single-use) so a stale/guessed code
-    can't be retried."""
+    can't be retried. DELETE ... RETURNING claims it atomically — the old
+    SELECT-then-DELETE let two concurrent /start messages both link."""
     row = _query(
-        "SELECT user_id, expires_at FROM telegram_link_codes WHERE code=%s",
+        "DELETE FROM telegram_link_codes WHERE code=%s RETURNING user_id, expires_at",
         (code,),
         fetch="one",
+        commit=True,
     )
-    _query("DELETE FROM telegram_link_codes WHERE code=%s", (code,), fetch=None, commit=True)
     if row is None:
         return None
     from datetime import datetime
@@ -899,3 +738,123 @@ def report_get(user_id: int, report_id: int) -> dict | None:
         (report_id, user_id),
         fetch="one",
     )
+
+
+# ── Per-turn records (OBS-02, written by utils/tracing.py) ───────────────────
+
+
+def turn_record(
+    *,
+    turn_id: str,
+    user_id: int | None,
+    session_id: str | None,
+    intent: str | None,
+    complexity: str | None,
+    status: str,
+    error_id: str,
+    latency_ms: int,
+    ttft_ms: int | None,
+    llm_calls: int,
+    tokens_in: int,
+    tokens_out: int,
+    tokens_estimated: bool,
+    providers: list[str],
+    prompt_versions: dict,
+    tool_calls: int,
+    cache_hits: int,
+    node_ms: dict,
+    data_gaps: int,
+    grounding: dict | None,
+) -> None:
+    _query(
+        "INSERT INTO turns (turn_id, user_id, session_id, intent, complexity, status, error_id, latency_ms, "
+        "ttft_ms, llm_calls, tokens_in, tokens_out, tokens_estimated, providers, prompt_versions, tool_calls, "
+        "cache_hits, node_ms, data_gaps, grounding) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (turn_id) DO NOTHING",
+        (
+            turn_id,
+            user_id,
+            None if session_id is None else str(session_id),
+            intent,
+            complexity,
+            status,
+            error_id,
+            latency_ms,
+            ttft_ms,
+            llm_calls,
+            tokens_in,
+            tokens_out,
+            tokens_estimated,
+            providers,
+            json.dumps(prompt_versions),
+            tool_calls,
+            cache_hits,
+            json.dumps(node_ms),
+            data_gaps,
+            None if grounding is None else json.dumps(grounding, default=str),
+        ),
+        fetch=None,
+        commit=True,
+    )
+
+
+def turn_set_trace_url(turn_id: str, url: str) -> None:
+    _query("UPDATE turns SET trace_url=%s WHERE turn_id=%s", (url, turn_id), fetch=None, commit=True)
+
+
+def turns_by_error_id(error_id: str) -> list[dict]:
+    """Support lookup (scripts/find_turn.py): every turn whose error ID
+    matches — operator-only, deliberately not user-scoped."""
+    return _query(
+        "SELECT * FROM turns WHERE error_id=%s ORDER BY created_at DESC",
+        ((error_id or "").strip().lower(),),
+    )
+
+
+# ── Mutual fund metrics cache (DATA-04, tools/data/mf_data.py) ───────────────
+
+_MF_METRIC_COLS = (
+    "scheme_name",
+    "category",
+    "nav",
+    "nav_date",
+    "history_start",
+    "cagr_1y",
+    "cagr_3y",
+    "cagr_5y",
+    "volatility_1y",
+    "max_drawdown_3y",
+    "consistency_1y",
+)
+
+
+def mf_metrics_get(codes: list[str], computed_since: date) -> dict[str, dict]:
+    """Cached metrics for `codes` computed on or after `computed_since`."""
+    if not codes:
+        return {}
+    rows = _query(
+        "SELECT * FROM mf_metrics WHERE scheme_code = ANY(%s) AND computed_at::date >= %s",
+        (list(codes), computed_since),
+    )
+    return {r["scheme_code"]: {k: v for k, v in r.items() if k != "scheme_code"} for r in rows}
+
+
+# Built once from the constant column list above — no caller input reaches it.
+_MF_UPSERT_SQL = (
+    f"INSERT INTO mf_metrics (scheme_code, {', '.join(_MF_METRIC_COLS)}) "  # noqa: S608  # nosec B608
+    f"VALUES ({', '.join(['%s'] * (len(_MF_METRIC_COLS) + 1))}) "
+    f"ON CONFLICT (scheme_code) DO UPDATE SET {', '.join(f'{c}=EXCLUDED.{c}' for c in _MF_METRIC_COLS)}, "
+    "computed_at=now()"
+)
+
+
+def mf_metrics_put(rows: list[dict]) -> None:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        for row in rows:
+            cur.execute(_MF_UPSERT_SQL, (row["scheme_code"], *[row.get(c) for c in _MF_METRIC_COLS]))
+        conn.commit()
+    finally:
+        release_conn(conn)
