@@ -101,6 +101,8 @@ class Settings(BaseSettings):
     ALERT_REMINDER_MINUTES: int = Field(60, ge=5)
     # Database plan size for the "DB size > 80%" alert (Neon free tier: 512 MB).
     DB_SIZE_LIMIT_MB: int = Field(512, ge=1)
+    # REL-08: where scripts/backup_db.py writes dumps (copy them off the machine).
+    BACKUP_DIR: str = "backups"
     DB_POOL_MAX: int = Field(20, ge=1, le=500)
     DB_POOL_ACQUIRE_TIMEOUT: float = Field(10, gt=0)
     DB_POOL_MIN: int = Field(2, ge=0)
@@ -443,6 +445,7 @@ OPERATOR_EMAIL = settings.OPERATOR_EMAIL
 RUNBOOK_URL = settings.RUNBOOK_URL
 ALERT_REMINDER_MINUTES = settings.ALERT_REMINDER_MINUTES
 DB_SIZE_LIMIT_MB = settings.DB_SIZE_LIMIT_MB
+BACKUP_DIR = settings.BACKUP_DIR
 RUN_JOBS_IN_APP = settings.run_jobs_in_app
 DB_POOL_MAX = settings.DB_POOL_MAX
 DB_POOL_ACQUIRE_TIMEOUT = settings.DB_POOL_ACQUIRE_TIMEOUT

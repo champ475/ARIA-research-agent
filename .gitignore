@@ -39,3 +39,6 @@ htmlcov/
 # Golden-set eval run outputs (the reviewed baseline is evals/baseline.json)
 evals/results/
 eval.md
+
+# REL-08 backups (scripts/backup_db.py)
+backups/

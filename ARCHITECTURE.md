@@ -16,6 +16,30 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Two-copy backups and a recorded restore drill (REL-08)
+**Problem.** Nothing documented restore steps, RPO or RTO, and nothing had ever been restored. Losing `SECRET_KEY` would make every stored BYO key unreadable (REL-08).
+**Alternatives considered.**
+- Rely on Neon point-in-time restore alone. That gives a single provider and a single copy, and has only 7 days on the free tier.
+- A managed backup service. That adds cost and another processor.
+- Physical/WAL backups. Not possible on Neon, and too much to run by hand.
+
+**Final decision.**
+- Two independent copies: Neon point-in-time restore, plus nightly logical `pg_dump` custom-format dumps. `scripts/backup_db.py` writes them to `BACKUP_DIR` with a `.sha256` and keeps 14; the runbook says to copy them off-host.
+- `scripts/pg_tools.py` runs local client tools, or the `postgres` image (`PG_CLIENT_IMAGE`) when they're absent.
+- `scripts/restore_drill.py` restores a dump into a throwaway container, times it, and checks: schema at head, table row counts, the app's own readiness check, and that stored BYO keys decrypt with the escrowed `SECRET_KEY`. It writes a dated record to `docs/drills/`.
+- `docs/RUNBOOK.md#backups` documents RPO ≤ 24 h, RTO ≤ 4 h, Neon PITR and dump restore steps, and secret escrow (two holders).
+- The first drill passed on 16 Oct 2026: 6.6 s end to end, on a seeded local database.
+
+**Trade-offs.**
+- Dumps are logical, so a restore takes longer on a large database. That's fine at this scale.
+- The drill on production data and the off-host copy schedule are the owner's tasks.
+- Point-in-time restore depends on the Neon plan.
+
+**Future improvements.**
+- Ship dumps to object storage from the worker as a scheduled job.
+- Encrypt dumps at rest with age or GPG.
+- Run the drill quarterly from CI against a staging branch.
+
 ## 2026-10-16 — Database-driven ops watchdog with runbook-linked pages (OBS-04)
 **Problem.** Outages (exhausted LLM keys, NSE blocking, a stalled alert checker, the database filling up) were found by users, not the operator (OBS-04).
 **Alternatives considered.**

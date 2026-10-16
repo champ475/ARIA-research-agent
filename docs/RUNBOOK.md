@@ -135,10 +135,30 @@ Useful everywhere:
 
 ---
 
-## Backups and restore (REL-08)
-
-See [Backups](#backups). RPO ≤ 24 h, RTO ≤ 4 h.
-
 ## Backups
 
-*(Filled in by REL-08.)*
+**Targets:** RPO ≤ 24 h (at most a day of data lost), RTO ≤ 4 h (back serving within four hours). Test them every quarter, and after any schema or backup change, with `scripts/restore_drill.py`. Each drill leaves a dated record in `docs/drills/`.
+
+**Two independent copies:**
+1. **Neon point-in-time restore** is the first line. Point-in-time history is 7 days on the free tier, longer on paid plans. Check it's enabled in the Neon console: Project → Settings → Storage → History retention.
+2. **Nightly logical dumps** run `python scripts/backup_db.py` (cron, or the host's scheduler, at about 02:00 IST). It writes `aria-<timestamp>.dump` and a `.sha256` to `BACKUP_DIR` and keeps 14 dumps. Copy `BACKUP_DIR` off the machine (object storage or another disk), because a backup on the database's host isn't a backup.
+
+**Restore: Neon (minutes):**
+1. In the Neon console: Branches → `main` → Restore. Pick a time just before the incident, or restore to a new branch to inspect it first.
+2. If you restored to a new branch, point `DATABASE_URL` / `JOBS_DATABASE_URL` at it and restart the app and the worker.
+3. Check `/readyz` is 200, then log in and open a chat.
+
+**Restore: from a dump (self-hosted, or Neon is unavailable):**
+1. Create an empty Postgres (a new Neon project/branch, or `docker run postgres:17`).
+2. Run `pg_restore --no-owner --no-acl -d "$NEW_URL" aria-<timestamp>.dump`. Check the `.sha256` first.
+3. Run `python scripts/migrate.py` against it (a no-op if the dump is at head).
+4. Point the app and worker at it, restart, and check `/readyz`.
+5. Rehearse the whole thing with `python scripts/restore_drill.py --dump <file>`, which uses a throwaway container.
+
+**Secret escrow.** Losing `SECRET_KEY` makes every stored BYO LLM key unreadable. Users would have to re-enter their keys; nothing else breaks. Keep these in a password manager or secret store that two people can open:
+- `SECRET_KEY` (and `SECRET_KEY_PREVIOUS` during a rotation);
+- the database credentials;
+- the Telegram bot token, or @BotFather access to revoke and reissue it;
+- the LLM provider keys, the SMTP app password and `METRICS_TOKEN`.
+
+The restore drill checks that stored keys still decrypt with the escrowed `SECRET_KEY`.

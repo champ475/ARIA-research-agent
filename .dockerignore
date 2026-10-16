@@ -15,6 +15,7 @@ docs/
 .env.*
 !LEGAL.md
 tests/
+backups/
 evals/results/
 LEARNING_GUIDE.*
 !prompts/*.md
