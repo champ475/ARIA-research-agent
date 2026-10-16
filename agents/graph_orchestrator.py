@@ -311,6 +311,14 @@ def _figure(chart: Any) -> Any:
     return chart
 
 
+def _chart_note(chart: Any) -> str:
+    """UX-03: the price chart in words, so the answer carries a text alternative."""
+    from tools.charts.builder import chart_text_summary
+
+    text = chart_text_summary(chart) if chart is not None else ""
+    return f"\n\n{text}" if text else ""
+
+
 class GraphOrchestrator:
     def __init__(self, user_id: int, session_id: int | None = None):
         self._user_id = user_id
@@ -625,7 +633,7 @@ class GraphOrchestrator:
             # DATA-06: market figures say when they're from (and, on a closed
             # day, that they're the last session's).
             header = closed_today_header(result)
-            as_of_note = analysis_notes(result) + freshness_note(result)
+            as_of_note = analysis_notes(result) + freshness_note(result) + _chart_note(chart)
             rec.data_gaps = sum(
                 1 for t in result.get("tasks") or [] if t.get("status") in ("failed", "skipped")
             )

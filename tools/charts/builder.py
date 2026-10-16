@@ -356,3 +356,43 @@ def portfolio_chart(holdings: list[dict]):
     fig.update_xaxes(showgrid=False, row=1, col=2)
     fig.update_yaxes(showgrid=True, gridcolor=GRID, row=1, col=2)
     return fig
+
+
+def _values(arr) -> pd.Series:
+    """A trace array as floats; Plotly's JSON round trip turns numeric arrays
+    into typed-array dicts ({"dtype": "f8", "bdata": <base64>})."""
+    if isinstance(arr, dict) and "bdata" in arr:
+        import base64
+
+        import numpy as np
+
+        return pd.Series(np.frombuffer(base64.b64decode(arr["bdata"]), dtype=arr["dtype"]), dtype=float)
+    return pd.Series(list(arr), dtype=float)
+
+
+def chart_text_summary(fig) -> str:
+    """UX-03: the candlestick chart in words, from the figure's own OHLCV — a
+    text alternative for screen readers and anyone who can't read the canvas.
+    "" for any other figure (or one without enough data)."""
+    from utils.numbers import format_inr
+
+    price = next((t for t in getattr(fig, "data", ()) if t.type == "candlestick"), None)
+    if price is None or price.close is None or len(_values(price.close)) < 2:
+        return ""
+    dates = pd.to_datetime(pd.Series(list(price.x)))
+    close, high, low = _values(price.close), _values(price.high), _values(price.low)
+    first, last = close.iloc[0], close.iloc[-1]
+    change = (last / first - 1) * 100 if first else 0.0
+    title = getattr(getattr(fig.layout, "title", None), "text", None) or "Price"
+    name = title.split(" — ")[0]
+    parts = [
+        f"{name}: {len(close)} sessions from {dates.iloc[0]:%d %b %Y} to {dates.iloc[-1]:%d %b %Y}.",
+        f"The close moved from {format_inr(first)} to {format_inr(last)} ({change:+.1f}%),",
+        f"with a low of {format_inr(low.min())} and a high of {format_inr(high.max())}.",
+    ]
+    rsi = next((t for t in fig.data if t.name == "RSI" and t.y is not None and len(t.y)), None)
+    if rsi is not None:
+        last_rsi = _values(rsi.y).dropna()
+        if not last_rsi.empty:
+            parts.append(f"The latest RSI(14) is {last_rsi.iloc[-1]:.1f}.")
+    return "**Chart in words.** " + " ".join(parts)

@@ -634,97 +634,169 @@ def _build_chat_sidebar(
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 APP_CSS = """
+/* UX-03: every colour is a token. Light by default, dark when Gradio's
+   `.dark` is on <body> (set from the stored choice or prefers-color-scheme,
+   see APP_JS). Pairs used for text are checked for WCAG AA (4.5:1) in
+   tests/test_a11y_tokens.py; text is never smaller than 12px. */
+:root {
+    --aria-bg: #ffffff;
+    --aria-surface: #f6f8fa;
+    --aria-surface-2: #eaeef2;
+    --aria-sunken: #f6f8fa;
+    --aria-border: #d0d7de;
+    --aria-text: #1f2328;
+    --aria-text-2: #31373d;
+    --aria-muted: #59636e;
+    --aria-accent: #0969da;
+    --aria-accent-fg: #0550ae;
+    --aria-accent-soft: #ddf4ff;
+    --aria-accent-strong: #0969da;
+    --aria-on-accent: #ffffff;
+    --aria-accent-hover: #0550ae;
+    --aria-danger: #cf222e;
+    --aria-code: #0550ae;
+    --aria-focus: #0969da;
+}
+.dark {
+    --aria-bg: #0d1117;
+    --aria-surface: #161b22;
+    --aria-surface-2: #21262d;
+    --aria-sunken: #0a0d12;
+    --aria-border: #30363d;
+    --aria-text: #e6edf3;
+    --aria-text-2: #c9d1d9;
+    --aria-muted: #9da7b3;
+    --aria-accent: #58a6ff;
+    --aria-accent-fg: #58a6ff;
+    --aria-accent-soft: #132a45;
+    --aria-accent-strong: #1f6feb;
+    --aria-on-accent: #ffffff;
+    --aria-accent-hover: #1158c7;
+    --aria-danger: #ff7b72;
+    --aria-code: #79c0ff;
+    --aria-focus: #58a6ff;
+}
 body, .gradio-container {
-    background: #0d1117 !important;
-    color: #e6edf3 !important;
+    background: var(--aria-bg) !important;
+    color: var(--aria-text) !important;
 }
 .gradio-container {
     max-width: 100% !important;
     padding: 0 !important;
     margin: 0 !important;
+    /* Gradio's default primary blue (blue-500) under white text is 3.7:1;
+       its theme variables are redefined here, closer than its own :root/.dark. */
+    --button-primary-background-fill: var(--aria-accent-strong);
+    --button-primary-background-fill-hover: var(--aria-accent-hover);
+    --button-primary-border-color: var(--aria-accent-strong);
+    --button-primary-border-color-hover: var(--aria-accent-hover);
+    --button-primary-text-color: var(--aria-on-accent);
+    --button-primary-text-color-hover: var(--aria-on-accent);
+}
+/* Keyboard focus is always visible (WCAG 2.4.7) */
+.gradio-container :is(button, a, input, textarea, select, [tabindex]):focus-visible {
+    outline: 2px solid var(--aria-focus) !important;
+    outline-offset: 2px !important;
 }
 /* Tabs */
 .tab-nav button {
-    background: #161b22 !important;
-    color: #8b949e !important;
+    background: var(--aria-surface) !important;
+    color: var(--aria-muted) !important;
     border: none !important;
     border-bottom: 2px solid transparent !important;
     padding: 10px 20px !important;
-    font-size: 13px !important;
+    font-size: 14px !important;
 }
 .tab-nav button.selected {
-    color: #58a6ff !important;
-    border-bottom: 2px solid #58a6ff !important;
-    background: #0d1117 !important;
+    color: var(--aria-accent-fg) !important;
+    border-bottom: 2px solid var(--aria-accent) !important;
+    background: var(--aria-bg) !important;
 }
 /* Chatbot */
 .chatbot {
-    background: #0d1117 !important;
+    background: var(--aria-bg) !important;
     border: none !important;
 }
 /* Message bubbles */
 .message.user > div {
-    background: #1c2128 !important;
-    border: 1px solid #30363d !important;
+    background: var(--aria-surface) !important;
+    border: 1px solid var(--aria-border) !important;
     border-radius: 12px 12px 4px 12px !important;
-    color: #e6edf3 !important;
+    color: var(--aria-text) !important;
 }
 .message.bot > div {
     background: transparent !important;
-    color: #e6edf3 !important;
+    color: var(--aria-text) !important;
 }
 .message.bot table {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
-    background: #161b22;
+    background: var(--aria-surface);
     border-radius: 6px;
     overflow: hidden;
 }
 .message.bot th {
-    background: #21262d;
-    color: #58a6ff;
+    background: var(--aria-surface-2);
+    color: var(--aria-accent-fg);
     padding: 7px 12px;
-    border-bottom: 1px solid #30363d;
+    border-bottom: 1px solid var(--aria-border);
 }
-.message.bot td { padding: 6px 12px; border-bottom: 1px solid #21262d; }
-.message.bot code { background: #1f2937; color: #79c0ff; padding: 1px 6px; border-radius: 4px; }
+.message.bot td { padding: 6px 12px; border-bottom: 1px solid var(--aria-surface-2); }
+.message.bot code { background: var(--aria-surface-2); color: var(--aria-code); padding: 1px 6px; border-radius: 4px; }
+.message.bot a { color: var(--aria-accent-fg); text-decoration: underline; }
 /* Input */
 .input-row textarea {
-    background: #161b22 !important;
-    border: 1px solid #30363d !important;
-    color: #e6edf3 !important;
+    background: var(--aria-surface) !important;
+    border: 1px solid var(--aria-border) !important;
+    color: var(--aria-text) !important;
     border-radius: 10px !important;
 }
-.input-row textarea:focus { border-color: #58a6ff !important; outline: none !important; }
+.input-row textarea:focus { border-color: var(--aria-accent) !important; }
 /* Suggestion chips */
 .sugg-btn {
-    background: #161b22 !important;
-    color: #8b949e !important;
-    border: 1px solid #30363d !important;
+    background: var(--aria-surface) !important;
+    color: var(--aria-text-2) !important;
+    border: 1px solid var(--aria-border) !important;
     border-radius: 16px !important;
-    font-size: 12px !important;
+    font-size: 13px !important;
     padding: 4px 12px !important;
 }
 .sugg-btn:hover {
-    color: #58a6ff !important;
-    border-color: #58a6ff66 !important;
+    color: var(--aria-accent-fg) !important;
+    border-color: var(--aria-accent) !important;
 }
 /* Send / Clear buttons */
-.send-btn { background: #1f6feb !important; color: white !important; border-radius: 8px !important; border: none !important; }
-.send-btn:hover { background: #388bfd !important; }
-.clear-btn { background: transparent !important; color: #6e7681 !important; border: 1px solid #30363d !important; border-radius: 8px !important; }
-.clear-btn:hover { color: #f85149 !important; border-color: #f85149 !important; }
+.send-btn { background: var(--aria-accent-strong) !important; color: var(--aria-on-accent) !important; border-radius: 8px !important; border: none !important; }
+.send-btn:hover { background: var(--aria-accent-hover) !important; }
+.clear-btn { background: transparent !important; color: var(--aria-muted) !important; border: 1px solid var(--aria-border) !important; border-radius: 8px !important; }
+.clear-btn:hover { color: var(--aria-danger) !important; border-color: var(--aria-danger) !important; }
 /* Top header */
 #aria-header {
-    background: #161b22;
-    border-bottom: 1px solid #30363d;
+    background: var(--aria-surface);
+    border-bottom: 1px solid var(--aria-border);
     padding: 8px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
 }
+.aria-brand { font-size: 18px; font-weight: 700; color: var(--aria-accent-fg); }
+.aria-tagline { font-size: 12px; color: var(--aria-muted); margin-left: 10px; }
+.aria-pill {
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--aria-accent-soft);
+    color: var(--aria-accent-fg);
+    border: 1px solid var(--aria-border);
+}
+.aria-footer { text-align: center; font-size: 12px; color: var(--aria-muted); padding: 6px 0 10px; }
 footer { display: none !important; }
 /* UX-02: research steps under the loading dots */
-.aria-progress { font-size: 12px; color: #8b949e; margin-top: 6px; line-height: 1.5; }
-.aria-progress strong { color: #c9d1d9; font-weight: 500; }
+.aria-progress { font-size: 12px; color: var(--aria-muted); margin-top: 6px; line-height: 1.5; }
+.aria-progress strong { color: var(--aria-text-2); font-weight: 500; }
 /* Typing / loading indicator */
 @keyframes aria-bounce {
     0%, 80%, 100% { transform: translateY(0);    opacity: 0.35; }
@@ -734,65 +806,61 @@ footer { display: none !important; }
     display: inline-block;
     width: 7px; height: 7px;
     border-radius: 50%;
-    background: #58a6ff;
+    background: var(--aria-accent);
     margin: 0 2px;
     vertical-align: middle;
     animation: aria-bounce 1.2s infinite ease-in-out;
 }
 .aria-dot:nth-child(2) { animation-delay: 0.2s; }
 .aria-dot:nth-child(3) { animation-delay: 0.4s; }
+@media (prefers-reduced-motion: reduce) {
+    .aria-dot { animation: none; opacity: 0.8; }
+}
 /* Timeframe radio */
-.tf-radio label { font-size: 12px !important; color: #8b949e !important; }
+.tf-radio label { font-size: 12px !important; color: var(--aria-text) !important; }
 .tf-radio .wrap { gap: 4px !important; }
 /* Chat sidebar (ChatGPT-style) */
-.chat-sidebar {
-    background: #0a0d12 !important;
-    border-right: 1px solid #30363d !important;
-    padding: 8px !important;
-    max-height: 640px;
-    overflow-y: auto;
-}
-.sidebar-title { color: #8b949e !important; font-size: 11px !important; padding: 2px 4px !important; }
+.sidebar-title { color: var(--aria-muted) !important; font-size: 12px !important; padding: 2px 4px !important; }
 .new-chat-btn {
-    background: #161b22 !important;
-    color: #e6edf3 !important;
-    border: 1px solid #30363d !important;
+    background: var(--aria-surface) !important;
+    color: var(--aria-text) !important;
+    border: 1px solid var(--aria-border) !important;
     border-radius: 8px !important;
-    font-size: 12px !important;
+    font-size: 13px !important;
     margin-bottom: 6px !important;
     width: 100% !important;
 }
-.new-chat-btn:hover { border-color: #58a6ff66 !important; }
-.sidebar-empty { color: #6e7681 !important; font-size: 11px !important; padding: 6px 4px !important; }
+.new-chat-btn:hover { border-color: var(--aria-accent) !important; }
+.sidebar-empty { color: var(--aria-muted) !important; font-size: 12px !important; padding: 6px 4px !important; }
 .session-row { gap: 4px !important; margin-bottom: 2px !important; }
 .session-btn {
     background: transparent !important;
-    color: #c9d1d9 !important;
+    color: var(--aria-text-2) !important;
     border: none !important;
     text-align: left !important;
     justify-content: flex-start !important;
-    font-size: 12px !important;
+    font-size: 13px !important;
     padding: 6px 8px !important;
     border-radius: 6px !important;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
 }
-.session-btn:hover { background: #161b22 !important; color: #58a6ff !important; }
+.session-btn:hover { background: var(--aria-surface) !important; color: var(--aria-accent-fg) !important; }
 .session-btn-active {
-    background: #161b22 !important;
-    color: #58a6ff !important;
-    border-left: 2px solid #58a6ff !important;
+    background: var(--aria-surface) !important;
+    color: var(--aria-accent-fg) !important;
+    border-left: 2px solid var(--aria-accent) !important;
     font-weight: 600 !important;
 }
 .session-del-btn {
     background: transparent !important;
-    color: #6e7681 !important;
+    color: var(--aria-muted) !important;
     border: none !important;
-    font-size: 11px !important;
+    font-size: 12px !important;
     padding: 4px !important;
 }
-.session-del-btn:hover { color: #f85149 !important; }
+.session-del-btn:hover { color: var(--aria-danger) !important; }
 /* ChatGPT-style chat shell: sidebar docked left, centered chat column */
 .chat-shell { gap: 0 !important; align-items: stretch !important; }
 .chat-main {
@@ -804,8 +872,8 @@ footer { display: none !important; }
    exist (its click handlers target them), but must render first. */
 .chat-sidebar {
     order: -1;
-    background: #0a0d12 !important;
-    border-right: 1px solid #30363d !important;
+    background: var(--aria-sunken) !important;
+    border-right: 1px solid var(--aria-border) !important;
     padding: 8px 6px !important;
     width: 260px !important;
     min-width: 260px !important;
@@ -827,7 +895,7 @@ footer { display: none !important; }
 }
 .sidebar-icon-btn {
     background: transparent !important;
-    color: #c9d1d9 !important;
+    color: var(--aria-text-2) !important;
     border: 1px solid transparent !important;
     border-radius: 8px !important;
     font-size: 15px !important;
@@ -837,7 +905,7 @@ footer { display: none !important; }
     max-width: 32px !important;
     flex: 0 0 auto !important;
 }
-.sidebar-icon-btn:hover { background: #161b22 !important; border-color: #30363d !important; }
+.sidebar-icon-btn:hover { background: var(--aria-surface) !important; border-color: var(--aria-border) !important; }
 /* The icon-only "new chat" button only makes sense once the full panel
    (with its own "+ New chat" button) is hidden — CSS keeps it out of the
    way in the expanded state without needing a second server round-trip. */
@@ -848,34 +916,97 @@ footer { display: none !important; }
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
-    background: #161b22;
+    background: var(--aria-surface);
     border-radius: 6px;
     overflow: hidden;
 }
 .wl-table th {
-    background: #21262d;
-    color: #58a6ff;
+    background: var(--aria-surface-2);
+    color: var(--aria-accent-fg);
     padding: 8px 12px;
     text-align: left;
-    border-bottom: 1px solid #30363d;
+    border-bottom: 1px solid var(--aria-border);
 }
 .wl-table td {
     padding: 7px 12px;
-    border-bottom: 1px solid #21262d;
-    color: #e6edf3;
+    border-bottom: 1px solid var(--aria-surface-2);
+    color: var(--aria-text);
 }
 .wl-table tr:last-child td { border-bottom: none; }
-.wl-empty { color: #6e7681; font-size: 13px; padding: 10px 2px; }
+.wl-empty { color: var(--aria-muted); font-size: 13px; padding: 10px 2px; }
 """
 
 
 CSS = APP_CSS  # older name
 
-# Force Gradio's built-in dark theme vars regardless of the visitor's
-# OS/browser color-scheme preference (UX-03 revisits this). Gradio only applies
-# its dark vars when `.dark` is on <body>. Must be an IIFE — Gradio evaluates
-# `js` as a bare expression.
-APP_JS = "(() => { document.body.classList.add('dark'); })()"
+# UX-03: light or dark follows the visitor's stored choice, else their OS
+# preference (prefers-color-scheme), and the header toggle flips and remembers
+# it. Gradio applies its own dark vars when `.dark` is on <body>, and APP_CSS's
+# tokens follow the same class. Icon-only buttons get accessible names here
+# because gr.Button has no aria-label; @gr.render re-creates the sidebar, so a
+# MutationObserver labels new ones. Must be an IIFE — Gradio evaluates `js` as
+# a bare expression.
+APP_JS = """(() => {
+  const KEY = 'aria-theme';
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  const stored = () => { try { return localStorage.getItem(KEY); } catch (e) { return null; } };
+  const apply = () => {
+    const pick = stored();
+    const dark = pick ? pick === 'dark' : mq.matches;
+    document.body.classList.toggle('dark', dark);
+    const btn = document.getElementById('theme-btn');
+    if (btn) btn.setAttribute('aria-pressed', String(dark));
+  };
+  window.ariaToggleTheme = () => {
+    const dark = !document.body.classList.contains('dark');
+    try { localStorage.setItem(KEY, dark ? 'dark' : 'light'); } catch (e) {}
+    apply();
+  };
+  const NAMES = {'◧': 'Show or hide chat history', '✎': 'New chat', '✕': 'Delete this chat'};
+  let queued = false;
+  const label = () => {
+    queued = false;
+    document.querySelectorAll('button').forEach((b) => {
+      const name = NAMES[b.textContent.trim()];
+      if (name && b.getAttribute('aria-label') !== name) {
+        b.setAttribute('aria-label', name);
+        b.setAttribute('title', name);
+      }
+    });
+    // Gradio keeps an aria-hidden copy of the tab strip (to measure overflow)
+    // whose buttons can still take focus; `inert` takes them out of the tab order.
+    document.querySelectorAll('.tab-container.visually-hidden[aria-hidden="true"]').forEach((el) => {
+      el.inert = true;
+    });
+    const btn = document.getElementById('theme-btn');
+    if (btn && !btn.hasAttribute('aria-pressed')) apply();
+  };
+  new MutationObserver(() => {
+    if (!queued) { queued = true; requestAnimationFrame(label); }
+  }).observe(document.body, {childList: true, subtree: true});
+  mq.addEventListener('change', apply);
+  apply();
+  label();
+})()"""
+
+THEME_TOGGLE_JS = "() => { window.ariaToggleTheme && window.ariaToggleTheme(); }"
+
+HEADER_HTML = """
+<header id='aria-header'>
+  <div>
+    <span class='aria-brand'>⚡ ARIA</span>
+    <span class='aria-tagline'>Autonomous Research &amp; Investment Analyst · NSE · BSE · v2</span>
+  </div>
+  <div class='aria-pill'>Free trial · bring your own key for unlimited use (Settings)</div>
+</header>
+"""
+
+FOOTER_HTML = """
+<div class='aria-footer'>
+  Data: NSE/BSE via yfinance · NSE bhavcopy · AMFI · Google News RSS — All free &nbsp;|&nbsp;
+  ⚠️ Not SEBI-registered. For professional research purposes only.
+</div>
+"""
 
 # SEC-04: logout is a POST to the FastAPI route (it deletes the session row and
 # the HttpOnly cookie), then back to the login page.
@@ -1897,21 +2028,11 @@ def build_ui() -> gr.Blocks:
 
         with gr.Column(elem_id="main-app"):
             # Header
-            gr.HTML("""
-            <div id='aria-header' style='display:flex;align-items:center;justify-content:space-between'>
-              <div>
-                <span style='font-size:18px;font-weight:700;color:#58a6ff;'>⚡ ARIA</span>
-                <span style='font-size:11px;color:#8b949e;margin-left:10px;'>
-                  Autonomous Research &amp; Investment Analyst · NSE · BSE · v2
-                </span>
-              </div>
-              <div style='font-size:10px;padding:3px 10px;border-radius:12px;
-                          background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;'>
-                Free trial · bring your own key for unlimited use (Settings)
-              </div>
-            </div>
-            """)
-            logout_btn = gr.Button("Log out", size="sm", variant="secondary", elem_id="logout-btn")
+            gr.HTML(HEADER_HTML)
+            with gr.Row(elem_id="top-actions"):
+                theme_btn = gr.Button("◐ Light / dark", size="sm", variant="secondary", elem_id="theme-btn")
+                logout_btn = gr.Button("Log out", size="sm", variant="secondary", elem_id="logout-btn")
+            theme_btn.click(None, js=THEME_TOGGLE_JS)
             logout_btn.click(None, js=LOGOUT_JS)
 
             # Tabs — one unified chat (orchestrator-routed) + Watchlist utility view
@@ -1929,12 +2050,7 @@ def build_ui() -> gr.Blocks:
                     _build_settings_tab(user_state)
 
             # Footer
-            gr.HTML("""
-            <div style='text-align:center;font-size:10px;color:#484f58;padding:6px 0 10px'>
-              Data: NSE/BSE via yfinance · NSE bhavcopy · AMFI · Google News RSS — All free &nbsp;|&nbsp;
-              ⚠️ Not SEBI-registered. For professional research purposes only.
-            </div>
-            """)
+            gr.HTML(FOOTER_HTML)
 
         # Note: the watchlist table no longer needs a user_state.change
         # handler here — its @gr.render already takes user_state as an

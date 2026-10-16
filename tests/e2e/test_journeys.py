@@ -65,6 +65,7 @@ def test_equity_question_streams_progress_answer_and_chart(page: Page, base_url,
     text = wait_answer(page, "Here is what the research shows")
     assert ERROR not in text and "Data as of" in text and "Routed to" not in text
     expect(page.locator("#chart-chat")).to_be_visible(timeout=10_000)
+    assert "Chart in words." in text  # UX-03: the chart's text alternative
 
 
 # 4 ─────────────────────────────────────────────────────────────────────────────
