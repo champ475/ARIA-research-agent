@@ -6,6 +6,13 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
+from hypothesis import settings
+
+# TEST-03: property tests run 500 examples each in CI, 100 locally (override
+# with HYPOTHESIS_PROFILE=ci). Tests that pin max_examples keep their own.
+settings.register_profile("ci", max_examples=500, deadline=None)
+settings.register_profile("dev", max_examples=100, deadline=None)
+settings.load_profile(os.getenv("HYPOTHESIS_PROFILE") or ("ci" if os.getenv("CI") else "dev"))
 
 
 def import_app_without_side_effects():

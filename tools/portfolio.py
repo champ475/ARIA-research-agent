@@ -174,7 +174,12 @@ def parse_csv(content: bytes | str) -> tuple[list[dict[str, Any]], list[str]]:
         dialect: Any = csv.Sniffer().sniff(content[:4096], delimiters=",;\t")
     except csv.Error:
         dialect = csv.excel
-    rows = list(csv.reader(io.StringIO(content), dialect))
+    # TEST-03: old Mac exports end lines with a bare "\r", which csv rejects.
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        rows = list(csv.reader(io.StringIO(content), dialect))
+    except csv.Error as e:
+        raise UserInputError("That file couldn't be read as CSV — export it again as .csv.") from e
     header_at = next(
         (
             i

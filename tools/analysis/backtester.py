@@ -74,6 +74,7 @@ def ma_crossover_backtest(
     """
     Simple MA crossover strategy: buy when fast MA crosses above slow MA, sell when below.
     """
+    df = df.dropna(subset=["Close"]) if "Close" in df.columns else df  # TEST-03: gaps aren't prices
     if df.empty or len(df) < slow + 5:
         return {"error": f"Not enough data (need > {slow} candles)"}
 
@@ -150,6 +151,7 @@ def rsi_backtest(
     """
     RSI mean-reversion strategy: buy when RSI < rsi_buy, sell when RSI > rsi_sell.
     """
+    df = df.dropna(subset=["Close"]) if "Close" in df.columns else df  # TEST-03: gaps aren't prices
     if df.empty or len(df) < 20:
         return {"error": "Not enough data"}
 
@@ -158,6 +160,8 @@ def rsi_backtest(
         return {"error": "RSI computation failed"}
 
     df_ta = df_ta.dropna(subset=["RSI"])
+    if len(df_ta) < 2:
+        return {"error": "Not enough data"}
 
     position = 0
     cash = initial_capital
