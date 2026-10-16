@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     # OBS-03 SLOs (docs/SLO.md): monthly availability and equity p95 time to first output.
     SLO_AVAILABILITY: float = Field(0.995, gt=0, lt=1)
     SLO_EQUITY_P95_TTFT_SECONDS: float = Field(15.0, gt=0)
+    # OBS-04: where the ops watchdog pages (either or both), and how.
+    OPERATOR_TELEGRAM_CHAT_ID: str = ""
+    OPERATOR_EMAIL: str = ""
+    RUNBOOK_URL: str = "https://github.com/champ475/ARIA-research-agent/blob/main/docs/RUNBOOK.md"
+    ALERT_REMINDER_MINUTES: int = Field(60, ge=5)
+    # Database plan size for the "DB size > 80%" alert (Neon free tier: 512 MB).
+    DB_SIZE_LIMIT_MB: int = Field(512, ge=1)
     DB_POOL_MAX: int = Field(20, ge=1, le=500)
     DB_POOL_ACQUIRE_TIMEOUT: float = Field(10, gt=0)
     DB_POOL_MIN: int = Field(2, ge=0)
@@ -431,6 +438,11 @@ JOBS_DATABASE_URL = settings.JOBS_DATABASE_URL
 METRICS_TOKEN = settings.METRICS_TOKEN
 SLO_AVAILABILITY = settings.SLO_AVAILABILITY
 SLO_EQUITY_P95_TTFT_SECONDS = settings.SLO_EQUITY_P95_TTFT_SECONDS
+OPERATOR_TELEGRAM_CHAT_ID = settings.OPERATOR_TELEGRAM_CHAT_ID
+OPERATOR_EMAIL = settings.OPERATOR_EMAIL
+RUNBOOK_URL = settings.RUNBOOK_URL
+ALERT_REMINDER_MINUTES = settings.ALERT_REMINDER_MINUTES
+DB_SIZE_LIMIT_MB = settings.DB_SIZE_LIMIT_MB
 RUN_JOBS_IN_APP = settings.run_jobs_in_app
 DB_POOL_MAX = settings.DB_POOL_MAX
 DB_POOL_ACQUIRE_TIMEOUT = settings.DB_POOL_ACQUIRE_TIMEOUT

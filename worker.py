@@ -15,6 +15,7 @@ Jobs (IST):
   housekeeping           hourly — expired sessions, auth attempts/tokens, link codes
   fundamentals_snapshot  19:30 on trading days — the screener's nightly snapshot
   mf_refresh             23:30 daily — mutual fund metrics after AMFI publishes
+  ops_watchdog           every 5 min — pages the operator (utils/watchdog.py, OBS-04)
 """
 
 from __future__ import annotations
@@ -67,6 +68,12 @@ def _mf_refresh() -> None:
     main([])
 
 
+def _ops_watchdog() -> None:
+    from utils.watchdog import run
+
+    run()
+
+
 def _market_open(now: datetime) -> bool:
     from utils.market_clock import is_open
 
@@ -84,6 +91,7 @@ JOBS: list[Job] = [
     Job("housekeeping", _housekeeping, every=timedelta(hours=1)),
     Job("fundamentals_snapshot", _fundamentals_snapshot, daily_at=dtime(19, 30), when=_trading_day),
     Job("mf_refresh", _mf_refresh, daily_at=dtime(23, 30)),
+    Job("ops_watchdog", _ops_watchdog, every=timedelta(minutes=5)),
 ]
 
 

@@ -1,0 +1,144 @@
+# ARIA runbook (OBS-04)
+
+Every page from the ops watchdog (`utils/watchdog.py`, the worker's `ops_watchdog` job, every 5 minutes) and every Prometheus rule (`ops/prometheus/alerts.yml`) links to a section of this page. Each section covers:
+- what the alert means;
+- what to check first;
+- how to fix it.
+
+Pages go to `OPERATOR_TELEGRAM_CHAT_ID` and/or `OPERATOR_EMAIL`. A condition that stays true gets a reminder every `ALERT_REMINDER_MINUTES` (60 by default), and a recovery sends one "resolved" message. `SELECT * FROM ops_alerts WHERE resolved_at IS NULL` shows what is open.
+
+Useful everywhere:
+- `python scripts/find_turn.py <error id>` shows one turn's record and trace.
+- `turn_stats_hourly` and `slo_daily` (SQL views) show the shape of the last hours and days.
+- `GET /readyz`, `GET /health/data` and `GET /metrics` show the live state of one instance.
+- `SELECT * FROM job_heartbeats` shows every background job's last run, owner and error.
+
+---
+
+## error-rate
+
+**Means:** more than 5% of chat turns ended in `error` or `llm_unavailable` over 10 minutes (at least 10 turns). Users are getting "Something went wrong (ref …)".
+
+**First checks:**
+1. `SELECT status, intent, count(*) FROM turns WHERE created_at > now() - interval '30 min' GROUP BY 1, 2;` Is it one intent or all of them?
+2. Take two error IDs and run `python scripts/find_turn.py <id>`. Is it the same exception?
+3. Open `/readyz`. Is the database or the schema at fault?
+
+**Fix:**
+- A deploy is to blame: roll back (`scripts/rollback.sh`, TEST-07).
+- An LLM provider is down: see [llm-exhausted](#llm-exhausted).
+- The database is down: see [db-connections](#db-connections). Neon status: https://neonstatus.com.
+
+## latency
+
+**Means:** equity answers' p95 time to first output is above 2 × the SLO (30 s) over 15 minutes.
+
+**First checks:**
+1. The `node_ms` of slow turns (`find_turn.py`): which node is slow? The planner, tools or synthesis?
+2. `/health/data`: is a data source half-open and timing out?
+3. The provider fallback rate on the dashboard: are calls falling through to slower models?
+
+**Fix:**
+- A slow data source: its breaker opens on its own after repeated timeouts. Lower `TOOL_TIMEOUT_SECONDS` if needed.
+- A slow model: reorder `ARIA_MODELS_SYNTHESIS`.
+- Load: raise `CHAT_CONCURRENCY` only if CPU and DB have headroom.
+
+## heartbeat-stale
+
+**Means:** during market hours, no alert check has succeeded for 15 minutes. Users' price alerts are not being evaluated.
+
+**First checks:**
+1. `SELECT * FROM job_heartbeats WHERE job = 'alert_check';` Look at `owner`, `last_status` and `last_error`.
+2. Is any worker running (`docker compose ps worker`, or the host's process list)? Is the GitHub Actions "Alert Check" workflow enabled? GitHub disables cron after 60 days without repo activity.
+3. If `owner` is set but `last_started_at` is old, a process may hold the advisory lock while hung: `SELECT pid, application_name, state FROM pg_stat_activity WHERE application_name LIKE 'aria-job:%';`
+
+**Fix:**
+- Start or restart the worker. A hung lock holder: restart that process, or `SELECT pg_terminate_backend(<pid>)` (the lock drops with the session).
+- Re-enable the Actions workflow.
+
+## job-failing
+
+**Means:** a background job (`housekeeping`, `fundamentals_snapshot`, `mf_refresh`, …) failed twice in a row.
+
+**First checks:**
+1. `last_error` in `job_heartbeats` holds the exception class. Read the worker's logs around `last_finished_at`.
+2. Network jobs (snapshot, MF refresh) usually mean an upstream outage. Check `/health/data`.
+
+**Fix:**
+- Upstream outage: wait; the job retries on its next slot. Run it once by hand with `python scripts/refresh_fundamentals.py` or `python scripts/refresh_mf.py`.
+- A code error: fix it, deploy, run by hand.
+
+## canary-failing
+
+**Means:** the data canary (TEST-05) failed twice in a row. A source (yfinance, NSE, AMFI, news) is down, is blocking us, or changed its response shape.
+
+**First checks:**
+1. `python scripts/data_canary.py` prints each source's result and any schema violation.
+2. `/health/data` shows each breaker's state and last success.
+
+**Fix:**
+- Blocked: NSE blocks cloud IPs and cookie-less clients. Answers already say "NSE data is temporarily unavailable", which is expected degradation.
+- Schema change: update the fetcher and its contract in `tools/data/contracts.py`, then re-record the fixture.
+- Long outage: consider the licensed source decision (ARCHITECTURE.md, DATA-02).
+
+## llm-exhausted
+
+**Means:** at least 3 turns in 15 minutes found every LLM provider unavailable.
+
+**First checks:**
+1. Look at the startup model probe log (`[model_health]`) and `providers` / `models` on recent turns.
+2. Groq and Gemini consoles: is quota used up? Is a key revoked?
+3. Was a model retired? Check the provider deprecation pages; the LLM-08 log says `model_gone`.
+
+**Fix:**
+- Rotate in fresh keys (`GROQ_API_KEY_n`, `GEMINI_API_KEY`) and restart.
+- Repoint `ARIA_MODELS_*` at live models.
+- Short-term: set `LOCAL_LLM_BASE_URL` so a local model is the last fallback.
+
+## db-connections
+
+**Means:** more than 80% of Postgres connections are in use (the watchdog uses `pg_stat_activity`; Prometheus uses the app pool gauge).
+
+**First checks:**
+1. `SELECT application_name, state, count(*) FROM pg_stat_activity GROUP BY 1, 2;` Which client holds them?
+2. Look for long-running queries: `state = 'active' AND query_start < now() - interval '1 min'`.
+
+**Fix:**
+- Point `DATABASE_URL` at Neon's `-pooler` host.
+- Lower `DB_POOL_MAX` per replica.
+- Kill a runaway query with `pg_cancel_backend`.
+
+## db-size
+
+**Means:** the database is above 80% of `DB_SIZE_LIMIT_MB`. On Neon's free tier, writes fail at the limit.
+
+**First checks:**
+1. `SELECT relname, pg_size_pretty(pg_total_relation_size(relid)) FROM pg_catalog.pg_statio_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 10;`
+2. The usual growers are `turns`, `chat_history`, `evidence_cache`, `checkpoint_*`, `audit_log` and `downloads`.
+
+**Fix:**
+- Check that housekeeping runs, since it purges `downloads`, sessions and tokens.
+- Prune old `evidence_cache` rows and old LangGraph checkpoints.
+- Archive `turns` older than 90 days.
+- Raise the plan.
+
+## fundamentals-stale
+
+**Means:** the screener's `fundamentals_snapshot` is older than `FUNDAMENTALS_MAX_AGE_HOURS` (26 h). Screens still run, but each answer says the data is old.
+
+**First checks:**
+1. Look at the `fundamentals_snapshot` job in `job_heartbeats`. Did it run at 19:30 IST, and did it fail?
+2. `/health/data`: is yfinance open?
+
+**Fix:**
+- `python scripts/refresh_fundamentals.py`. It resumes and skips fresh rows. A full run takes about 8 minutes.
+
+---
+
+## Backups and restore (REL-08)
+
+See [Backups](#backups). RPO ≤ 24 h, RTO ≤ 4 h.
+
+## Backups
+
+*(Filled in by REL-08.)*

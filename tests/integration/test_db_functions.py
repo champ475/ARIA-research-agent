@@ -25,6 +25,7 @@ from tests.integration import (
     test_rate_limits,
     test_sessions,
     test_slo,
+    test_watchdog,
 )
 from tests.integration.test_tenant_isolation import COVERED as ISOLATION_COVERED
 
@@ -334,6 +335,11 @@ COVERED = {
     "telegram_link_codes_purge_expired": test_jobs.test_expired_link_codes_are_purged,
     "downloads_purge_expired": test_downloads.test_stored_files_expire_and_are_purged,
     "slo_summary": test_slo.test_slo_report_matches_a_hand_count,
+    "turn_window_stats": test_watchdog.test_error_rate_pages_once_reminds_and_resolves,
+    "db_usage": test_watchdog.test_database_size_and_connections,
+    "ops_alert_fire": test_watchdog.test_error_rate_pages_once_reminds_and_resolves,
+    "ops_alert_resolve": test_watchdog.test_error_rate_pages_once_reminds_and_resolves,
+    "ops_alerts_open": test_watchdog.test_a_check_that_cannot_run_resolves_nothing,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.

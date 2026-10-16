@@ -1605,8 +1605,9 @@ def job_heartbeat_finish(job: str, ok: bool, duration_ms: int, error: str | None
     _query(
         "UPDATE job_heartbeats SET last_finished_at=now(), last_status=%s, last_error=%s, "
         "last_duration_ms=%s, runs=runs+1, failures=failures + %s, "
+        "consecutive_failures=CASE WHEN %s THEN 0 ELSE consecutive_failures + 1 END, "
         "last_ok_at=CASE WHEN %s THEN now() ELSE last_ok_at END WHERE job=%s",
-        ("ok" if ok else "error", error, duration_ms, 0 if ok else 1, ok, job),
+        ("ok" if ok else "error", error, duration_ms, 0 if ok else 1, ok, ok, job),
         fetch=None,
         commit=True,
     )
@@ -1669,3 +1670,68 @@ def slo_summary(since) -> dict:
         fetch="one",
     )
     return row or {"turns": 0, "good": 0, "equity_p95_ttft_ms": None}
+
+
+# ── Ops watchdog (OBS-04; utils/watchdog.py) ─────────────────────────────────
+
+
+def turn_window_stats(since) -> dict:
+    """Volume, failures, LLM-exhausted turns and p95s for turns since `since`."""
+    row = _query(
+        "SELECT count(*) AS turns, count(*) FILTER (WHERE status = ANY(%s)) AS failed, "
+        "count(*) FILTER (WHERE status = 'llm_unavailable') AS llm_unavailable, "
+        "count(*) FILTER (WHERE intent = 'equity' AND ttft_ms IS NOT NULL) AS equity_turns, "
+        "percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms) "
+        "FILTER (WHERE intent = 'equity' AND ttft_ms IS NOT NULL) AS equity_p95_ttft_ms "
+        "FROM turns WHERE created_at >= %s",
+        (list(FAILED_TURN_STATUSES), since),
+        fetch="one",
+    )
+    return row or {}
+
+
+def db_usage() -> dict:
+    """Connections in use vs the server's limit, and this database's size."""
+    row = _query(
+        "SELECT (SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()) AS connections, "
+        "current_setting('max_connections')::int AS max_connections, "
+        "pg_database_size(current_database()) AS size_bytes",
+        fetch="one",
+    )
+    return row or {}
+
+
+def ops_alert_fire(key: str, title: str, detail: str, renotify_after_s: int) -> bool:
+    """Record that alert `key` is firing; True when the operator should be
+    told now (new, re-opened, or a reminder is due)."""
+    row = _query(
+        "INSERT INTO ops_alerts (key, title, detail) VALUES (%s, %s, %s) "
+        "ON CONFLICT (key) DO UPDATE SET title=EXCLUDED.title, detail=EXCLUDED.detail, "
+        "  first_fired_at = CASE WHEN ops_alerts.resolved_at IS NOT NULL THEN now() ELSE ops_alerts.first_fired_at END, "
+        "  notifications = CASE WHEN ops_alerts.resolved_at IS NOT NULL "
+        "      OR ops_alerts.last_notified_at < now() - make_interval(secs => %s) "
+        "    THEN ops_alerts.notifications + 1 ELSE ops_alerts.notifications END, "
+        "  last_notified_at = CASE WHEN ops_alerts.resolved_at IS NOT NULL "
+        "      OR ops_alerts.last_notified_at < now() - make_interval(secs => %s) "
+        "    THEN now() ELSE ops_alerts.last_notified_at END, "
+        "  resolved_at = NULL "
+        "RETURNING (xmax = 0) AS inserted, last_notified_at = now() AS notify",
+        (key, title, detail, renotify_after_s, renotify_after_s),
+        fetch="one",
+        commit=True,
+    )
+    return bool(row and (row["inserted"] or row["notify"]))
+
+
+def ops_alert_resolve(key: str) -> dict | None:
+    """Mark an open alert resolved; returns it (to announce) or None if it wasn't open."""
+    return _query(
+        "UPDATE ops_alerts SET resolved_at=now() WHERE key=%s AND resolved_at IS NULL RETURNING key, title",
+        (key,),
+        fetch="one",
+        commit=True,
+    )
+
+
+def ops_alerts_open() -> list[dict]:
+    return _query("SELECT * FROM ops_alerts WHERE resolved_at IS NULL ORDER BY first_fired_at") or []

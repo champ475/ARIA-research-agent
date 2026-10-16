@@ -16,6 +16,35 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Database-driven ops watchdog with runbook-linked pages (OBS-04)
+**Problem.** Outages (exhausted LLM keys, NSE blocking, a stalled alert checker, the database filling up) were found by users, not the operator (OBS-04).
+**Alternatives considered.**
+- Grafana alerting or Better Stack. Both need the observability stack or a SaaS to run and be reachable all the time, which isn't true for a project that isn't hosted.
+- Alertmanager only. That has the same dependency, and its rules only see one replica's in-memory metrics.
+
+**Final decision.**
+- `utils/watchdog.py` runs as the worker's `ops_watchdog` job every 5 minutes. Its rules read the shared database, so they see every replica: turns, job heartbeats, Postgres stats and the fundamentals snapshot. Rules:
+  - error rate above 5% over 10 minutes (at least 10 turns);
+  - equity p95 TTFT above 2× the SLO over 15 minutes;
+  - alert-check heartbeat stale for more than 15 minutes in market hours;
+  - any job, or the data canary, failing twice in a row (new `consecutive_failures` column);
+  - LLM exhaustion (3 or more turns in 15 minutes);
+  - DB connections above 80%;
+  - DB size above 80% of `DB_SIZE_LIMIT_MB`;
+  - stale fundamentals snapshot.
+- Pages go to `OPERATOR_TELEGRAM_CHAT_ID` (via the bot) and/or `OPERATOR_EMAIL` (via the mailer), with a `docs/RUNBOOK.md` anchor in each.
+- The `ops_alerts` table (migration 0020) deduplicates: one page, a reminder every `ALERT_REMINDER_MINUTES`, and one "resolved" message. A check that fails to run never resolves anything.
+- `ops/prometheus/alerts.yml` has equivalent rules for a Prometheus + Alertmanager setup.
+
+**Trade-offs.**
+- The 5-minute cadence plus Telegram delivery meets "arrives within 5 minutes" only at the boundary; worst case is about 5 minutes plus send time.
+- If the database itself is down, the watchdog can't page. The `/readyz` probe and the host's own monitoring have to cover that.
+- "Fired once in staging by fault injection" was done in integration tests against a real Postgres (every rule), not in a hosted staging environment.
+
+**Future improvements.**
+- An external heartbeat ping (healthchecks.io) so a dead worker also pages.
+- Alertmanager routing and silences once the stack is hosted.
+
 ## 2026-10-16 — Prometheus metrics, SQL views and SLOs (OBS-03)
 **Problem.** None of the release-bar targets (availability, time to first output, cost per turn, fallback rate) could be measured. The `turns` table had the raw data, but there were no live metrics, dashboard or SLO definition (OBS-03).
 **Alternatives considered.**
