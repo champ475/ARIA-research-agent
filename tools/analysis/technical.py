@@ -55,20 +55,25 @@ def compute_all(df: pd.DataFrame) -> pd.DataFrame:
         df["ADX_DI+"] = adx_i.adx_pos()
         df["ADX_DI-"] = adx_i.adx_neg()
     else:
-        # Manual fallbacks
+        # Manual fallbacks — the same definitions `ta` uses (DATA-03), so the
+        # numbers don't change if the library is missing: Bollinger with the
+        # population standard deviation, Wilder-smoothed RSI.
         mid = cls.rolling(TA_BB_PERIOD).mean()
-        std = cls.rolling(TA_BB_PERIOD).std()
+        std = cls.rolling(TA_BB_PERIOD).std(ddof=0)
         df["BB_Upper"] = mid + 2 * std
         df["BB_Mid"] = mid
         df["BB_Lower"] = mid - 2 * std
         delta = cls.diff()
-        g = delta.clip(lower=0).rolling(14).mean()
-        loss = (-delta.clip(upper=0)).rolling(14).mean()
+        alpha = 1 / TA_RSI_PERIOD
+        g = delta.clip(lower=0).ewm(alpha=alpha, min_periods=TA_RSI_PERIOD, adjust=False).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=alpha, min_periods=TA_RSI_PERIOD, adjust=False).mean()
         df["RSI"] = 100 - (100 / (1 + g / loss.replace(0, np.nan)))
-        e12 = cls.ewm(span=12, adjust=False).mean()
-        e26 = cls.ewm(span=26, adjust=False).mean()
+        e12 = cls.ewm(span=TA_MACD_FAST, min_periods=TA_MACD_FAST, adjust=False).mean()
+        e26 = cls.ewm(span=TA_MACD_SLOW, min_periods=TA_MACD_SLOW, adjust=False).mean()
         df["MACD"] = e12 - e26
-        df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+        df["MACD_Signal"] = (
+            df["MACD"].ewm(span=TA_MACD_SIGNAL, min_periods=TA_MACD_SIGNAL, adjust=False).mean()
+        )
         df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
         tr = pd.concat([hi - lo, (hi - cls.shift()).abs(), (lo - cls.shift()).abs()], axis=1).max(axis=1)
         df["ATR"] = tr.rolling(14).mean()

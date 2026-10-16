@@ -82,9 +82,10 @@ class TestComputeDE:
         out = fundamental._compute_de({}, {"debtToEquity": 150.0})
         assert out["value"] == 1.5  # 150 / 100
 
-    def test_falls_back_to_upstream_ratio_when_small(self):
-        out = fundamental._compute_de({}, {"debtToEquity": 1.2})
-        assert out["value"] == 1.2
+    def test_small_upstream_values_are_percentages_too(self):
+        """DATA-03: Yahoo's debtToEquity is always a percent (TCS 9.83 = 0.098x)."""
+        out = fundamental._compute_de({}, {"debtToEquity": 9.83})
+        assert out["value"] == 0.1
 
     def test_no_data_returns_none(self):
         out = fundamental._compute_de({}, {})

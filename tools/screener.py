@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from config import SECTOR_UNIVERSE, STOCK_UNIVERSE
+from tools.analysis.sector_profile import LENDER, sector_profile
 from tools.data.fetcher import get_info
 from tools.screener_grammar import YF_SECTORS, Screen, ScreenFilter, parse
 from utils.escaping import md_cell
@@ -63,13 +64,16 @@ def metrics_from_info(info: dict) -> dict[str, float | None]:
     hi52 = safe_float(info.get("fiftyTwoWeekHigh"))
     lo52 = safe_float(info.get("fiftyTwoWeekLow"))
     trailing_yield = safe_float(info.get("trailingAnnualDividendYield"))  # a fraction
+    lender = sector_profile(info) == LENDER  # DATA-03: no ROCE or D/E for lenders
     return {
         "pe": safe_float(info.get("trailingPE")),
         "pb": safe_float(info.get("priceToBook")),
         "roe": round(roe * 100, 2) if roe is not None else None,
-        "roce": round(ebit / (ta - cl) * 100, 2) if (ebit and ta and cl and ta != cl) else None,
-        # yfinance reports D/E as a percentage (45.2 == 0.452x) for most tickers.
-        "de": round(de_raw / 100, 2) if de_raw is not None and de_raw > 20 else de_raw,
+        "roce": round(ebit / (ta - cl) * 100, 2)
+        if (ebit and ta and cl and ta != cl and not lender)
+        else None,
+        # yfinance reports D/E as a percentage (45.2 == 0.452x), always (DATA-03).
+        "de": None if lender or de_raw is None else round(de_raw / 100, 2),
         "mcap": round(mc / 1e7, 2) if mc else None,
         "div_yield": round(trailing_yield * 100, 2) if trailing_yield is not None else None,
         "rev_growth": round(rg * 100, 2) if rg is not None else None,
