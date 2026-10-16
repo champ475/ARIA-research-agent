@@ -16,6 +16,28 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Full-universe screener over a nightly fundamentals snapshot (DATA-05)
+**Problem.** The screener checked only the first 30 of about 100 hand-picked stocks, fetching each one live and in sequence. "PE below 20" ignored most of the market and took more than 30 s (DATA-05).
+**Alternatives considered.**
+- Parallel live fetch of the whole universe per question. That is about 2,350 Yahoo calls per screen, which hits rate limits and takes minutes.
+- An external screener API (Screener.in, Tickertape). Their terms are unclear and they are another dependency.
+- Cache each `info` in the evidence cache. That still needs a full first pass, and JSONB filtering is slow.
+
+**Final decision.**
+- A `fundamentals_snapshot` table (migration 0015), one row per NSE EQ-series symbol, holding the screen fields in filter units, plus sector, industry, a lender flag and `as_of`.
+- `scripts/refresh_fundamentals.py` fills it from the instrument master through the provider (DATA-02). It uses 4 threads, a per-call delay and batched upserts. It resumes by skipping rows fresher than `--resume-hours`.
+- `tools/screener.run` is one parameterised query (`db.fundamentals_screen`). Fields and operators come from a whitelist, and values are bound parameters. Results are ordered by market cap.
+- When the table is empty or unreachable, the screener falls back to the old live curated path. The answer says which universe was screened, and when the oldest row is more than `FUNDAMENTALS_MAX_AGE_HOURS` (26) old, it says that too.
+- Lenders store NULL ROCE and D/E, so those filters exclude them (DATA-03).
+
+**Trade-offs.**
+- Figures are up to a day old. That's fine for valuation screens, but not for intraday price filters.
+- Yahoo is still the source, with its gaps (DATA-03 README).
+- The nightly schedule and the stale alert belong to REL-05 and OBS-04.
+- A full run is about 8 minutes, measured at 60 symbols in 12 s.
+
+**Future improvements.** Get the snapshot from a licensed bulk-fundamentals feed in one call. Add BSE-only listings. Keep per-day history so screens can be run "as of" a date.
+
 ## 2026-10-16 — Market data provider interface, source health, licensing pending (DATA-02)
 **Problem.**
 - yfinance is unofficial and rate-limited.

@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     MAX_ENTITIES_PER_TURN: int = Field(5, ge=1, le=20)
     # LLM-11: free-trial users' LLM tokens per day (input + output); 0 = no cap.
     TRIAL_DAILY_TOKENS: int = Field(60_000, ge=0)
+    # DATA-05: the screener's snapshot is stale (note + ops alert) after this.
+    FUNDAMENTALS_MAX_AGE_HOURS: int = Field(26, ge=1)
     # DATA-02: deterministic offline market data (e2e tests, demos).
     ARIA_FAKE_DATA: bool = False
     # Evidence confidence when a fallback source stood in (e.g. bhavcopy for a quote).
@@ -342,6 +344,7 @@ TURNS_PER_MINUTE = settings.TURNS_PER_MINUTE
 MAX_ENTITIES_PER_TURN = settings.MAX_ENTITIES_PER_TURN
 TRIAL_DAILY_TOKENS = settings.TRIAL_DAILY_TOKENS
 ARIA_FAKE_DATA = settings.ARIA_FAKE_DATA
+FUNDAMENTALS_MAX_AGE_HOURS = settings.FUNDAMENTALS_MAX_AGE_HOURS
 DEGRADED_CONFIDENCE = settings.DEGRADED_CONFIDENCE
 USD_INR = settings.USD_INR
 REFLECTION_SKIP_WHEN_COMPLETE = settings.REFLECTION_SKIP_WHEN_COMPLETE

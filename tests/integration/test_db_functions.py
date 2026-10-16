@@ -19,6 +19,7 @@ from tests.integration import (
     test_consent,
     test_data_export,
     test_feedback,
+    test_fundamentals_snapshot,
     test_rate_limits,
     test_sessions,
 )
@@ -319,6 +320,10 @@ COVERED = {
     "feedback_negative_since": test_feedback.test_rating_twice_updates_one_row_and_triage_shows_context,
     "feedback_mark_triaged": test_feedback.test_export_writes_golden_stubs_and_marks_triaged,
     "feedback_rate": test_feedback.test_rating_twice_updates_one_row_and_triage_shows_context,
+    "fundamentals_upsert": test_fundamentals_snapshot.test_three_filters_match_a_manual_check_and_run_fast,
+    "fundamentals_screen": test_fundamentals_snapshot.test_three_filters_match_a_manual_check_and_run_fast,
+    "fundamentals_status": test_fundamentals_snapshot.test_refresh_writes_and_resumes,
+    "fundamentals_fresh_symbols": test_fundamentals_snapshot.test_refresh_writes_and_resumes,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.

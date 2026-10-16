@@ -1371,3 +1371,115 @@ def mf_metrics_put(rows: list[dict]) -> None:
         conn.commit()
     finally:
         release_conn(conn)
+
+
+# ── Fundamentals snapshot (DATA-05; scripts/refresh_fundamentals.py) ─────────
+
+FUNDAMENTALS_COLUMNS = (
+    "symbol",
+    "isin",
+    "name",
+    "sector",
+    "industry",
+    "lender",
+    "price",
+    "mcap_cr",
+    "pe",
+    "pb",
+    "roe",
+    "roce",
+    "de",
+    "div_yield",
+    "rev_growth",
+    "from_52w_high",
+    "from_52w_low",
+)
+# Screen fields that may appear in a WHERE clause (VAL-06 names -> columns).
+SCREEN_COLUMNS = {
+    "pe": "pe",
+    "pb": "pb",
+    "roe": "roe",
+    "roce": "roce",
+    "de": "de",
+    "mcap": "mcap_cr",
+    "div_yield": "div_yield",
+    "rev_growth": "rev_growth",
+    "price": "price",
+    "from_52w_high": "from_52w_high",
+    "from_52w_low": "from_52w_low",
+}
+_SCREEN_OPS = {"<": "<", "<=": "<=", ">": ">", ">=": ">="}
+
+
+def fundamentals_upsert(rows: list[dict]) -> int:
+    """Insert or refresh snapshot rows (as_of = now). Returns rows written."""
+    if not rows:
+        return 0
+    cols = ", ".join(FUNDAMENTALS_COLUMNS)
+    placeholders = ", ".join(f"%({c})s" for c in FUNDAMENTALS_COLUMNS)
+    updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in FUNDAMENTALS_COLUMNS if c != "symbol")
+    sql = (
+        f"INSERT INTO fundamentals_snapshot ({cols}) VALUES ({placeholders}) "  # noqa: S608 (fixed column list)
+        f"ON CONFLICT (symbol) DO UPDATE SET {updates}, as_of=now()"
+    )
+    payload = [{c: r.get(c) for c in FUNDAMENTALS_COLUMNS} | {"lender": bool(r.get("lender"))} for r in rows]
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.executemany(sql, payload)
+        conn.commit()
+    finally:
+        release_conn(conn)
+    return len(payload)
+
+
+def fundamentals_screen(
+    filters: list[tuple[str, str, float, float | None]],
+    sectors: list[str] | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Rows passing every (field, op, value, high) filter, largest first.
+    Fields and operators are whitelisted (SCREEN_COLUMNS / _SCREEN_OPS);
+    values are always bound parameters. A NULL metric fails its filter."""
+    where: list[str] = []
+    params: list[Any] = []
+    for field, op, value, high in filters:
+        col = SCREEN_COLUMNS.get(field)
+        if col is None:
+            raise ValueError(f"not a screen field: {field}")
+        if op == "between":
+            where.append(f"{col} BETWEEN %s AND %s")
+            params += [value, high if high is not None else value]
+        elif op == "=":
+            where.append(f"abs({col} - %s) <= greatest(abs(%s) * 0.01, 0.01)")
+            params += [value, value]
+        elif op in _SCREEN_OPS:
+            where.append(f"{col} {_SCREEN_OPS[op]} %s")
+            params.append(value)
+        else:
+            raise ValueError(f"not a screen operator: {op}")
+    if sectors:
+        where.append("sector = ANY(%s)")
+        params.append(list(sectors))
+    sql = (
+        f"SELECT {', '.join(FUNDAMENTALS_COLUMNS)}, as_of FROM fundamentals_snapshot "  # noqa: S608 (whitelisted)
+        f"{'WHERE ' + ' AND '.join(where) if where else ''} "
+        "ORDER BY mcap_cr DESC NULLS LAST LIMIT %s"
+    )
+    params.append(limit)
+    return _query(sql, tuple(params)) or []
+
+
+def fundamentals_status() -> dict:
+    """{rows, oldest, newest} for staleness checks (screener note, OBS-04)."""
+    row = _query(
+        "SELECT count(*) AS rows, min(as_of) AS oldest, max(as_of) AS newest FROM fundamentals_snapshot",
+        fetch="one",
+    )
+    return row or {"rows": 0, "oldest": None, "newest": None}
+
+
+def fundamentals_fresh_symbols(since) -> set[str]:
+    """Symbols refreshed at or after `since` — a resumed run skips them."""
+    rows = _query("SELECT symbol FROM fundamentals_snapshot WHERE as_of >= %s", (since,))
+    return {r["symbol"] for r in rows or []}
