@@ -50,7 +50,7 @@ def compute_args_hash(entity: str, **kwargs: Any) -> str:
 
 
 def get(tool: str, entity: str, evidence_type: str, **kwargs: Any) -> dict | None:
-    """Returns {"payload": ..., "confidence": ...} if a non-stale cache entry
+    """Returns {"payload", "confidence", "fetched_at"} if a non-stale cache entry
     exists, else None. Never raises on a DB error — a cache miss is always a
     safe fallback to actually calling the tool."""
     key = compute_args_hash(entity, **kwargs)
@@ -67,7 +67,7 @@ def get(tool: str, entity: str, evidence_type: str, **kwargs: Any) -> dict | Non
     age = datetime.now(timezone.utc) - fetched_at
     if age > timedelta(seconds=ttl):
         return None
-    return {"payload": row["payload"], "confidence": row["confidence"]}
+    return {"payload": row["payload"], "confidence": row["confidence"], "fetched_at": fetched_at}
 
 
 def put(tool: str, entity: str, evidence_type: str, payload: dict, confidence: float = 1.0, **kwargs: Any) -> None:

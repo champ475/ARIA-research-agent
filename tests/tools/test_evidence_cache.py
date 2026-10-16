@@ -35,7 +35,7 @@ class TestGet:
         }
         with patch("tools.data.evidence_cache.evidence_cache_get", return_value=fresh_row):
             result = evidence_cache.get("fetch_info", "RELIANCE", "quote_info")
-        assert result == {"payload": {"pe": 24.3}, "confidence": 0.9}
+        assert result == {"payload": {"pe": 24.3}, "confidence": 0.9, "fetched_at": fresh_row["fetched_at"]}
 
     def test_returns_none_when_stale(self):
         # quote_info TTL is 900s — this row is older than that.

@@ -16,6 +16,28 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Vendored NSE calendar and as-of times on market evidence (DATA-06)
+**Problem.** NSE trading holidays weren't modelled. The alert checker ran on holidays. "Today" answers on a weekend or holiday showed the last session's numbers without saying so. Quotes, which can be cached or delayed, were presented as current, with no time attached (DATA-06).
+**Alternatives considered.**
+- `exchange_calendars` (XBOM): a heavy dependency whose Indian holiday updates lag NSE circulars. For example, the 15 Jan 2026 civic-poll closure was announced three days ahead. It also models no special sessions such as Muhurat or a Budget Sunday.
+- Scraping NSE's holiday API at runtime: another fragile live dependency on the hot path.
+- Keep weekday-only logic: simply wrong on about 15 days a year.
+
+**Final decision.**
+- A vendored `data/market/nse_holidays.csv`, checked against NSE's circulars. It has `holiday` rows and `special` rows; a special row has its own IST hours, and blank hours mean "announced, timing TBA".
+- `utils/market_clock.py` reads it and provides `session_state`, `is_open`, `is_trading_day`, `last_session`, `next_open`, `as_of_line` and `closed_today_note`. Naive datetimes are read as IST.
+- Every Evidence item gets `as_of`. That is the quote's `regularMarketTime` when the source gives one, otherwise the fetch time. A cache hit keeps the original `fetched_at`, which `evidence_cache.get` now returns.
+- `graph/freshness.py` appends "🕒 Data as of … IST (session state)" to any answer that contains market figures, placed before the advice footer. The date is taken from the oldest figure. On a closed day, a quote or movers answer opens with "Markets are closed today (…); these figures are from the last session, …". Both lines are written by code, not by the model.
+- `check_alerts.market_is_open` and the bhavcopy date walk-back use the calendar.
+
+**Trade-offs.**
+- The CSV must be refreshed each December. When it runs out, `calendar_covers()` logs a warning once and weekdays are treated as open.
+- Special-session hours that NSE has not announced yet (such as Muhurat on 8 Nov 2026) count as closed until the CSV is edited.
+- The as-of time is the fetch time for sources without an exchange timestamp.
+- The BSE instrument refresh still skips only weekends.
+
+**Future improvements.** Have the ops watchdog (OBS-04) alert when the calendar has less than 30 days left. Use OHLCV's last bar date as `as_of` for history-based figures. Add a BSE calendar if BSE data becomes primary.
+
 ## 2026-10-16 — Configurable model routes with retirement detection (LLM-08)
 **Problem.**
 - Model ids were hard-coded, and nodes passed a Groq-only "fast model" name per call.

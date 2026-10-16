@@ -1,0 +1,43 @@
+# NSE capital-market (equity) segment calendar, read by utils/market_clock.py (DATA-06).
+# kind=holiday: no trading that day. kind=special: a session on a day that is
+# otherwise closed (a weekend, or a holiday such as Diwali Laxmi Pujan), with its
+# own open/close in IST; blank times = not yet announced by NSE (treated as closed).
+# Weekend holidays are not listed — weekends are closed anyway.
+# Sources: NSE holiday circulars for 2025 and 2026 (CMTR65587, the 2026 list, and
+# the 12 Jan 2026 circular adding 15 Jan for the Maharashtra civic polls).
+# Refresh every December when NSE publishes next year's list; market_clock warns
+# once the calendar no longer covers the current year.
+date,kind,description,open,close
+2025-02-26,holiday,Mahashivratri,,
+2025-03-14,holiday,Holi,,
+2025-03-31,holiday,Id-Ul-Fitr (Ramadan Eid),,
+2025-04-10,holiday,Shri Mahavir Jayanti,,
+2025-04-14,holiday,Dr. Baba Saheb Ambedkar Jayanti,,
+2025-04-18,holiday,Good Friday,,
+2025-05-01,holiday,Maharashtra Day,,
+2025-08-15,holiday,Independence Day,,
+2025-08-27,holiday,Ganesh Chaturthi,,
+2025-10-02,holiday,Mahatma Gandhi Jayanti / Dussehra,,
+2025-10-21,holiday,Diwali Laxmi Pujan,,
+2025-10-21,special,Muhurat trading (Diwali),13:45,14:45
+2025-10-22,holiday,Diwali Balipratipada,,
+2025-11-05,holiday,Prakash Gurpurb Sri Guru Nanak Dev,,
+2025-12-25,holiday,Christmas,,
+2026-01-15,holiday,Maharashtra municipal elections,,
+2026-01-26,holiday,Republic Day,,
+2026-02-01,special,Union Budget (Sunday session),09:15,15:30
+2026-03-03,holiday,Holi,,
+2026-03-26,holiday,Shri Ram Navami,,
+2026-03-31,holiday,Shri Mahavir Jayanti,,
+2026-04-03,holiday,Good Friday,,
+2026-04-14,holiday,Dr. Baba Saheb Ambedkar Jayanti,,
+2026-05-01,holiday,Maharashtra Day,,
+2026-05-28,holiday,Bakri Id,,
+2026-06-26,holiday,Muharram,,
+2026-09-14,holiday,Ganesh Chaturthi,,
+2026-10-02,holiday,Mahatma Gandhi Jayanti,,
+2026-10-20,holiday,Dussehra,,
+2026-11-08,special,Muhurat trading (Diwali),,
+2026-11-10,holiday,Diwali Balipratipada,,
+2026-11-24,holiday,Prakash Gurpurb Sri Guru Nanak Dev,,
+2026-12-25,holiday,Christmas,,

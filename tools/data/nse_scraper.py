@@ -8,6 +8,7 @@ import requests
 import pandas as pd
 
 from utils import http
+from utils.market_clock import is_trading_day
 from datetime import datetime, timedelta
 from io import StringIO
 import logging
@@ -48,7 +49,7 @@ def get_bhavcopy(date: datetime = None) -> pd.DataFrame:
 
     for delta in range(5):
         d = date - timedelta(days=delta)
-        if d.weekday() >= 5:
+        if not is_trading_day(d.date()):
             continue
         date_str = d.strftime("%d%m%Y")
         url = f"https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{date_str}.csv"

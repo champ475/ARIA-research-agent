@@ -52,7 +52,6 @@ from config import ALERT_MAX_DELIVERY_ATTEMPTS, DATABASE_URL, TELEGRAM_BOT_TOKEN
 from tools.analysis.technical import compute_all
 from tools.data.fetcher import get_info, get_ohlcv
 from tools.data.nse_scraper import get_bulk_deals
-from utils.helpers import IST
 from utils.logging_setup import configure_logging
 
 log = logging.getLogger("check_alerts")
@@ -63,12 +62,11 @@ _PERMANENT_DELIVERY_ERRORS = {"not_linked", "bot_not_configured"}
 
 
 def market_is_open() -> bool:
-    now = datetime.now(IST)
-    if now.weekday() >= 5:  # Sat/Sun
-        return False
-    open_t = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    close_t = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return open_t <= now <= close_t
+    """DATA-06: NSE's calendar — weekends, trading holidays and special
+    sessions (Muhurat) — not just weekday hours."""
+    from utils.market_clock import is_open
+
+    return is_open()
 
 
 def send_telegram(text: str, chat_id: str | None) -> tuple[bool, str | None]:

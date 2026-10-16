@@ -81,6 +81,7 @@ from graph.confirmation import REASK_TEXT as CONFIRM_REPROMPT
 from graph.confirmation import classify_reply
 from graph.deadline import CUT_OFF_NOTE, data_gaps_note, new_deadline
 from graph.entity_resolution import entity_notes_text
+from graph.freshness import closed_today_header, freshness_note
 from graph.graph import build_graph
 from graph.grounding import check as grounding_check
 from graph.grounding import record as record_grounding
@@ -594,6 +595,10 @@ class GraphOrchestrator:
             tab_used = "+".join([intent] + [s for s in secondary if s != intent])
 
             gaps_note = entity_notes_text(result) + data_gaps_note(result.get("tasks"))
+            # DATA-06: market figures say when they're from (and, on a closed
+            # day, that they're the last session's).
+            header = closed_today_header(result)
+            as_of_note = freshness_note(result)
             rec.data_gaps = sum(
                 1 for t in result.get("tasks") or [] if t.get("status") in ("failed", "skipped")
             )
@@ -612,7 +617,7 @@ class GraphOrchestrator:
                 try:
                     for delta in synthesis_client.stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
                         chunks.append(delta)
-                        yield "".join(chunks), chart, None, None, None, tab_used
+                        yield header + "".join(chunks), chart, None, None, None, tab_used
                 except Exception:
                     # REL-06: a stream that dies mid-answer keeps what arrived,
                     # plus a plain note; nothing streamed yet -> the normal
@@ -634,12 +639,13 @@ class GraphOrchestrator:
                 fundamental_payload = result.get("pending_fundamental_payload")
                 if fundamental_payload:
                     text = text + cited_footnotes(text, fundamental_payload)
-                text = finalize(text, result) + gaps_note
+                text = header + finalize(text + as_of_note, result) + gaps_note
                 self._memory.add_assistant(text)
                 yield text, chart, pdf_path, md_path, csv_path, tab_used
                 return
 
-            text = finalize(result.get("final_report", "") or "", result) + gaps_note
+            report = result.get("final_report", "") or ""
+            text = (header + finalize(report + as_of_note, result) if report else "") + gaps_note
             self._memory.add_assistant(text)
             yield text, chart, pdf_path, md_path, csv_path, tab_used
         except LLMProvidersExhausted as e:

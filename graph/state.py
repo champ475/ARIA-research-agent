@@ -29,6 +29,10 @@ class Evidence(TypedDict):
     timestamp: datetime
     confidence: float  # source reliability x freshness
     citation_key: str  # matches tools/analysis/fundamental.py's cited_footnotes() convention
+    # DATA-06: when the data itself is from — the exchange's quote time when
+    # the source gives one, else when it was fetched (a cache hit keeps the
+    # original fetch time). `timestamp` is when this Evidence was built.
+    as_of: NotRequired[datetime]
 
 
 class Task(TypedDict):
