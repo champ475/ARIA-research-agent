@@ -89,7 +89,9 @@ def test_404_is_no_data_and_legacy_getters_stay_quiet():
 
 def test_movers_use_nse_spelling_for_losers():
     session = MagicMock()
-    session.get.return_value = _resp(200, {"NIFTY": {"data": [{"symbol": "TCS"}]}})
+    session.get.return_value = _resp(
+        200, {"NIFTY": {"data": [{"symbol": "TCS", "ltp": 3000.0, "perChange": -1.2}]}}
+    )
     with patch.object(nse_scraper, "_session", return_value=session):
         df = nse_scraper.fetch_top_movers("losers")
     assert "index=loosers" in session.get.call_args[0][0]

@@ -98,14 +98,35 @@ def _quiet(fetch, *args, what: str):
         return pd.DataFrame()
 
 
+LARGE_DEALS_URL = "https://www.nseindia.com/api/snapshot-capital-market-largedeal"
+# TEST-05: NSE retired /api/bulk-deal-data and /api/block-deal-data (404, which
+# read as "no deals"); one snapshot now carries both lists. Columns are
+# renamed to the names the rest of the app uses.
+_DEAL_COLUMNS = {"qty": "quantity", "watp": "price", "buySell": "buySell", "clientName": "clientName"}
+
+
 def _deals(kind: str, symbol: str | None) -> pd.DataFrame:
-    data = api_json(f"https://www.nseindia.com/api/{kind}-deal-data")
+    from tools.data.contracts import NseLargeDeals
+
+    from pydantic import ValidationError
+
+    data = api_json(LARGE_DEALS_URL)
     if not data:
         return pd.DataFrame()
-    df = pd.DataFrame(data)
-    if symbol and not df.empty and "symbol" in df.columns:
+    try:
+        snapshot = NseLargeDeals.model_validate(data)
+    except ValidationError as e:  # TEST-05: drift is an outage, not an empty table
+        raise SourceUnavailable("nse", detail="large-deals schema changed") from e
+    rows = snapshot.bulk if kind == "bulk" else snapshot.block
+    df = pd.DataFrame([r.model_dump() for r in rows])
+    if df.empty:
+        return df
+    df = df.rename(columns=_DEAL_COLUMNS)
+    for col in ("quantity", "price"):
+        df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors="coerce")
+    if symbol:
         df = df[df["symbol"].str.upper() == symbol.upper()]
-    return df
+    return df.reset_index(drop=True)
 
 
 def fetch_bulk_deals(symbol: str | None = None) -> pd.DataFrame:
@@ -123,10 +144,18 @@ def fetch_corporate_actions(symbol: str) -> pd.DataFrame:
 
 def fetch_top_movers(category: str = "gainers") -> pd.DataFrame:
     index = "loosers" if category == "losers" else "gainers"  # NSE spells it "loosers"
-    data = api_json(f"https://www.nseindia.com/api/live-analysis-variations?index={index}") or {}
-    if not isinstance(data, dict):
-        raise SourceUnavailable("nse", detail="unexpected movers shape")
-    return pd.DataFrame(data.get("NIFTY", {}).get("data", []) or [])
+    from pydantic import ValidationError
+
+    from tools.data.contracts import NseMovers
+
+    data = api_json(f"https://www.nseindia.com/api/live-analysis-variations?index={index}")
+    if data is None:
+        return pd.DataFrame()
+    try:
+        NseMovers.model_validate(data)  # TEST-05: drift is an outage, not "no movers"
+    except ValidationError as e:
+        raise SourceUnavailable("nse", detail="movers schema changed") from e
+    return pd.DataFrame(data["NIFTY"]["data"])
 
 
 def get_bulk_deals(symbol: str = None) -> pd.DataFrame:
@@ -167,7 +196,7 @@ def format_bulk_deals(df: pd.DataFrame, symbol: str) -> str:
     """Format bulk/block deal data as markdown."""
     if df.empty:
         return f"No recent bulk/block deals found for {symbol}."
-    cols = [c for c in ["dealDate", "clientName", "buyOrSell", "quantity", "tradePrice"] if c in df.columns]
+    cols = [c for c in ["date", "clientName", "buySell", "quantity", "price"] if c in df.columns]
     if not cols:
         cols = df.columns.tolist()[:5]
     subset = df[cols].head(10)

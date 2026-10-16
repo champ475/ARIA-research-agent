@@ -186,6 +186,8 @@ def parse_navall(text: str) -> pd.DataFrame:
             nav = float(nav_s)
         except ValueError:
             continue  # "N.A." and the like
+        if nav <= 0:
+            continue  # TEST-05: wound-up/matured schemes are listed with NAV 0
         plan, option = _plan_option(name, plan_f, option_f)
         display = name if len(parts) < 8 else " - ".join(x for x in (name, plan_f, option_f) if x)
         records.append(

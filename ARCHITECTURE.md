@@ -16,6 +16,29 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Data contracts, recorded responses and a live canary (TEST-05)
+**Problem.** yfinance, NSE, AMFI and news feeds change their responses without notice, and nothing tested the fetchers against real responses. Recording them proved it: NSE had retired `/api/bulk-deal-data` and `/api/block-deal-data`, which now answer 404. Our fetcher read a 404 as "no deals", so bulk-deal answers and alerts had been silently empty. AMFI's NAVAll also lists wound-up schemes with NAV 0, and the parser kept them (TEST-05).
+**Alternatives considered.**
+- vcrpy cassettes. These are harder to review and trim than plain response bodies.
+- Mocks hand-written from memory. They would have missed exactly the drift above.
+- Live tests in CI only. They are flaky, and NSE blocks GitHub's IP ranges at times.
+
+**Final decision.**
+- `tools/data/contracts.py` holds pydantic models and check functions per source, covering only the fields ARIA reads (extra fields allowed).
+- `scripts/record_http_fixtures.py` records real responses, trimmed, into `tests/fixtures/http/` with an `index.json` (URL, status, time). BSE's CDN refuses scripted clients with a 403, so its fixture is a clearly-marked synthetic one.
+- `tests/test_data_contracts.py` replays each recording through its fetcher with `responses` and validates it against its contract.
+- Fetchers that read NSE JSON validate in-line, so drift raises `SourceUnavailable` ("NSE data is temporarily unavailable") instead of returning an empty table.
+- Deals now come from `/api/snapshot-capital-market-largedeal`, with columns normalised.
+- `parse_navall` drops NAV ≤ 0.
+- `scripts/data_canary.py` runs one live query per source (Yahoo quote and bars, NSE movers, deals and bhavcopy, AMFI, mfapi, news). It runs as the worker's `data_canary` job every 30 minutes in market hours (two failures page via OBS-04) and as a scheduled GitHub workflow. Its first run passed 8 of 8.
+
+**Trade-offs.**
+- yfinance's HTTP layer isn't requests-based, so it's contract-tested on frozen data, plus the live canary.
+- Recordings age; the runbook says refresh monthly.
+- The BSE fixture stays synthetic until access works.
+
+**Future improvements.** A monthly scheduled re-record that opens a PR with the diff.
+
 ## 2026-10-16 — Two-copy backups and a recorded restore drill (REL-08)
 **Problem.** Nothing documented restore steps, RPO or RTO, and nothing had ever been restored. Losing `SECRET_KEY` would make every stored BYO key unreadable (REL-08).
 **Alternatives considered.**

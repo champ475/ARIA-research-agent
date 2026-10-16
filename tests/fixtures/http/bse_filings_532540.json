@@ -1,0 +1,7 @@
+{
+ "_synthetic": "BSE's API answers 403 (Akamai) to scripted clients, including the recorder; this follows the documented response shape and must be replaced by a real recording when access works.",
+ "Table": [
+  {"SubmissionDate": "2026-10-09T18:30:00", "NewsType": "Financial Results", "AttachmentName": "a1b2c3d4-0001.pdf", "SCRIP_CD": 532540},
+  {"SubmissionDate": "2026-07-10T18:20:00", "NewsType": "Financial Results", "AttachmentName": "a1b2c3d4-0002.pdf", "SCRIP_CD": 532540}
+ ]
+}
