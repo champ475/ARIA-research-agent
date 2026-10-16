@@ -187,12 +187,30 @@ def _tab_label(tab_used: str) -> str:
     return " + ".join(_TAB_LABELS.get(p, p) for p in parts)
 
 
+# UX-01: one example per domain a new user might not know about.
 CHAT_DEFAULTS = [
     "Analyse TCS",
-    "IC report for TCS",
+    "Alert me if INFY falls 5%",
     "Best ELSS for tax saving",
-    "Top gainers today",
+    "Plan ₹50L for retirement in 20 years",
 ]
+
+# UX-01: always one click away in the chat tab.
+CAPABILITIES_MD = """
+**ARIA can**
+- research any NSE/BSE-listed company: fundamentals (bank-aware), technicals, news and sentiment,
+  peers, a risk profile, backtests and full research reports (PDF/Markdown);
+- screen the whole NSE market ("IT stocks with PE below 25 and ROE above 18%");
+- rank and compare mutual funds by returns, risk and cost;
+- watch prices, % moves and indicators for you and alert you on Telegram or in the app;
+- track your portfolio's P&L and build a goal-based plan from your profile.
+
+**ARIA can't**
+- tell you what to buy or sell: it's educational research, not SEBI-registered advice;
+- see live tick data: prices come from public sources and can be delayed (each answer says when);
+- cover markets outside India, derivatives strategies, crypto, or tax filing;
+- be right every time: numbers come with their sources — check what matters before acting.
+"""
 CHAT_PLACEHOLDER = (
     "Ask anything — stock analysis, IC/result-update reports, mutual funds, "
     "screening, portfolio, market overview…"
@@ -923,6 +941,34 @@ LOGOUT_JS = (
 # ── Build the single unified chat tab (orchestrator-routed) ──────────────────
 
 
+def onboarding_card(info: dict) -> str:
+    """UX-01 first-run card: 3 things ARIA does, its main limit, the trial and Telegram."""
+    from config import TRIAL_DAILY_LIMIT
+
+    if info.get("byo"):
+        trial = "You're using your own LLM key, so there's no daily limit."
+    else:
+        left = max(0, TRIAL_DAILY_LIMIT - int(info.get("used_today") or 0))
+        trial = (
+            f"**{left} of {TRIAL_DAILY_LIMIT}** free questions left today. "
+            "Add your own LLM key in **⚙️ Settings** for unlimited use."
+        )
+    telegram = (
+        "✅ Telegram is connected: alerts reach your phone."
+        if info.get("telegram")
+        else "To get alerts on your phone: **⚙️ Settings → Connect Telegram** (one tap)."
+    )
+    return (
+        "### 👋 Welcome to ARIA\n"
+        "1. **Research any NSE/BSE company**: try *“Analyse TCS”* or *“Compare TCS with peers”*.\n"
+        "2. **Set alerts** on prices, % moves or indicators: *“Alert me if INFY falls 5%”*.\n"
+        "3. **Plan and compare funds**: *“Best ELSS for tax saving”* or *“Plan ₹50L for retirement”*.\n\n"
+        "**Good to know:** ARIA explains and researches; it doesn't give personal buy/sell advice, "
+        "and prices can be delayed.\n\n"
+        f"{trial}  \n{telegram}"
+    )
+
+
 def _build_chat_tab(user_state: gr.State):
     """
     One chat surface for everything — equity research, report generation,
@@ -942,6 +988,12 @@ def _build_chat_tab(user_state: gr.State):
     # than fighting component build order.
     with gr.Row(elem_classes=["chat-shell"]):
         with gr.Column(scale=4, elem_classes=["chat-main"]):
+            # UX-01: first-run card (hidden once dismissed) and the capability boundary.
+            with gr.Group(visible=False, elem_id="onboarding") as onboarding_box:
+                onboarding_md = gr.Markdown("", elem_id="onboarding-card")
+                onboarding_done = gr.Button("Got it — let's start", size="sm", variant="primary")
+            with gr.Accordion("What ARIA can and can't do", open=False, elem_id="capabilities"):
+                gr.Markdown(CAPABILITIES_MD)
             chatbot = gr.Chatbot(
                 label="",
                 show_label=False,
@@ -1111,6 +1163,36 @@ def _build_chat_tab(user_state: gr.State):
         [feedback_box, feedback_turn, feedback_reason, feedback_text, feedback_note],
     )
     feedback_skip.click(lambda: (gr.update(visible=False), None), None, [feedback_box, feedback_turn])
+
+    def _onboarding_view(user_id, request: gr.Request):
+        """UX-01: the first-run card for users who haven't dismissed it."""
+        user_id = _request_user(request) or user_id
+        if not user_id:
+            return gr.update(visible=False), ""
+        from datetime import datetime
+
+        from utils.db import user_onboarding
+        from utils.helpers import IST
+
+        try:
+            info = user_onboarding(user_id, datetime.now(IST).date())
+        except Exception:
+            log.warning("[onboarding] status unavailable", exc_info=True)
+            return gr.update(visible=False), ""
+        if info["onboarded"]:
+            return gr.update(visible=False), ""
+        return gr.update(visible=True), onboarding_card(info)
+
+    def _onboarding_dismiss(user_id, request: gr.Request):
+        user_id = _request_user(request) or user_id
+        if user_id:
+            from utils.db import user_mark_onboarded
+
+            user_mark_onboarded(user_id)
+        return gr.update(visible=False)
+
+    user_state.change(_onboarding_view, [user_state], [onboarding_box, onboarding_md])
+    onboarding_done.click(_onboarding_dismiss, [user_state], [onboarding_box])
 
     chat_kwargs = {"show_progress": "hidden", "concurrency_id": "chat", "concurrency_limit": CHAT_CONCURRENCY}
     msg_box.submit(_respond, chat_inputs, outputs, **chat_kwargs).then(

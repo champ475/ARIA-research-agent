@@ -18,6 +18,17 @@ pytestmark = pytest.mark.integration
 # ── utils/db.py ───────────────────────────────────────────────────────────────
 
 
+def test_onboarding_is_per_user(db, two_users):
+    """UX-01: dismissing the card is one user's choice."""
+    from datetime import date
+
+    a, b = two_users
+    db._query("UPDATE users SET onboarded_at = NULL", fetch=None, commit=True)
+    db.user_mark_onboarded(a)
+    assert db.user_onboarding(a, date.today())["onboarded"] is True
+    assert db.user_onboarding(b, date.today())["onboarded"] is False
+
+
 def test_downloads_are_per_user(db, two_users):
     """OPS-02: a stored download is readable only by its owner."""
     a, b = two_users
@@ -265,6 +276,8 @@ COVERED = {
     "portfolio_import": test_portfolio_lots_are_per_user,
     "download_put": test_downloads_are_per_user,
     "download_get": test_downloads_are_per_user,
+    "user_onboarding": test_onboarding_is_per_user,
+    "user_mark_onboarded": test_onboarding_is_per_user,
     "watchlist_add": test_watchlist,
     "watchlist_remove": test_watchlist,
     "watchlist_all": test_watchlist,

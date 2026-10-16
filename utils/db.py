@@ -1735,3 +1735,36 @@ def ops_alert_resolve(key: str) -> dict | None:
 
 def ops_alerts_open() -> list[dict]:
     return _query("SELECT * FROM ops_alerts WHERE resolved_at IS NULL ORDER BY first_fired_at") or []
+
+
+# ── Onboarding (UX-01) ───────────────────────────────────────────────────────
+
+
+def user_onboarding(user_id: int, today: "date") -> dict:
+    """What the first-run card needs: whether it was dismissed, free trial
+    messages left today, and whether a BYO key / Telegram are set up."""
+    row = _query(
+        "SELECT u.onboarded_at, u.free_msgs_used_today, u.free_msgs_reset_at, u.telegram_chat_id, "
+        "  EXISTS (SELECT 1 FROM user_llm_config c WHERE c.user_id = u.id) AS byo "
+        "FROM users u WHERE u.id = %s",
+        (user_id,),
+        fetch="one",
+    )
+    if not row:
+        return {"onboarded": True, "used_today": 0, "byo": False, "telegram": False}
+    used = int(row["free_msgs_used_today"] or 0) if row["free_msgs_reset_at"] == today else 0
+    return {
+        "onboarded": row["onboarded_at"] is not None,
+        "used_today": used,
+        "byo": bool(row["byo"]),
+        "telegram": bool(row["telegram_chat_id"]),
+    }
+
+
+def user_mark_onboarded(user_id: int) -> None:
+    _query(
+        "UPDATE users SET onboarded_at = now() WHERE id = %s AND onboarded_at IS NULL",
+        (user_id,),
+        fetch=None,
+        commit=True,
+    )
