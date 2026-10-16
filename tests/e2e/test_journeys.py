@@ -55,11 +55,15 @@ def test_equity_question_streams_progress_answer_and_chart(page: Page, base_url,
     ask(page, "Analyse TCS")
     expect(page.locator("#msg-chat textarea")).to_be_disabled(timeout=10_000)  # the turn has started
     seen: set[str] = set()
-    progress = page.locator("#chatbot-chat .aria-progress")
     deadline = datetime.now().timestamp() + ANSWER_TIMEOUT / 1000
     while datetime.now().timestamp() < deadline and not page.locator("#msg-chat textarea").is_enabled():
-        if progress.count():
-            seen.add(progress.last.inner_text())
+        # One atomic read: the progress line can vanish between a count() and
+        # an inner_text(), which then waits out its 30 s timeout.
+        seen.update(
+            page.evaluate(
+                "() => [...document.querySelectorAll('#chatbot-chat .aria-progress')].map(e => e.innerText)"
+            )
+        )
         page.wait_for_timeout(150)
     assert len(seen) >= 2, f"expected at least two progress states, saw {seen}"
     text = wait_answer(page, "Here is what the research shows")

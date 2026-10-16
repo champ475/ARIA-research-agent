@@ -1265,7 +1265,9 @@ def _build_chat_tab(user_state: gr.State):
             user_mark_onboarded(user_id)
         return gr.update(visible=False)
 
-    user_state.change(_onboarding_view, [user_state], [onboarding_box, onboarding_md])
+    # Load-time events hide Gradio's progress: its pending fade could stay on
+    # the target after a slow first load (TEST-07), see _reset_chat in build_ui.
+    user_state.change(_onboarding_view, [user_state], [onboarding_box, onboarding_md], show_progress="hidden")
     onboarding_done.click(_onboarding_dismiss, [user_state], [onboarding_box])
 
     chat_kwargs = {"show_progress": "hidden", "concurrency_id": "chat", "concurrency_limit": CHAT_CONCURRENCY}
@@ -1816,7 +1818,7 @@ def _build_settings_tab(user_state: gr.State):
     )
     test_btn.click(_test, inputs=[user_state, model_box, base_url_box, api_key_box], outputs=[status])
     clear_btn.click(_clear, inputs=[user_state], outputs=[status, model_box, base_url_box, api_key_box])
-    user_state.change(_refresh_status, inputs=[user_state], outputs=[status])
+    user_state.change(_refresh_status, inputs=[user_state], outputs=[status], show_progress="hidden")
 
     gr.Markdown(
         "---\n### 🔔 Telegram Alerts\nConnect your own Telegram chat so alerts you create come straight to you."
@@ -1870,7 +1872,7 @@ def _build_settings_tab(user_state: gr.State):
 
     tg_connect_btn.click(_tg_connect, inputs=[user_state], outputs=[tg_status])
     tg_disconnect_btn.click(_tg_disconnect, inputs=[user_state], outputs=[tg_status])
-    user_state.change(_tg_refresh, inputs=[user_state], outputs=[tg_status])
+    user_state.change(_tg_refresh, inputs=[user_state], outputs=[tg_status], show_progress="hidden")
 
     # ── Alert inbox (DATA-08) ────────────────────────────────────────────────
     # Fallback delivery channel: alerts that fired while Telegram wasn't linked
@@ -1906,7 +1908,12 @@ def _build_settings_tab(user_state: gr.State):
 
     inbox_refresh_btn.click(_inbox_refresh, inputs=[user_state], outputs=[inbox_md])
     inbox_read_btn.click(_inbox_mark_read, inputs=[user_state], outputs=[inbox_md])
-    user_state.change(lambda uid: _inbox_refresh(uid, notify=True), inputs=[user_state], outputs=[inbox_md])
+    user_state.change(
+        lambda uid: _inbox_refresh(uid, notify=True),
+        inputs=[user_state],
+        outputs=[inbox_md],
+        show_progress="hidden",
+    )
 
     # ── Account security (SEC-04) ─────────────────────────────────────────────
     gr.Markdown("---\n### 🔐 Signed-in devices")
@@ -1947,7 +1954,7 @@ def _build_settings_tab(user_state: gr.State):
 
     logout_others_btn.click(_logout_others, inputs=[user_state], outputs=[sessions_md])
     logout_here_btn.click(None, js=LOGOUT_JS)
-    user_state.change(_sessions, inputs=[user_state], outputs=[sessions_md])
+    user_state.change(_sessions, inputs=[user_state], outputs=[sessions_md], show_progress="hidden")
 
     return status
 
@@ -2076,7 +2083,7 @@ def build_ui() -> gr.Blocks:
             show_progress="hidden",
         )
 
-        demo.load(_identify_user, None, [user_state])
+        demo.load(_identify_user, None, [user_state], show_progress="hidden")
 
     demo.queue(**_queue_kwargs())
     return demo
