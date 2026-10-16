@@ -529,6 +529,10 @@ def _backtest(entity: str, context: dict[str, Any]) -> dict:
     return analysis_tools.backtest(entity, context.get("_query") or "")
 
 
+def _portfolio_view(entity: str, context: dict[str, Any]) -> dict:
+    return analysis_tools.portfolio_view(context.get("_user_id"))
+
+
 def _key_on_backtest_params(entity: str, context: dict[str, Any]) -> dict[str, Any]:
     from tools.analysis.backtester import parse_params
 
@@ -847,6 +851,18 @@ _register(
         fn=_backtest,
         description="Backtest an MA-crossover or RSI rule on a stock's past daily prices, with trading costs.",
         cache_key=_key_on_backtest_params,
+    )
+)
+_register(
+    ToolSpec(
+        name="portfolio_view",
+        evidence_type="portfolio",
+        depends_on=(),
+        cost="low",
+        fn=_portfolio_view,
+        description="Show the user's own holdings with live prices, P&L and weights.",
+        # DATA-01: user-scoped read — never served from the shared cache.
+        cacheable=False,
     )
 )
 

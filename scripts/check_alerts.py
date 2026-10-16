@@ -40,6 +40,7 @@ import os
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -248,11 +249,13 @@ def _portfolio_pnl_alert(
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     if price is None:
         return None
-    qty = sum(r["qty"] for r in rows)
-    cost = sum(r["qty"] * r["avg_price"] for r in rows)
-    if cost == 0:
+    # UX-05: qty/avg_price are NUMERIC (Decimal); the quote is a float.
+    from tools.portfolio import aggregate
+
+    holding = aggregate([{"symbol": symbol, **r} for r in rows])[0]
+    if not holding["invested"]:
         return None
-    pnl_pct = (qty * price - cost) / cost * 100
+    pnl_pct = float((holding["qty"] * Decimal(str(price)) - holding["invested"]) / holding["invested"] * 100)
     if _moved_enough(pnl_pct, threshold, direction):
         return f"🔔 {symbol} portfolio P&L is {pnl_pct:+.2f}% — beyond your {threshold}% alert"
     return None

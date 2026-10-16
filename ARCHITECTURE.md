@@ -16,6 +16,20 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Portfolio of lots with exact amounts, tab, import and chat tool (UX-05)
+**Problem.** A `portfolio_pnl` alert could be created, but no screen or tool could add holdings, so the alert never fired. Quantities and prices were stored as REAL (float4, about 7 significant digits) (UX-05).
+**Alternatives considered.** One option was to remove `portfolio_pnl` until a portfolio feature existed; the owner chose to build it. Another was to store one row per symbol, but lots (buy date, price per purchase) are what users import from brokers. A third was to keep floats and round on display, which means sums and averages drift.
+**Final decision.**
+- Migration 0016: `portfolio.qty` and `avg_price` become NUMERIC(18,4), with an optional `buy_date`, CHECK constraints and a (user_id, symbol) index. Python uses Decimal end to end.
+- `utils/db.py` gets add, update, remove-lot and remove-symbol functions, plus an all-or-nothing `portfolio_import`. A cap of `MAX_PORTFOLIO_LOTS`=500 is enforced under a per-user advisory lock.
+- `tools/portfolio.py` validates input (VAL-09 numbers, VAL-02 symbols), aggregates lots per symbol with a weighted average price, and values them at live prices. A missing price means the holding is valued at cost and flagged. It also imports broker CSVs: Zerodha and Groww headers, ISIN lookup, a title block skipped, and problems reported per row.
+- A 📊 Portfolio tab shows the summary, allocation and P&L chart and the lots, with add, edit, remove and CSV import.
+- `portfolio_view` is a user-scoped, non-cacheable chat tool. It is planned when the user says "my portfolio" or "my holdings", runs once with no company, and its claims become conclusions.
+- `check_alerts` computes `portfolio_pnl` with Decimal.
+
+**Trade-offs.** P&L is before tax and charges, with no realised P&L or dividends. Prices come from the yfinance quote and can be delayed (DATA-06 labels them). The CSV mapping covers common header names only; other brokers' exports need a column rename.
+**Future improvements.** Record sells and realised P&L (FIFO). Track XIRR using buy dates. Import contract notes. Apply DATA-09 NUMERIC to alerts and plans.
+
 ## 2026-10-16 — Analysis tools offered on request; DCF dropped (UX-04)
 **Problem.** Backtesting, peer comparison, risk scoring and sentiment existed in `tools/analysis/`, but no catalogue tool reached them. The README promised them, so users got made-up answers. Adding catalogue tools changes the Planner's prompt, and with it every recorded eval fixture. No working LLM key was available to re-record (UX-04).
 **Alternatives considered.**

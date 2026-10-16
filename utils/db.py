@@ -192,29 +192,100 @@ def ensure_schema() -> None:
         release_conn(conn)
 
 
-# ── Portfolio helpers ─────────────────────────────────────────────────────────
+# ── Portfolio helpers (UX-05) ────────────────────────────────────────────────
+# One row per lot; qty and avg_price are NUMERIC (Decimal in Python).
+
+MAX_PORTFOLIO_LOTS = 500
 
 
-def portfolio_add(user_id: int, symbol: str, qty: float, avg_price: float):
-    _query(
-        "INSERT INTO portfolio (user_id, symbol, qty, avg_price) VALUES (%s,%s,%s,%s)",
-        (user_id, symbol.upper(), qty, avg_price),
-        fetch=None,
+class PortfolioFull(Exception):
+    """The user already holds MAX_PORTFOLIO_LOTS lots."""
+
+
+def _lot_count(cur, user_id: int) -> int:
+    # Serialise concurrent adds for one user so the cap can't be raced past.
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext('portfolio'), %s)", (user_id,))
+    cur.execute("SELECT count(*) AS n FROM portfolio WHERE user_id=%s", (user_id,))
+    return int(cur.fetchone()["n"])
+
+
+def portfolio_add(user_id: int, symbol: str, qty, avg_price, buy_date=None) -> int:
+    """Add one lot; returns its id. Raises PortfolioFull at the cap."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        if _lot_count(cur, user_id) >= MAX_PORTFOLIO_LOTS:
+            raise PortfolioFull()
+        cur.execute(
+            "INSERT INTO portfolio (user_id, symbol, qty, avg_price, buy_date) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+            (user_id, symbol.upper(), qty, avg_price, buy_date),
+        )
+        lot_id = int(cur.fetchone()["id"])
+        conn.commit()
+        return lot_id
+    finally:
+        release_conn(conn)
+
+
+def portfolio_update(user_id: int, lot_id: int, qty, avg_price, buy_date=None) -> bool:
+    """Edit one of the user's lots; False if it isn't theirs / doesn't exist."""
+    row = _query(
+        "UPDATE portfolio SET qty=%s, avg_price=%s, buy_date=%s WHERE id=%s AND user_id=%s RETURNING id",
+        (qty, avg_price, buy_date, lot_id, user_id),
+        fetch="one",
         commit=True,
     )
+    return row is not None
 
 
-def portfolio_remove(user_id: int, symbol: str):
-    _query(
-        "DELETE FROM portfolio WHERE user_id=%s AND symbol=%s",
+def portfolio_remove(user_id: int, symbol: str) -> int:
+    """Remove every lot of `symbol`; returns how many."""
+    rows = _query(
+        "DELETE FROM portfolio WHERE user_id=%s AND symbol=%s RETURNING id",
         (user_id, symbol.upper()),
-        fetch=None,
         commit=True,
     )
+    return len(rows or [])
+
+
+def portfolio_remove_lot(user_id: int, lot_id: int) -> bool:
+    row = _query(
+        "DELETE FROM portfolio WHERE id=%s AND user_id=%s RETURNING id",
+        (lot_id, user_id),
+        fetch="one",
+        commit=True,
+    )
+    return row is not None
 
 
 def portfolio_all(user_id: int) -> list[dict]:
-    return _query("SELECT * FROM portfolio WHERE user_id=%s", (user_id,), fetch="all")
+    return _query(
+        "SELECT id, symbol, qty, avg_price, buy_date, added_at FROM portfolio WHERE user_id=%s ORDER BY symbol, id",
+        (user_id,),
+        fetch="all",
+    )
+
+
+def portfolio_import(user_id: int, lots: list[dict], replace: bool = False) -> int:
+    """Add (or, with replace, swap in) many lots in one transaction — all or
+    nothing. Each lot: {symbol, qty, avg_price, buy_date?}."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        existing = _lot_count(cur, user_id)
+        if replace:
+            cur.execute("DELETE FROM portfolio WHERE user_id=%s", (user_id,))
+            existing = 0
+        if existing + len(lots) > MAX_PORTFOLIO_LOTS:
+            raise PortfolioFull()
+        cur.executemany(
+            "INSERT INTO portfolio (user_id, symbol, qty, avg_price, buy_date) VALUES (%s,%s,%s,%s,%s)",
+            [(user_id, x["symbol"].upper(), x["qty"], x["avg_price"], x.get("buy_date")) for x in lots],
+        )
+        conn.commit()
+        return len(lots)
+    finally:
+        release_conn(conn)
 
 
 # ── Watchlist helpers ─────────────────────────────────────────────────────────

@@ -36,6 +36,7 @@ class TestCatalogueRegistry:
             "risk_assessment",
             "news_sentiment",
             "backtest",
+            "portfolio_view",  # UX-05
         }
 
     def test_get_tool_returns_matching_spec(self):

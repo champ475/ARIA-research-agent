@@ -30,7 +30,7 @@ from collections.abc import Callable
 import prompts
 from agents.llm_client import LLMClient
 from config import TOKENS_AGENT
-from graph.analysis_tools import ANALYSIS_TOOLS, triggered_tools
+from graph.analysis_tools import ANALYSIS_TOOLS, ENTITYLESS, triggered_tools
 from graph.entity_resolution import blocking_resolutions
 from graph.journal import log_decision
 from graph.schemas import ToolSelection
@@ -103,6 +103,16 @@ def _build_tasks(tool_names: list[str], entities: list[str]) -> list[Task]:
     return tasks
 
 
+def _plan_tasks(tool_names: list[str], entities: list[str]) -> list[Task]:
+    """Per-entity tasks, except entity-less tools (the user's portfolio),
+    which run once on the no-entity sentinel."""
+    names = _with_transitive_deps(tool_names)
+    per_entity = [t for t in names if t not in ENTITYLESS]
+    once = [t for t in names if t in ENTITYLESS]
+    tasks = _build_tasks(per_entity, entities) if per_entity else []
+    return tasks + (_build_tasks(once, []) if once else [])
+
+
 def build_planner_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
@@ -131,14 +141,13 @@ def build_planner_node(
         # UX-04: analysis tools the question names ("compare with peers",
         # "backtest", "risk profile", "sentiment") are planned outright; the
         # rest stay out of the model's catalogue.
-        triggered = (
-            triggered_tools(state.get("query"), state.get("intent"), state.get("secondary_intents"))
-            if entities
-            else []
-        )
+        triggered = [
+            t
+            for t in triggered_tools(state.get("query"), state.get("intent"), state.get("secondary_intents"))
+            if entities or t in ENTITYLESS
+        ]
         if complexity == "simple" and triggered:
-            tool_names = _with_transitive_deps(triggered)
-            tasks = _build_tasks(tool_names, entities)
+            tasks = _plan_tasks(triggered, entities)
             return {
                 "plan": {"objective": objective, "tasks": tasks, "complexity": complexity},
                 "tasks": tasks,
@@ -174,7 +183,7 @@ def build_planner_node(
         selected = _parse_tool_selection(raw, hidden)
         selected += [t for t in triggered if t not in selected]
         tool_names = _with_transitive_deps(selected)
-        tasks = _build_tasks(tool_names, entities)
+        tasks = _plan_tasks(tool_names, entities)
         plan: ResearchPlan = {"objective": objective, "tasks": tasks, "complexity": complexity}
 
         return {

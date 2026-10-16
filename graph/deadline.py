@@ -105,6 +105,7 @@ TOOL_LABELS = {
     "risk_assessment": "risk profile",
     "news_sentiment": "news sentiment",
     "backtest": "backtest",
+    "portfolio_view": "your portfolio",
 }
 
 

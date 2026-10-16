@@ -236,11 +236,13 @@ def render_for_prompt(ev: dict, budget_chars: int) -> str:
 
 # UX-04: the analysis tools' context beyond their claims (which arrive as
 # conclusions): the peer table, method notes, backtest assumptions and trades.
-_ANALYSIS_TYPES = {"peer_comparison", "risk_profile", "news_sentiment", "backtest_result"}
+_ANALYSIS_TYPES = {"peer_comparison", "risk_profile", "news_sentiment", "backtest_result", "portfolio"}
 _PEER_COLUMNS = ["symbol", "name", "pe", "pb", "roe", "roce", "de", "mcap_cr"]
 
 
 def _render_analysis(etype: str, p: dict, budget: int) -> str:
+    if etype == "portfolio":
+        return _truncate_markdown(str(p.get("table") or p.get("note") or ""), budget)
     if etype == "peer_comparison":
         rows = p.get("rows") or []
         if not rows:

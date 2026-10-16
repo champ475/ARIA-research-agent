@@ -41,8 +41,16 @@ TRIGGERS: dict[str, re.Pattern[str]] = {
     "backtest": re.compile(
         r"\b(back[- ]?test(?:s|ed|ing)?|(?:ma|moving[- ]average) cross(?:over)?|rsi strateg(?:y|ies))\b", re.I
     ),
+    # UX-05: the user's own holdings (no company needed).
+    "portfolio_view": re.compile(
+        r"\b(my (?:portfolio|holdings|stocks|investments)|portfolio (?:p&l|pnl|performance|value|returns?))\b",
+        re.I,
+    ),
 }
 ANALYSIS_TOOLS = frozenset(TRIGGERS)
+# Tools that don't take a company: planned once, on the no-entity sentinel.
+ENTITYLESS = frozenset({"portfolio_view"})
+_TOOL_INTENTS = {"portfolio_view": {"equity", "report", "chat"}}
 
 PAST_PERFORMANCE_NOTE = (
     "Backtests show how a fixed rule would have done on past prices. Past performance doesn't "
@@ -63,9 +71,13 @@ def analysis_notes(state: dict) -> str:
 def triggered_tools(query: str | None, intent: str | None, secondary: list[str] | None = None) -> list[str]:
     """The analysis tools this question explicitly asks for (equity/report turns only)."""
     intents = {intent, *(secondary or [])}
-    if not (intents & ANALYSIS_INTENTS) or not query:
+    if not query:
         return []
-    return [name for name, pattern in TRIGGERS.items() if pattern.search(query)]
+    return [
+        name
+        for name, pattern in TRIGGERS.items()
+        if intents & _TOOL_INTENTS.get(name, ANALYSIS_INTENTS) and pattern.search(query)
+    ]
 
 
 def _fmt(v: Any, nd: int = 1, suffix: str = "") -> str:
@@ -316,4 +328,22 @@ def backtest(symbol: str, query: str) -> dict[str, Any]:
         "(brokerage, STT, charges, slippage); no tax; split/bonus-adjusted daily closes.",
         "past_performance_note": PAST_PERFORMANCE_NOTE,
         "claims": claims,
+    }
+
+
+# ── portfolio (UX-05) ────────────────────────────────────────────────────────
+
+
+def portfolio_view(user_id: int | None) -> dict[str, Any]:
+    """The user's holdings at live prices, with claims. User-scoped: the
+    catalogue marks it non-cacheable (DATA-01)."""
+    from tools import portfolio
+
+    if not user_id:
+        return {"holdings": [], "summary": {}, "claims": [], "note": "Not signed in."}
+    holdings, summary = portfolio.get_live(user_id)
+    return {
+        "table": portfolio.to_markdown(holdings, summary),
+        "summary": {k: (float(v) if not isinstance(v, (list, int)) else v) for k, v in summary.items()},
+        "claims": portfolio.claims(holdings, summary),
     }

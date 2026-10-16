@@ -239,3 +239,29 @@ def test_backtest_runs_through_the_catalogue_with_a_param_cache_key():
     ):
         ev = execute_task({"id": "t", "tool": "backtest", "entity": "TCS"}, {"_query": "backtest TCS"})
     assert ev["evidence_type"] == "backtest_result" and ev["payload"]["claims"]
+
+
+# ── UX-05: the user's portfolio ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "query, intent, expected",
+    [
+        ("how's my portfolio doing?", "chat", ["portfolio_view"]),
+        ("show my holdings", "equity", ["portfolio_view"]),
+        ("portfolio P&L", "chat", ["portfolio_view"]),
+        ("I'm 45 and want a conservative portfolio", "planning", []),
+        ("alert me if my portfolio drops 10%", "alert", []),
+    ],
+)
+def test_portfolio_trigger(query, intent, expected):
+    assert at.triggered_tools(query, intent) == expected
+
+
+def test_portfolio_is_planned_once_without_a_company():
+    client = MagicMock()
+    out = build_planner_node(client=client)(_state("how is my portfolio doing", "simple", (), intent="chat"))
+    client.ask.assert_not_called()
+    assert [(t["tool"], t["entity"]) for t in out["tasks"]] == [("portfolio_view", "market")]
+    both = build_planner_node(client=client)(_state("my portfolio and TCS risk profile", "simple", ("TCS",)))
+    assert sum(t["tool"] == "portfolio_view" for t in both["tasks"]) == 1

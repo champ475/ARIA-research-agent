@@ -1253,6 +1253,197 @@ def _build_watchlist_tab(user_state: gr.State):
     return status
 
 
+# ── Portfolio tab (UX-05) ──────────────────────────────────────────────────────
+
+PORTFOLIO_LOT_COLS = ["Lot #", "Symbol", "Qty", "Avg price", "Buy date"]
+
+
+def _portfolio_lots_html(lots: list[dict]) -> str:
+    """Plain, escaped HTML table of lots (gr.Dataframe paints one row — see
+    _watchlist_table_html)."""
+    from utils.numbers import format_inr
+
+    if not lots:
+        return "<p class='wl-empty'>No holdings yet — add one below or import your broker's CSV.</p>"
+    head = "".join(f"<th>{html_text(c)}</th>" for c in PORTFOLIO_LOT_COLS)
+    body = "".join(
+        "<tr>"
+        + "".join(
+            f"<td>{html_text(cell)}</td>"
+            for cell in (
+                lot["id"],
+                lot["symbol"],
+                f"{lot['qty'].normalize():f}",
+                format_inr(lot["avg_price"]),
+                lot["buy_date"] or "—",
+            )
+        )
+        + "</tr>"
+        for lot in lots
+    )
+    return f"<table class='wl-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def _portfolio_view(user_id: int | None):
+    """(summary markdown, chart, lots html) for the Portfolio tab."""
+    from tools import portfolio
+    from tools.charts.builder import portfolio_chart
+    from utils.db import portfolio_all
+
+    if not user_id:
+        return "", None, _portfolio_lots_html([])
+    lots = portfolio_all(user_id)
+    holdings, summary = portfolio.valuation(lots)
+    chart = portfolio_chart(portfolio.chart_rows(holdings)) if holdings else None
+    return portfolio.to_markdown(holdings, summary), chart, _portfolio_lots_html(lots)
+
+
+def _build_portfolio_tab(user_state: gr.State):
+    """Portfolio tab: holdings at live prices (P&L, weights, allocation
+    chart), add / edit / remove lots, and CSV import from a broker holdings
+    export (Zerodha, Groww) or a plain sheet."""
+    from tools import portfolio
+    from utils.audit import audit
+    from utils.db import (
+        MAX_PORTFOLIO_LOTS,
+        PortfolioFull,
+        portfolio_add,
+        portfolio_import,
+        portfolio_remove,
+        portfolio_remove_lot,
+        portfolio_update,
+    )
+    from utils.errors import UserInputError
+
+    gr.Markdown(
+        "## 📊 Portfolio\nYour holdings at live prices. Quantities and prices are stored exactly; "
+        "P&L is before tax and charges."
+    )
+    pf_refresh = gr.State(0)
+
+    @gr.render(inputs=[user_state, pf_refresh])
+    def _render(user_id, _refresh):
+        summary_md, chart, lots_html = _portfolio_view(user_id)
+        gr.Markdown(summary_md, elem_id="pf-summary")
+        if chart is not None:
+            gr.Plot(chart, show_label=False, elem_id="pf-chart")
+        with gr.Accordion("Lots", open=False):
+            gr.HTML(lots_html, elem_id="pf-lots")
+
+    status = gr.Markdown("", elem_id="pf-status")
+
+    with gr.Group():
+        gr.Markdown("**Add a holding**")
+        with gr.Row():
+            add_sym = gr.Textbox(label="Company or NSE symbol", max_lines=1, max_length=60, scale=3)
+            add_qty = gr.Textbox(label="Quantity", max_lines=1, max_length=30, scale=1)
+            add_price = gr.Textbox(label="Avg buy price (₹)", max_lines=1, max_length=30, scale=1)
+            add_date = gr.Textbox(label="Buy date (optional)", placeholder="YYYY-MM-DD", max_lines=1, scale=1)
+            add_btn = gr.Button("➕ Add", variant="primary", scale=1, min_width=80)
+
+    with gr.Accordion("Edit or remove", open=False):
+        with gr.Row():
+            lot_id = gr.Number(label="Lot #", precision=0, minimum=1, scale=1)
+            ed_qty = gr.Textbox(label="New quantity", max_lines=1, max_length=30, scale=1)
+            ed_price = gr.Textbox(label="New avg price (₹)", max_lines=1, max_length=30, scale=1)
+            ed_date = gr.Textbox(label="Buy date", placeholder="YYYY-MM-DD", max_lines=1, scale=1)
+        with gr.Row():
+            upd_btn = gr.Button("✎ Update lot", size="sm")
+            del_lot_btn = gr.Button("🗑 Remove lot", size="sm")
+            del_sym = gr.Textbox(label="", placeholder="Symbol", show_label=False, max_lines=1, scale=2)
+            del_sym_btn = gr.Button("🗑 Remove all lots of symbol", size="sm")
+
+    with gr.Accordion("Import from your broker (CSV)", open=False):
+        gr.Markdown(
+            "Upload a holdings export: Zerodha Console (*Instrument, Qty., Avg. cost*), Groww "
+            "(*Stock Name / ISIN, Quantity, Average buy price*) or any sheet with *symbol, quantity, "
+            "avg price* (and optionally *buy date*) columns."
+        )
+        with gr.Row():
+            csv_file = gr.File(label="Holdings CSV", file_types=[".csv"], scale=3)
+            csv_replace = gr.Checkbox(label="Replace my current holdings", value=False, scale=1)
+            csv_btn = gr.Button("⬆️ Import", variant="primary", scale=1)
+    ref_btn = gr.Button("🔄 Refresh prices", size="sm")
+
+    def _who(user_id, request):
+        return _request_user(request) or user_id
+
+    def _add(user_id, sym, qty, price, when, refresh, request: gr.Request):
+        user_id = _who(user_id, request)
+        if not user_id:
+            return refresh, "⚠️ Please sign in."
+        try:
+            lot = portfolio.parse_lot(sym, qty, price, when)
+            portfolio_add(user_id, lot["symbol"], lot["qty"], lot["avg_price"], lot["buy_date"])
+        except UserInputError as e:
+            return refresh, f"⚠️ {html_text(e.user_message)}"
+        except PortfolioFull:
+            return refresh, f"⚠️ You can keep up to {MAX_PORTFOLIO_LOTS} lots. Remove some to add more."
+        return refresh + 1, f"✅ Added {lot['qty'].normalize():f} **{lot['symbol']}**."
+
+    def _update(user_id, lid, qty, price, when, refresh, request: gr.Request):
+        user_id = _who(user_id, request)
+        try:
+            ok = bool(lid) and portfolio_update(
+                user_id,
+                int(lid),
+                portfolio.parse_quantity(qty),
+                portfolio.parse_price(price),
+                portfolio.parse_buy_date(when),
+            )
+        except UserInputError as e:
+            return refresh, f"⚠️ {html_text(e.user_message)}"
+        return (refresh + 1, f"✎ Lot #{int(lid)} updated.") if ok else (refresh, "⚠️ No such lot.")
+
+    def _remove_lot(user_id, lid, refresh, request: gr.Request):
+        user_id = _who(user_id, request)
+        ok = bool(lid) and portfolio_remove_lot(user_id, int(lid))
+        return (refresh + 1, f"🗑 Lot #{int(lid)} removed.") if ok else (refresh, "⚠️ No such lot.")
+
+    def _remove_symbol(user_id, sym, refresh, request: gr.Request):
+        user_id = _who(user_id, request)
+        sym = (sym or "").strip().upper()
+        n = portfolio_remove(user_id, sym) if sym else 0
+        if not n:
+            return refresh, "⚠️ You don't hold that symbol."
+        return refresh + 1, f"🗑 Removed {n} lot{'s' if n != 1 else ''} of **{html_text(sym)}**."
+
+    def _import(user_id, path, replace, refresh, request: gr.Request):
+        user_id = _who(user_id, request)
+        if not user_id:
+            return refresh, "⚠️ Please sign in."
+        if not path:
+            return refresh, "⚠️ Choose a CSV file first."
+        try:
+            with open(path, "rb") as f:
+                data = f.read(portfolio.MAX_CSV_BYTES + 1)
+            lots, problems = portfolio.parse_csv(data)
+            if not lots:
+                raise UserInputError("No usable holdings in that file.")
+            n = portfolio_import(user_id, lots, replace=bool(replace))
+        except UserInputError as e:
+            return refresh, f"⚠️ {html_text(e.user_message)}"
+        except PortfolioFull:
+            return refresh, f"⚠️ That would take you past {MAX_PORTFOLIO_LOTS} lots."
+        audit("portfolio.import", actor_user_id=user_id, details={"lots": n, "replace": bool(replace)})
+        msg = f"✅ Imported {n} holding{'s' if n != 1 else ''}" + (
+            " (replaced the previous ones)." if replace else "."
+        )
+        if problems:
+            msg += "\n\nSkipped:\n" + "\n".join(f"- {p}" for p in problems[:20])
+        return refresh + 1, msg
+
+    add_btn.click(_add, [user_state, add_sym, add_qty, add_price, add_date, pf_refresh], [pf_refresh, status])
+    upd_btn.click(_update, [user_state, lot_id, ed_qty, ed_price, ed_date, pf_refresh], [pf_refresh, status])
+    del_lot_btn.click(_remove_lot, [user_state, lot_id, pf_refresh], [pf_refresh, status])
+    del_sym_btn.click(_remove_symbol, [user_state, del_sym, pf_refresh], [pf_refresh, status])
+    csv_btn.click(_import, [user_state, csv_file, csv_replace, pf_refresh], [pf_refresh, status])
+    ref_btn.click(
+        lambda r: r + 1, [pf_refresh], [pf_refresh], concurrency_limit=WATCHLIST_CONCURRENCY
+    )  # one quote per holding; keep it bounded
+    return status
+
+
 # ── Settings tab (bring-your-own LLM key) ──────────────────────────────────────
 
 
@@ -1643,6 +1834,9 @@ def build_ui() -> gr.Blocks:
 
                 with gr.Tab("📌 Watchlist"):
                     _build_watchlist_tab(user_state)
+
+                with gr.Tab("📊 Portfolio"):
+                    _build_portfolio_tab(user_state)
 
                 with gr.Tab("⚙️ Settings"):
                     _build_settings_tab(user_state)

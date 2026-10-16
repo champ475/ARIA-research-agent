@@ -30,6 +30,7 @@ MARKET_EVIDENCE = frozenset(
         "peer_comparison",
         "risk_profile",
         "backtest_result",
+        "portfolio",
     }
 )
 # "Today" figures: on a closed day these are the last session's.

@@ -18,6 +18,17 @@ pytestmark = pytest.mark.integration
 # ── utils/db.py ───────────────────────────────────────────────────────────────
 
 
+def test_portfolio_lots_are_per_user(db, two_users):
+    """UX-05: B can't edit, remove or replace A's lots."""
+    a, b = two_users
+    lot = db.portfolio_add(a, "TCS", 10, 3500.0)
+    assert not db.portfolio_update(b, lot, 1, 1.0)
+    assert not db.portfolio_remove_lot(b, lot)
+    db.portfolio_import(b, [{"symbol": "ITC", "qty": 1, "avg_price": 1}], replace=True)
+    assert [r["symbol"] for r in db.portfolio_all(a)] == ["TCS"]
+    assert [r["symbol"] for r in db.portfolio_all(b)] == ["ITC"]
+
+
 def test_portfolio(db, two_users):
     a, b = two_users
     db.portfolio_add(a, "TCS", 10, 3500.0)
@@ -241,6 +252,9 @@ COVERED = {
     "portfolio_add": test_portfolio,
     "portfolio_remove": test_portfolio,
     "portfolio_all": test_portfolio,
+    "portfolio_update": test_portfolio_lots_are_per_user,
+    "portfolio_remove_lot": test_portfolio_lots_are_per_user,
+    "portfolio_import": test_portfolio_lots_are_per_user,
     "watchlist_add": test_watchlist,
     "watchlist_remove": test_watchlist,
     "watchlist_all": test_watchlist,

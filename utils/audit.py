@@ -47,6 +47,7 @@ ACTIONS = frozenset(
         "alert.pause",
         "alert.resume",
         "screener.save",
+        "portfolio.import",
         "report.generate",
         "plan.generate",
         "account.export",
