@@ -740,6 +740,30 @@ def llm_config_rewrap(user_id: int, old_ciphertext: str, new_ciphertext: str) ->
 # ── Free-trial quota helpers (agents/graph_orchestrator.py) ──────────────────
 
 
+def trial_tokens_used(user_id: int, today: "date") -> int:
+    """LLM tokens this trial user has spent today (LLM-11)."""
+    row = _query(
+        "SELECT CASE WHEN trial_tokens_day = %s THEN trial_tokens_used ELSE 0 END AS used FROM users WHERE id=%s",
+        (today, user_id),
+        fetch="one",
+    )
+    return int(row["used"]) if row else 0
+
+
+def trial_tokens_add(user_id: int, tokens: int, today: "date") -> int:
+    """Add a turn's tokens to today's count, in one statement (resets on a new
+    day). Returns the new total."""
+    row = _query(
+        "UPDATE users SET trial_tokens_used = CASE WHEN trial_tokens_day = %(today)s "
+        "  THEN trial_tokens_used + %(n)s ELSE %(n)s END, trial_tokens_day = %(today)s "
+        "WHERE id = %(uid)s RETURNING trial_tokens_used",
+        {"today": today, "n": int(tokens), "uid": user_id},
+        fetch="one",
+        commit=True,
+    )
+    return int(row["trial_tokens_used"]) if row else 0
+
+
 def trial_quota_check_and_increment(user_id: int, daily_limit: int, today: "date") -> bool:
     """Atomically checks-and-increments a user's free-trial message count for
     `today` (an IST calendar date, passed in rather than computed here so
@@ -1160,12 +1184,15 @@ def turn_record(
     data_gaps: int,
     grounding: dict | None,
     parse_failures: dict | None = None,
+    cost_inr: float = 0.0,
+    llm_by_node: dict | None = None,
+    models: list[str] | None = None,
 ) -> None:
     _query(
         "INSERT INTO turns (turn_id, user_id, session_id, intent, complexity, status, error_id, latency_ms, "
         "ttft_ms, llm_calls, tokens_in, tokens_out, tokens_estimated, providers, prompt_versions, tool_calls, "
-        "cache_hits, node_ms, data_gaps, grounding, parse_failures) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+        "cache_hits, node_ms, data_gaps, grounding, parse_failures, cost_inr, llm_by_node, models) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
         "ON CONFLICT (turn_id) DO NOTHING",
         (
             turn_id,
@@ -1189,6 +1216,9 @@ def turn_record(
             data_gaps,
             None if grounding is None else json.dumps(grounding, default=str),
             None if parse_failures is None else json.dumps(parse_failures),
+            cost_inr,
+            None if llm_by_node is None else json.dumps(llm_by_node),
+            models or [],
         ),
         fetch=None,
         commit=True,

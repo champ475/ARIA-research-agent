@@ -75,7 +75,7 @@ from langgraph.types import Command
 import prompts
 from agents.conversation_memory import ConversationMemory, strip_badge
 from agents.llm_client import LLMProvidersExhausted
-from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT
+from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT, TRIAL_DAILY_TOKENS
 from graph.checkpointer import get_postgres_checkpointer
 from graph.confirmation import REASK_TEXT as CONFIRM_REPROMPT
 from graph.confirmation import classify_reply
@@ -276,6 +276,29 @@ def clear_graph_cache() -> None:
         _graphs.clear()
 
 
+_SUGGESTIONS: dict[str, list[str]] = {
+    "equity": ["Show the technicals", "Compare with peers", "Latest news", "Set a price alert"],
+    "report": ["Show my saved reports", "Quick note instead", "Key risks", "Compare with a peer"],
+    "mf": ["Compare two funds", "Best large cap funds", "Show NAV history", "ELSS funds"],
+    "screener": ["Save this screen", "Add ROE above 15%", "Large caps only", "Top gainers today"],
+    "alert": ["Show my alerts", "Pause an alert", "Alert on RSI", "Connect Telegram"],
+    "planning": ["Show my profile", "Build my plan", "Change my risk tolerance", "Start over"],
+}
+_DEFAULT_SUGGESTIONS = ["Analyse a stock", "Compare mutual funds", "Top gainers today", "Set a price alert"]
+_TICKER_RE = re.compile(r"\b[A-Z][A-Z&]{2,14}\b")
+
+
+def suggestions_for(domain: str, last_query: str) -> list[str]:
+    """Follow-up chips without an LLM call (LLM-11), naming the company the
+    user just asked about when there is one."""
+    chips = list(_SUGGESTIONS.get(domain, _DEFAULT_SUGGESTIONS))
+    m = _TICKER_RE.search(last_query or "")
+    if domain == "equity" and m:
+        sym = m.group(0)
+        chips = [f"{sym} technicals", f"Compare {sym} with peers", f"{sym} latest news", f"Alert me on {sym}"]
+    return chips
+
+
 class GraphOrchestrator:
     def __init__(self, user_id: int, session_id: int | None = None):
         self._user_id = user_id
@@ -376,12 +399,30 @@ class GraphOrchestrator:
         from utils.db import trial_quota_check_and_increment
         from utils.helpers import IST
 
-        allowed = trial_quota_check_and_increment(
-            self._user_id,
-            TRIAL_DAILY_LIMIT,
-            datetime.now(IST).date(),
-        )
+        today = datetime.now(IST).date()
+        # LLM-11/SEC-12: a message can cost 5-9 model calls, so the daily
+        # token budget is checked too (before spending a message).
+        if TRIAL_DAILY_TOKENS:
+            from utils.db import trial_tokens_used
+
+            if trial_tokens_used(self._user_id, today) >= TRIAL_DAILY_TOKENS:
+                return True
+        allowed = trial_quota_check_and_increment(self._user_id, TRIAL_DAILY_LIMIT, today)
         return not allowed
+
+    def _charge_trial_tokens(self, rec) -> None:
+        """Add this turn's tokens to the trial user's daily budget (LLM-11)."""
+        if self._provider_config is not None or not (rec.tokens_in or rec.tokens_out):
+            return
+        from datetime import datetime
+
+        from utils.db import trial_tokens_add
+        from utils.helpers import IST
+
+        try:
+            trial_tokens_add(self._user_id, rec.tokens_in + rec.tokens_out, datetime.now(IST).date())
+        except Exception:
+            log.warning("[GraphOrchestrator] could not record trial token use", exc_info=True)
 
     def _summarize_history(self, old_summary: str, chunk_text: str) -> str:
         """ConversationMemory's overflow summarizer — uses whichever
@@ -442,6 +483,8 @@ class GraphOrchestrator:
             except Exception:
                 rec.status = "error"
                 raise
+            finally:
+                self._charge_trial_tokens(rec)
 
     def _process_stream(self, message: str, rec):
         """Yields (text, chart, pdf_path, md_path, csv_path, tab_used), text
@@ -606,6 +649,11 @@ class GraphOrchestrator:
         # "Build my plan" button (suggestion chips are buttons) — no LLM call.
         if "say **build my plan**" in (last_response or ""):
             return ["Build my plan", "Show my profile", "Start over", "Change my risk tolerance"]
+
+        # LLM-11: on the operator's trial keys, chips come from the domain —
+        # no model call. A BYO user's own model still writes tailored ones.
+        if self._provider_config is None:
+            return suggestions_for(self.classify(last_query or ""), last_query or "")
 
         from agents.llm_client import LLMClient
         from config import TOKENS_FAST

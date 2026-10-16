@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     TURNS_PER_MINUTE: int = Field(10, ge=1)
     # VAL-03: companies researched in one turn (tasks = companies x tools).
     MAX_ENTITIES_PER_TURN: int = Field(5, ge=1, le=20)
+    # LLM-11: free-trial users' LLM tokens per day (input + output); 0 = no cap.
+    TRIAL_DAILY_TOKENS: int = Field(60_000, ge=0)
+    # Rupees per US dollar, for the per-turn cost estimate.
+    USD_INR: float = Field(84.0, gt=0)
+    # Skip Reflection's LLM call when every planned task already succeeded.
+    REFLECTION_SKIP_WHEN_COMPLETE: bool = True
     BYO_ALLOW_PRIVATE_HOSTS: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     HOST: str = "0.0.0.0"  # noqa: S104  # nosec B104 - container entrypoint; host/proxy controls exposure
@@ -330,6 +336,29 @@ TURNSTILE_SECRET = settings.TURNSTILE_SECRET
 TRIAL_DAILY_LIMIT = settings.TRIAL_DAILY_LIMIT  # free messages/day on the operator's keys
 TURNS_PER_MINUTE = settings.TURNS_PER_MINUTE
 MAX_ENTITIES_PER_TURN = settings.MAX_ENTITIES_PER_TURN
+TRIAL_DAILY_TOKENS = settings.TRIAL_DAILY_TOKENS
+USD_INR = settings.USD_INR
+REFLECTION_SKIP_WHEN_COMPLETE = settings.REFLECTION_SKIP_WHEN_COMPLETE
+
+# LLM-11: list prices, US$ per 1M tokens (input, output), for the operator's
+# trial keys. A BYO user's model costs the operator nothing (shown as 0).
+MODEL_PRICES_USD_PER_M: dict[str, tuple[float, float]] = {
+    "openai/gpt-oss-120b": (0.15, 0.60),
+    "openai/gpt-oss-20b": (0.075, 0.30),
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+    "llama-3.3-70b-versatile": (0.59, 0.79),
+    "llama-3.1-8b-instant": (0.05, 0.08),
+}
+
+
+def call_cost_inr(model: str | None, tokens_in: int, tokens_out: int) -> float:
+    """Estimated rupee cost of one call on the operator's keys."""
+    price = MODEL_PRICES_USD_PER_M.get(model or "")
+    if price is None:
+        return 0.0
+    return round((tokens_in * price[0] + tokens_out * price[1]) / 1_000_000 * USD_INR, 6)
+
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 NSE_SUFFIX = ".NS"

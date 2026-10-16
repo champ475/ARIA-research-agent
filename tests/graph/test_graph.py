@@ -215,7 +215,10 @@ class TestReflectionVerificationLoop:
             )
             return graph.invoke({"query": query, "max_loops": 2})
 
-    def test_reflection_requesting_more_data_loops_back_to_research_executor(self):
+    def test_reflection_requesting_more_data_loops_back_to_research_executor(self, monkeypatch):
+        # LLM-11 skips Reflection's call when a moderate plan fully succeeded;
+        # this test is about the loop itself, so make Reflection always run.
+        monkeypatch.setattr("graph.nodes.reflection.REFLECTION_SKIP_WHEN_COMPLETE", False)
         # Always claims fetch_financials is missing — reflection_client
         # returns the same canned response every call, so this alone would
         # loop forever without max_loops.

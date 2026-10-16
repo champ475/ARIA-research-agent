@@ -24,7 +24,7 @@ from collections.abc import Callable
 
 import prompts
 from agents.llm_client import LLMClient, LLMProvidersExhausted
-from config import EVIDENCE_PROMPT_CHAR_BUDGET, TOKENS_AGENT
+from config import EVIDENCE_PROMPT_CHAR_BUDGET, REFLECTION_SKIP_WHEN_COMPLETE, TOKENS_AGENT
 from graph.deadline import past_research_cutoff
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
@@ -82,6 +82,16 @@ def _parse(raw: str) -> list[MissingInfoItem]:
     return items
 
 
+def _plan_fully_succeeded(state: GraphState) -> bool:
+    tasks = state.get("tasks") or []
+    return (
+        state.get("loop_count", 0) == 0
+        and state.get("complexity") in ("simple", "moderate")
+        and bool(tasks)
+        and all(t.get("status") == "done" for t in tasks)
+    )
+
+
 def build_reflection_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
@@ -93,6 +103,13 @@ def build_reflection_node(
         max_loops = state.get("max_loops", 2)
         if past_research_cutoff(state):
             return log_decision("Reflection", "skipped", "turn deadline reached — no further research")
+        if REFLECTION_SKIP_WHEN_COMPLETE and _plan_fully_succeeded(state):
+            # LLM-11: a moderate question whose every planned tool returned
+            # data has no gap for an extra model call to find.
+            return {
+                "missing_info": [],
+                **log_decision("Reflection", "skipped", "every planned task succeeded (moderate question)"),
+            }
 
         try:
             raw = json_reply(

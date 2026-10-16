@@ -10,7 +10,7 @@ import time
 
 import prompts
 from agents.conversation_memory import SUMMARY_PROMPT, ConversationMemory
-from agents.providers.usage import ThreadLocalUsage
+from agents.providers.usage import ThreadLocalUsage, stream_event_usage
 from config import (
     GEMINI_API_KEY,
     GEMINI_MODEL,
@@ -351,7 +351,10 @@ class _GroqProvider(ThreadLocalUsage):
                 timeout=LLM_STREAM_TIMEOUT_SECONDS,
             )
             for event in events:
-                delta = event.choices[0].delta.content
+                usage = stream_event_usage(event)
+                if usage is not None:
+                    self.last_usage = usage
+                delta = event.choices[0].delta.content if event.choices else None
                 if delta:
                     chunks.append(delta)
                     yield delta
@@ -488,6 +491,9 @@ class _GeminiProvider(ThreadLocalUsage):
                 contents=contents,
                 config=cfg,
             ):
+                usage = stream_event_usage(event)
+                if usage is not None:
+                    self.last_usage = usage
                 delta = event.text
                 if delta:
                     chunks.append(delta)
@@ -534,19 +540,37 @@ class LLMClient:
     _extra: tuple | list = ()  # route entries after primary/secondary (LLM-08)
     _node: str | None = None
 
-    def _record_llm_call(self, provider, prompt: str, output: str, streamed: bool = False) -> None:
-        """OBS-02: count this call on the current turn's record (tokens from
-        the provider's usage when it reported any, else estimated)."""
+    def _record_llm_call(
+        self, provider, prompt: str, output: str, streamed: bool = False, ms: int = 0
+    ) -> None:
+        """OBS-02/LLM-11: count this call on the current turn's record —
+        tokens from the provider's usage report (also for streams that sent
+        one), else estimated; plus node, model, latency and rupee cost."""
         rec = tracing.current()
         if rec is None:
             return
-        usage = None if streamed else getattr(provider, "last_usage", None)
+        usage = getattr(provider, "last_usage", None)
         if isinstance(usage, tuple):
             tokens_in, tokens_out, estimated = usage[0], usage[1], False
         else:
             tokens_in = tracing.estimate_tokens(getattr(self, "_system", "") + prompt)
             tokens_out, estimated = tracing.estimate_tokens(output), True
-        rec.add_llm_call(str(provider.name), self._prompt_version, tokens_in, tokens_out, estimated)
+        from config import call_cost_inr
+
+        model = getattr(provider, "model", None)
+        model = model if isinstance(model, str) else None
+        cost = 0.0 if self._is_byo else call_cost_inr(model, tokens_in, tokens_out)
+        rec.add_llm_call(
+            str(provider.name),
+            self._prompt_version,
+            tokens_in,
+            tokens_out,
+            estimated,
+            node=self._node,
+            model=model,
+            ms=ms,
+            cost_inr=cost,
+        )
 
     def __init__(self, system_prompt: str = "", provider_config: dict | None = None, node: str | None = None):
         # LLM-08: `node` picks the model route (config.model_route) on the
@@ -666,6 +690,9 @@ class LLMClient:
             attempted += 1
             started = False
             streamed: list[str] = []
+            t0 = time.monotonic()
+            if hasattr(provider, "last_usage"):
+                provider.last_usage = None
             try:
                 with tracing.span(
                     f"llm {provider.name}",
@@ -679,7 +706,9 @@ class LLMClient:
                         streamed.append(chunk)
                         yield chunk
                     span_out["output"] = "".join(streamed)
-                self._record_llm_call(provider, prompt, "".join(streamed), streamed=True)
+                self._record_llm_call(
+                    provider, prompt, "".join(streamed), streamed=True, ms=int((time.monotonic() - t0) * 1000)
+                )
                 return
             except Exception as e:
                 last_err = e
@@ -727,6 +756,7 @@ class LLMClient:
                 if _provider_health.is_unavailable(_hkey(provider)):
                     continue
                 try:
+                    t0 = time.monotonic()
                     with tracing.span(
                         f"llm {provider.name}",
                         "llm",
@@ -736,7 +766,7 @@ class LLMClient:
                         result = getattr(provider, method)(prompt, temperature, max_tokens, model)
                         span_out["output"] = result
                     self._active = provider.name
-                    self._record_llm_call(provider, prompt, result)
+                    self._record_llm_call(provider, prompt, result, ms=int((time.monotonic() - t0) * 1000))
                     return result
                 except Exception as e:
                     last_err = e

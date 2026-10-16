@@ -13,6 +13,20 @@ import threading
 from typing import Any
 
 
+def stream_event_usage(event: Any) -> tuple[int, int] | None:
+    """Token usage carried by one streamed event, if any: OpenAI-style
+    `usage` on the final chunk, Groq's `x_groq.usage`, or google-genai's
+    `usage_metadata` (LLM-11)."""
+    from utils.tracing import usage_from_response
+
+    found = usage_from_response(event)
+    if found is None:
+        x_groq = getattr(event, "x_groq", None)
+        if x_groq is not None:
+            found = usage_from_response(x_groq)
+    return found
+
+
 class ThreadLocalUsage:
     """Mixin: `self.last_usage` is stored per thread."""
 

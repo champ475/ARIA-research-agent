@@ -174,6 +174,17 @@ def test_session_pending(db, two_users):
     assert db.session_pending_get(a, sid) is None
 
 
+def test_trial_tokens(db, two_users):
+    """LLM-11: each user's daily trial token budget is their own and resets daily."""
+    a, b = two_users
+    day1, day2 = date(2026, 10, 16), date(2026, 10, 17)
+    assert db.trial_tokens_add(a, 900, day1) == 900
+    assert db.trial_tokens_add(a, 100, day1) == 1000
+    assert db.trial_tokens_used(b, day1) == 0
+    assert db.trial_tokens_used(a, day2) == 0  # a new day starts at zero
+    assert db.trial_tokens_add(a, 5, day2) == 5
+
+
 def test_trial_quota(db, two_users):
     a, b = two_users
     today = date(2026, 10, 14)
@@ -229,6 +240,8 @@ COVERED = {
     "session_touch": test_sessions_and_chat_history,
     "session_pending_get": test_session_pending,
     "session_pending_set": test_session_pending,
+    "trial_tokens_used": test_trial_tokens,
+    "trial_tokens_add": test_trial_tokens,
     "session_delete": test_sessions_and_chat_history,
     "chat_save": test_sessions_and_chat_history,
     "chat_load": test_sessions_and_chat_history,

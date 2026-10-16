@@ -15,7 +15,7 @@ difference.
 from __future__ import annotations
 
 from agents.conversation_memory import SUMMARY_PROMPT, ConversationMemory
-from agents.providers.usage import ThreadLocalUsage
+from agents.providers.usage import ThreadLocalUsage, stream_event_usage
 from config import LLM_STREAM_TIMEOUT_SECONDS, LLM_TIMEOUT_SECONDS, TOKENS_FAST
 from utils.errors import ConfigurationError
 from utils.tracing import usage_from_response
@@ -25,6 +25,8 @@ class OpenAICompatibleProvider(ThreadLocalUsage):
     # REL-02 per-request timeouts; LocalLLMProvider overrides both (CPU model).
     _request_timeout: float = LLM_TIMEOUT_SECONDS
     _stream_timeout: float = LLM_STREAM_TIMEOUT_SECONDS
+    # LLM-11: ask for a usage report on the final streamed chunk (OpenAI API).
+    _stream_usage: bool = True
 
     def __init__(self, system: str, api_key: str, model: str, base_url: str | None = None):
         if not api_key:
@@ -125,9 +127,13 @@ class OpenAICompatibleProvider(ThreadLocalUsage):
                 max_tokens=max_tokens,
                 stream=True,
                 timeout=self._stream_timeout,
+                **({"stream_options": {"include_usage": True}} if self._stream_usage else {}),
             )
             for event in events:
-                delta = event.choices[0].delta.content
+                usage = stream_event_usage(event)
+                if usage is not None:
+                    self.last_usage = usage
+                delta = event.choices[0].delta.content if event.choices else None
                 if delta:
                     chunks.append(delta)
                     yield delta

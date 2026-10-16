@@ -168,6 +168,10 @@ class TurnRecord:
     data_gaps: int = 0
     grounding: dict | None = None
     parse_failures: dict[str, int] = field(default_factory=dict)  # LLM-05, per node
+    # LLM-11 metering: estimated rupee cost, models used, and per-node calls.
+    cost_inr: float = 0.0
+    models: set[str] = field(default_factory=set)
+    llm_by_node: dict[str, dict[str, float]] = field(default_factory=dict)
     trace_url: str | None = None
     root_run: Any = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -182,7 +186,17 @@ class TurnRecord:
                 self.ttft_ms = int((time.monotonic() - self.started) * 1000)
 
     def add_llm_call(
-        self, provider: str, version: str, tokens_in: int, tokens_out: int, estimated: bool
+        self,
+        provider: str,
+        version: str,
+        tokens_in: int,
+        tokens_out: int,
+        estimated: bool,
+        *,
+        node: str | None = None,
+        model: str | None = None,
+        ms: int = 0,
+        cost_inr: float = 0.0,
     ) -> None:
         with self._lock:
             self.llm_calls += 1
@@ -191,6 +205,17 @@ class TurnRecord:
             self.tokens_estimated = self.tokens_estimated or estimated
             self.providers.add(provider)
             self.prompt_versions[version] = self.prompt_versions.get(version, 0) + 1
+            self.cost_inr = round(self.cost_inr + cost_inr, 6)
+            if model:
+                self.models.add(model)
+            slot = self.llm_by_node.setdefault(
+                node or "other", {"calls": 0, "tokens_in": 0, "tokens_out": 0, "ms": 0, "cost_inr": 0.0}
+            )
+            slot["calls"] += 1
+            slot["tokens_in"] += tokens_in
+            slot["tokens_out"] += tokens_out
+            slot["ms"] += ms
+            slot["cost_inr"] = round(slot["cost_inr"] + cost_inr, 6)
 
     def add_parse_failure(self, node: str) -> None:
         with self._lock:
@@ -333,6 +358,9 @@ def _persist(rec: TurnRecord, latency_ms: int, sink: Any) -> None:
             data_gaps=rec.data_gaps,
             grounding=rec.grounding,
             parse_failures=rec.parse_failures or None,
+            cost_inr=rec.cost_inr,
+            llm_by_node=rec.llm_by_node or None,
+            models=sorted(rec.models),
         )
     except Exception as e:
         log.warning(f"[tracing] could not record turn {rec.error_id}: {e}")

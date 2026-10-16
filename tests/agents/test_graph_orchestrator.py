@@ -292,7 +292,9 @@ class TestGraphOrchestratorResolveByoConfig:
 
 class TestGraphOrchestratorMisc:
     def test_generate_suggestions_parses_llm_json_array(self):
+        # LLM chips are a BYO-user feature since LLM-11 (trial chips are deterministic).
         orch = _build_orchestrator(MagicMock())
+        orch._provider_config = {"api_key": "k", "model": "m"}
         fake_client = MagicMock()
         fake_client.ask.return_value = (
             '["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]'
@@ -302,12 +304,21 @@ class TestGraphOrchestratorMisc:
         assert result == ["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]
 
     def test_generate_suggestions_falls_back_on_llm_failure(self):
+        # LLM chips are a BYO-user feature since LLM-11 (trial chips are deterministic).
         orch = _build_orchestrator(MagicMock())
+        orch._provider_config = {"api_key": "k", "model": "m"}
         fake_client = MagicMock()
         fake_client.ask.side_effect = RuntimeError("rate limited")
         with patch("agents.llm_client.LLMClient", return_value=fake_client):
             result = orch.generate_suggestions("resp", "query")
         assert result == ["Analyse a stock", "Compare mutual funds", "Top gainers today", "Set a price alert"]
+
+    def test_trial_suggestions_need_no_llm_call(self):
+        orch = _build_orchestrator(MagicMock())
+        with patch("agents.llm_client.LLMClient") as client_cls:
+            chips = orch.generate_suggestions("resp", "analyse TCS fundamentals")
+        client_cls.assert_not_called()
+        assert len(chips) == 4 and any("TCS" in c for c in chips)
 
     def test_reset_clears_awaiting_confirmation(self):
         orch = _build_orchestrator(MagicMock())
