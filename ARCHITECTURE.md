@@ -16,6 +16,41 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-17 — Not hosted: docker-compose is the reference deployment (OPS-03)
+**Problem.** PRD OPS-03 asks for a production host: managed Postgres with PITR, TLS, a CDN or WAF, autoscaling replicas, and a deploy target for the release pipeline. The owner decided (2026-10-15) that ARIA is a production-grade project and will not be launched as a public product. So hosting, and its running cost, are out of scope.
+
+**Alternatives considered.**
+- A free PaaS (Hugging Face Spaces, Render, Fly.io free tiers): sleeps, gives no worker process, and a public URL would still need the legal and data-licensing sign-offs that are pending (COMP-05, DATA-02).
+- A small VPS with Caddy for TLS: it costs money and needs an operator on call, which the owner rejected.
+- Kubernetes manifests with no cluster behind them: untested config that would rot.
+
+**Final decision.** ARIA is not hosted. `docker-compose.yml` is the reference deployment:
+- `app` (FastAPI + Gradio) and `worker` (advisory-locked jobs);
+- Postgres with a named volume;
+- an optional `staging` profile (OPS-01) and an `observability` profile with Prometheus and Grafana (OBS-03);
+- `compose.test.yml`, the offline stack that releases are verified on (TEST-07).
+
+Everything a host would need is already in place and has been exercised locally:
+- stateless replicas (OPS-02, REL-05);
+- `/healthz`, `/readyz` and graceful drain (OPS-04);
+- metrics, alerts and a runbook (OBS-03/04);
+- backups and a restore drill (REL-08);
+- a release, promote and rollback pipeline whose deploy step is a documented no-op hook (TEST-07);
+- the environment guard against pointing at the production database (OPS-01).
+
+**Trade-offs.**
+- Nothing is reachable from the internet.
+- TLS termination, a WAF, rate limiting at the edge and DDoS protection are not configured. The app enforces only its own per-user and per-IP limits (SEC-05, SEC-12).
+- Neon PITR and the restore drill against Neon are operator tasks (TODO_ARIA.md).
+- The 2-replica behaviour was tested in-process, not behind a real load balancer.
+
+**Future improvements.** If the owner ever launches:
+1. Pick a host that runs two containers plus a managed Postgres.
+2. Put a TLS proxy in front (Caddy, or the platform's), setting `TRUSTED_PROXIES` and `Secure` cookies.
+3. Point the `deploy` step at it.
+4. Run the restore drill on the managed database.
+5. Get the COMP-05 and DATA-02 licences first.
+
 ## 2026-10-17 — Releases: one image per tag, verify by digest, promote and roll back by retag (TEST-07)
 **Problem.** No path from a commit to a running build was repeatable. There was nothing to roll back to, and nothing stopped a migration from breaking the previous release (TEST-07).
 
