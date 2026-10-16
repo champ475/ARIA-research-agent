@@ -12,6 +12,7 @@ data/
 docs/
 *.md
 .env
+.env.*
 !LEGAL.md
 tests/
 evals/results/

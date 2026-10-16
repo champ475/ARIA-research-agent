@@ -122,3 +122,31 @@ def test_static_settings_are_read_only_through_config():
     pat = re.compile(r"os\.(getenv|environ\.get)\(\s*[\"'](" + "|".join(_STATIC_SETTINGS) + r")[\"']")
     hits = [str(p) for p in _sources() if pat.search(p.read_text(encoding="utf-8"))]
     assert hits == []
+
+
+# ── OPS-01: no production database outside prod ──────────────────────────────
+
+
+def test_non_prod_refuses_the_production_database():
+    from config import Settings, boot_problems, prod_db_problem
+
+    prod = "ep-prod-1-pooler.ap-south-1.aws.neon.tech"
+    url = f"postgresql://u:p@{prod}/neondb?sslmode=require"
+    dev = Settings(APP_ENV="dev", DATABASE_URL=url, PROD_DATABASE_HOSTS=f"{prod.upper()}, other.host")
+    assert "must not use the production database" in (prod_db_problem(dev) or "")
+    assert any("production database" in p for p in boot_problems(dev, serving=False))
+    jobs = Settings(
+        APP_ENV="staging",
+        DATABASE_URL="postgresql://u:p@localhost/aria",
+        JOBS_DATABASE_URL=url,
+        PROD_DATABASE_HOSTS=prod,
+    )
+    assert "JOBS_DATABASE_URL" in (prod_db_problem(jobs) or "")
+    assert prod_db_problem(Settings(APP_ENV="prod", DATABASE_URL=url, PROD_DATABASE_HOSTS=prod)) is None
+    assert prod_db_problem(Settings(APP_ENV="dev", DATABASE_URL=url)) is None  # guard not configured
+    assert (
+        prod_db_problem(
+            Settings(APP_ENV="dev", DATABASE_URL="postgresql://u:p@localhost/x", PROD_DATABASE_HOSTS=prod)
+        )
+        is None
+    )

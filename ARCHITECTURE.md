@@ -16,6 +16,25 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Environment separation and the production-database guard (OPS-01)
+**Problem.** There was one `.env` and one Neon database. Testing a change meant testing against real users' data and the real Telegram bot, and nothing stopped a dev process from pointing at production (OPS-01).
+**Alternatives considered.** One option was separate repos or deployments per environment, which is heavy for one maintainer. Another was a convention-only rule ("don't use the prod URL locally"), which fails silently the first time someone copies a `.env`.
+**Final decision.**
+- Four `APP_ENV` profiles (dev, test, staging, prod), documented in `docs/ENVIRONMENTS.md`.
+- A boot check (`config.prod_db_problem`): any non-prod process refuses to start if `DATABASE_URL` or `JOBS_DATABASE_URL` points at a host listed in `PROD_DATABASE_HOSTS`.
+- `.env.staging.example` and `.env.prod.example` list what each environment sets: its own secret key, a second Telegram bot, separate LLM keys and an SMTP test inbox. Production values live only in its secret store.
+- Real `.env.*` files are git- and docker-ignored; the `*.example` files are kept.
+- A compose `staging` profile adds `db-staging`, `app-staging` on :7861 and `worker-staging`.
+- `scripts/seed_staging.py` creates synthetic, PII-free verified users with watchlists, alerts, portfolio lots, profiles and chats. It is idempotent and refuses prod.
+
+**Trade-offs.**
+- The guard only works if the operator fills `PROD_DATABASE_HOSTS` in non-prod env files. Without it, a non-prod process isn't protected.
+- Staging here is the local compose profile. A hosted staging environment that TEST-07 deploys to automatically needs a host (OPS-03 skipped).
+
+**Future improvements.**
+- A scrub script for a Neon branch copy of production.
+- A GitHub "production" environment with required reviewers once there is a deploy target.
+
 ## 2026-10-16 — Stateless downloads: re-render from Postgres or a downloads table (OPS-02)
 **Problem.** Report PDF/Markdown files and screener CSVs were written to the temp directory of the replica that ran the turn, and handed to Gradio DownloadButtons. Gradio serves those files only from that replica's file cache, so behind a load balancer the click could reach another replica and get a 404. A restart broke every link (OPS-02).
 **Alternatives considered.**

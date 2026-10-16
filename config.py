@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     # nightly refreshes) inside the app process. Default: on in dev, off
     # elsewhere (run `python worker.py`). Locks keep it safe either way.
     RUN_JOBS_IN_APP: bool | None = None
+    # OPS-01: the production database's hostname(s), comma-separated. Any
+    # other APP_ENV refuses to start against them (dev/staging never touch
+    # real users' data). Set it in every non-prod env file.
+    PROD_DATABASE_HOSTS: str = ""
     DB_POOL_MAX: int = Field(20, ge=1, le=500)
     DB_POOL_ACQUIRE_TIMEOUT: float = Field(10, gt=0)
     DB_POOL_MIN: int = Field(2, ge=0)
@@ -237,11 +241,37 @@ def secret_key_problems(secret: str) -> list[str]:
     return []
 
 
+def db_host(url: str | None) -> str:
+    from urllib.parse import urlsplit
+
+    try:
+        return (urlsplit(url or "").hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def prod_db_problem(s: Settings) -> str | None:
+    """OPS-01: a non-production process pointed at the production database."""
+    prod_hosts = {h.strip().lower() for h in s.PROD_DATABASE_HOSTS.split(",") if h.strip()}
+    if s.APP_ENV == "prod" or not prod_hosts:
+        return None
+    for name, url in (("DATABASE_URL", s.DATABASE_URL), ("JOBS_DATABASE_URL", s.JOBS_DATABASE_URL)):
+        if db_host(url) in prod_hosts:
+            return (
+                f"APP_ENV={s.APP_ENV} must not use the production database ({name} host is listed in "
+                "PROD_DATABASE_HOSTS). Point it at this environment's own database or Neon branch."
+            )
+    return None
+
+
 def boot_problems(s: Settings | None = None, *, serving: bool = True) -> list[str]:
     """Deployment checks a process must pass before it starts work.
     `serving=False` (alert checker, worker jobs) skips the LLM-provider check."""
     s = s or get_settings()
     problems: list[str] = []
+    prod_db = prod_db_problem(s)
+    if prod_db:
+        problems.append(prod_db)
     url = s.DATABASE_URL
     if not url:
         problems.append("DATABASE_URL is not set (postgresql://user:pass@host/db).")

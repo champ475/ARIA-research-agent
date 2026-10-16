@@ -86,11 +86,13 @@ def test_one_telegram_poller_and_a_standby_takes_over(db):
     time.sleep(0.8)
     assert steps["a"] > 0 and steps["b"] == 0  # b is on standby
     stop_a.set()
-    a.join(5)
+    a.join(10)
+    assert not a.is_alive()
     time.sleep(1.0)
     assert steps["b"] > 0  # the lock was freed and b took over
     stop_b.set()
-    b.join(5)
+    b.join(10)
+    assert not b.is_alive()  # nothing may outlive the test and hold a session
     assert db.job_heartbeats()[0]["job"] == "telegram_poller"
 
 
