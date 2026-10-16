@@ -50,6 +50,12 @@ class GuardedSession(requests.Session):
         self.mount("http://", adapter)
 
     def request(self, method, url, *args, **kwargs):
+        import config
+
+        if config.ARIA_FAKE_DATA:  # TEST-04: offline, recorded answers only
+            from utils.fake_http import respond
+
+            return respond(method, url)
         kwargs.setdefault("timeout", self.default_timeout)
         b = breaker(self.source)
         if not b.allow():

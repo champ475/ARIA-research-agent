@@ -1,0 +1,56 @@
+# TEST-04: a self-contained stack for the end-to-end journeys and offline
+# demos — deterministic LLM (ARIA_FAKE_LLM), recorded market data
+# (ARIA_FAKE_DATA), its own Postgres. No keys, no network.
+#
+#   docker compose -f compose.test.yml up --build -d
+#   E2E=1 E2E_BASE_URL=http://localhost:7870 \
+#     E2E_DATABASE_URL=postgresql://aria:aria@localhost:55433/aria_e2e \
+#     python -m pytest tests/e2e
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aria
+      POSTGRES_PASSWORD: aria
+      POSTGRES_DB: aria_e2e
+    ports:
+      - "55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aria -d aria_e2e"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    # The release pipeline (TEST-07) runs a pushed image: ARIA_IMAGE=<ref> ... up --no-build.
+    image: ${ARIA_IMAGE:-aria:e2e}
+    build: .
+    ports:
+      - "7870:7860"
+    environment:
+      ARIA_NO_DOTENV: "1"
+      APP_ENV: dev
+      DATABASE_URL: postgresql://aria:aria@db:5432/aria_e2e
+      SECRET_KEY: e2e-secret-key-0123456789-abcdefghijklmnop
+      ARIA_FAKE_LLM: "1"
+      ARIA_FAKE_DATA: "1"
+      RUN_JOBS_IN_APP: "false"
+      TELEGRAM_BOT_TOKEN: "123456:e2e-dummy-token"
+      TELEGRAM_BOT_USERNAME: aria_e2e_bot
+      MAIL_BACKEND: console
+      REQUIRE_EMAIL_VERIFICATION: "false"
+      AUTH_IP_MAX_ATTEMPTS: "1000"
+      TURNS_PER_MINUTE: "60"
+    # Migrate, seed a fundamentals snapshot from the offline provider, serve.
+    command:
+      - sh
+      - -c
+      - >-
+        python scripts/migrate.py &&
+        python -c "from scripts.refresh_fundamentals import refresh; from tools.data.providers.fake import FakeProvider;
+        refresh([(s, s, '') for s in ['TCS','INFY','WIPRO','HCLTECH','TECHM','RELIANCE','HDFCBANK','ICICIBANK','SBIN','ITC']],
+        workers=1, delay=0, fetch=FakeProvider().quote)" &&
+        exec python app.py
+    depends_on:
+      db:
+        condition: service_healthy

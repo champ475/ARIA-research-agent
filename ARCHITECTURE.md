@@ -16,6 +16,40 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — End-to-end tests in a real browser, with a deterministic offline mode (TEST-04)
+**Problem.** UI regressions were found by hand. The first real-browser run against a real Postgres checkpointer showed that every research turn with a dependency crashed (TEST-04).
+**Alternatives considered.**
+- Gradio's own client in Python tests: doesn't exercise the browser (rendering, JS, cookies).
+- Selenium: slower, and its tracing is weaker.
+- Running e2e against real LLMs and data: slow, flaky, and costly.
+
+**Final decision.**
+- `tests/e2e` (pytest-playwright, headless Chromium) runs 15 journeys. Each journey drives a real `python app.py` server on a throwaway `aria_e2e` database, which is seeded with a fundamentals snapshot.
+- Two new switches make runs deterministic and offline:
+  - `ARIA_FAKE_LLM`: `agents/providers/fake_llm.py` answers each graph node by rule, and the answer restates the verified conclusions, so it stays grounded.
+  - `ARIA_FAKE_DATA`: the FakeProvider plus `utils/fake_http.py`, which serves recorded responses from `data/fake/` and returns 503 for anything else.
+- Both switches are refused in prod. `ARIA_NO_DOTENV` keeps a developer's `.env` out of the run.
+- `compose.test.yml` runs the same stack in Docker. CI's `e2e` job keeps Playwright traces of failures.
+
+**Production bugs the suite found and fixed:**
+1. `fetch_financials` returns a dict of DataFrames, and a research Send's context carried restored DataFrames. Postgres checkpointing raised on both.
+2. numpy scalars and Plotly Figures in graph state could not be serialised either.
+3. Verification's sane-range check flagged absolute rupee amounts, which gated every equity turn behind a "could not be verified" confirmation.
+4. Download buttons were separate `gr.HTML` components whose updates raced the sidebar's re-render. Two times in three the links never appeared.
+
+The fixes:
+- Payloads stay checkpoint-safe (recursive, with stringified labels) through Send. `execute_task` restores them just before calling the tool.
+- Charts travel as Plotly JSON.
+- The range check applies to ratio fields only.
+- Download links are Markdown inside the answer.
+
+**Trade-offs.**
+- Flakiness was measured over 10 local runs of the whole module. 8 were fully green. One failure was a test bug, now fixed: Telegram link codes can start with `-`. One was a single `wait_for_function` timeout, 1 of 140 test executions (about 0.7%). It did not reproduce in 16 more targeted turns.
+- The PRD asked for a 50-run flake estimate and got 10.
+- WeasyPrint isn't present on Windows dev boxes, so the PDF check accepts 503 there.
+
+**Future improvements.** Visual snapshots, a mobile viewport, and a 50-run nightly flake report.
+
 ## 2026-10-16 — Data contracts, recorded responses and a live canary (TEST-05)
 **Problem.** yfinance, NSE, AMFI and news feeds change their responses without notice, and nothing tested the fetchers against real responses. Recording them proved it: NSE had retired `/api/bulk-deal-data` and `/api/block-deal-data`, which now answer 404. Our fetcher read a 404 as "no deals", so bulk-deal answers and alerts had been silently empty. AMFI's NAVAll also lists wound-up schemes with NAV 0, and the parser kept them (TEST-05).
 **Alternatives considered.**

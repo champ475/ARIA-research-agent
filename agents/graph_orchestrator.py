@@ -302,6 +302,15 @@ def suggestions_for(domain: str, last_query: str) -> list[str]:
     return chips
 
 
+def _figure(chart: Any) -> Any:
+    """chart_html travels through checkpointed state as Plotly JSON; gr.Plot wants a Figure."""
+    if isinstance(chart, str) and chart.startswith("{"):
+        import plotly.io as pio
+
+        return pio.from_json(chart)
+    return chart
+
+
 class GraphOrchestrator:
     def __init__(self, user_id: int, session_id: int | None = None):
         self._user_id = user_id
@@ -598,7 +607,7 @@ class GraphOrchestrator:
             if self._awaiting_confirmation:
                 self._set_pending(None)
             self._awaiting_confirmation = False
-            chart = result.get("chart_html")
+            chart = _figure(result.get("chart_html"))
             pdf_url = result.get("pdf_url")
             md_url = result.get("md_url")
             csv_url = result.get("csv_url")

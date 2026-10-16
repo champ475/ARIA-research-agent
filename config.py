@@ -17,6 +17,7 @@ Two levels of validation:
 
 from __future__ import annotations
 
+import os
 import sys
 from functools import lru_cache
 from typing import Literal
@@ -25,7 +26,10 @@ from dotenv import load_dotenv
 from pydantic import Field, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-load_dotenv()
+# ARIA_NO_DOTENV=1: ignore .env (e2e servers and other isolated runs must not
+# pick up a developer's real keys or database).
+if os.getenv("ARIA_NO_DOTENV") != "1":
+    load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -91,6 +95,9 @@ class Settings(BaseSettings):
     # OBS-03: bearer token Prometheus sends to GET /metrics. Required outside
     # dev/test — without it the route is off there (404).
     METRICS_TOKEN: str = ""
+    # SEC-05: login/signup attempts per client IP per 5 minutes. The e2e suite,
+    # which signs up a user per journey from 127.0.0.1, raises it.
+    AUTH_IP_MAX_ATTEMPTS: int = Field(20, ge=1)
     # UX-02: prefix answers with "Routed to: <domain>" (a debugging aid; off for users).
     SHOW_ROUTING_BADGE: bool = False
     # OBS-03 SLOs (docs/SLO.md): monthly availability and equity p95 time to first output.
@@ -140,6 +147,8 @@ class Settings(BaseSettings):
     FUNDAMENTALS_MAX_AGE_HOURS: int = Field(26, ge=1)
     # DATA-02: deterministic offline market data (e2e tests, demos).
     ARIA_FAKE_DATA: bool = False
+    # TEST-04: a deterministic LLM (agents/providers/fake_llm.py) for e2e tests and demos.
+    ARIA_FAKE_LLM: bool = False
     # Evidence confidence when a fallback source stood in (e.g. bhavcopy for a quote).
     DEGRADED_CONFIDENCE: float = Field(0.6, gt=0, lt=1)
     # Rupees per US dollar, for the per-turn cost estimate.
@@ -289,6 +298,8 @@ def boot_problems(s: Settings | None = None, *, serving: bool = True) -> list[st
     prod_db = prod_db_problem(s)
     if prod_db:
         problems.append(prod_db)
+    if s.APP_ENV == "prod" and (s.ARIA_FAKE_LLM or s.ARIA_FAKE_DATA):
+        problems.append("ARIA_FAKE_LLM / ARIA_FAKE_DATA are for tests and demos; unset them in production.")
     url = s.DATABASE_URL
     if not url:
         problems.append("DATABASE_URL is not set (postgresql://user:pass@host/db).")
@@ -405,6 +416,7 @@ TURNS_PER_MINUTE = settings.TURNS_PER_MINUTE
 MAX_ENTITIES_PER_TURN = settings.MAX_ENTITIES_PER_TURN
 TRIAL_DAILY_TOKENS = settings.TRIAL_DAILY_TOKENS
 ARIA_FAKE_DATA = settings.ARIA_FAKE_DATA
+ARIA_FAKE_LLM = settings.ARIA_FAKE_LLM
 FUNDAMENTALS_MAX_AGE_HOURS = settings.FUNDAMENTALS_MAX_AGE_HOURS
 BACKTEST_COST_PCT = settings.BACKTEST_COST_PCT
 DEGRADED_CONFIDENCE = settings.DEGRADED_CONFIDENCE
@@ -440,6 +452,7 @@ DATA_DIR = "data"
 DATABASE_URL = settings.DATABASE_URL
 JOBS_DATABASE_URL = settings.JOBS_DATABASE_URL
 METRICS_TOKEN = settings.METRICS_TOKEN
+AUTH_IP_MAX_ATTEMPTS = settings.AUTH_IP_MAX_ATTEMPTS
 SHOW_ROUTING_BADGE = settings.SHOW_ROUTING_BADGE
 SLO_AVAILABILITY = settings.SLO_AVAILABILITY
 SLO_EQUITY_P95_TTFT_SECONDS = settings.SLO_EQUITY_P95_TTFT_SECONDS

@@ -79,6 +79,19 @@ def _is_missing(value) -> bool:
     return isinstance(value, str) and value == ""
 
 
+# The ratios a sane-range check applies to. The same payload also carries
+# absolute amounts in rupees (revenue, market cap, assets), which are always
+# far above any ratio bound — flagging those gated every real equity turn
+# behind a "could not be verified" confirmation (found by TEST-04).
+_RATIO_FIELDS = frozenset(
+    {
+        "pe", "pb", "ps", "peg", "ev_ebitda", "roe", "roa", "roce", "de", "current_ratio", "quick_ratio",
+        "net_margin", "op_margin", "ebitda_margin", "gross_margin", "div_yield", "payout", "beta",
+        "rev_growth", "earn_growth", "analyst_upside", "nim_proxy",
+    }
+)  # fmt: skip
+
+
 def _stage1_deterministic(evidence: list[Evidence], tasks: list[dict]) -> list[VerificationIssue]:
     issues: list[VerificationIssue] = []
 
@@ -122,7 +135,7 @@ def _stage1_deterministic(evidence: list[Evidence], tasks: list[dict]) -> list[V
                         "evidence_ids": [ev["id"]],
                     }
                 )
-            elif abs(value) > 1e6:
+            elif field in _RATIO_FIELDS and abs(value) > 1e6:
                 issues.append(
                     {
                         "claim": f"{ev['entity']} {field}={value} is out of a sane range",

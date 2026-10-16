@@ -28,7 +28,6 @@ from langgraph.types import Send
 
 from graph.deadline import past_research_cutoff, protected_task_ids
 from graph.journal import log_decision
-from graph.nodes.execute_task import from_cacheable
 from graph.state import GraphState, Task
 
 
@@ -97,10 +96,11 @@ def _build_context(
             continue
         payload = latest_by_tool_entity.get((dep_task["tool"], dep_task["entity"]))
         if payload is not None:
-            # Evidence.payload is kept in checkpoint-safe form in GraphState
-            # (see graph/nodes/execute_task.py's module docstring) — tool
-            # fns like compute_technicals expect the real DataFrame back.
-            context[dep_task["tool"]] = from_cacheable(payload)
+            # Kept in checkpoint-safe form: this context travels inside a Send,
+            # which the Postgres checkpointer stores (a DataFrame here failed
+            # every turn with a dependency — found by TEST-04). execute_task
+            # restores the real DataFrames just before calling the tool.
+            context[dep_task["tool"]] = payload
     return context
 
 

@@ -78,6 +78,43 @@ jobs:
       - run: pip install --require-hashes -r requirements-dev.lock
       - run: python -m pytest tests/ -q --cov --cov-report=term --cov-report=xml
 
+  e2e:
+    # TEST-04: the 15 user journeys in headless Chromium against a real server
+    # (fake LLM + offline data, throwaway database). Traces of failures are
+    # kept as an artifact.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: aria
+          POSTGRES_PASSWORD: aria
+          POSTGRES_DB: aria_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aria" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://aria:aria@localhost:5432/aria_test
+      E2E: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpango-1.0-0 libpangoft2-1.0-0
+      - run: pip install --require-hashes -r requirements-dev.lock
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m pytest tests/e2e -q -p no:cacheprovider --tracing retain-on-failure --output test-results
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-traces
+          path: test-results/
+          retention-days: 7
+
   eval:
     # Golden-set evaluation (PRD LLM-01): replays recorded LLM responses —
     # deterministic, no network, no API keys. Fails if any metric drops more

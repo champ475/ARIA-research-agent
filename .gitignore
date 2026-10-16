@@ -42,3 +42,6 @@ eval.md
 
 # REL-08 backups (scripts/backup_db.py)
 backups/
+
+# TEST-04 Playwright output (screenshots, traces)
+test-results/

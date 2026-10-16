@@ -7,10 +7,9 @@ deterministically from each Conclusion's own confidence, not asked of the
 LLM) and renders the price chart via tools/charts/builder.py (reused as-is)
 when OHLCV evidence for the primary entity is present.
 
-`chart_html` currently holds the raw Plotly Figure object returned by
-candlestick() — gr.Plot (app.py) consumes Figure objects directly, not an
-HTML string. The field name follows the RFC's schema (Sec5); the actual
-UI-facing serialization is a Phase 6 integration decision, not this node's.
+`chart_html` holds the candlestick() figure as Plotly JSON: graph state is
+checkpointed, and a live Figure object isn't serialisable (TEST-04).
+GraphOrchestrator turns it back into a Figure for gr.Plot.
 
 Report-domain file output (Phase 7.1): PDF/MD generation is deliberately done
 HERE, not in ConclusionBuilder, even though the graph-expansion plan's first
@@ -455,7 +454,8 @@ def build_communication_layer_node(
         if primary_entity:
             ohlcv = _find_ohlcv_evidence(evidence, primary_entity)
             if isinstance(ohlcv, pd.DataFrame) and not ohlcv.empty:
-                chart = candlestick(ohlcv, primary_entity)
+                fig = candlestick(ohlcv, primary_entity)
+                chart = fig.to_json() if fig is not None else None
 
         if _is_streamable(intent, intents):
             # Chart doesn't depend on the LLM call, so it's still available

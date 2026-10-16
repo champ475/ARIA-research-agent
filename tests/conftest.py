@@ -8,6 +8,12 @@ from unittest.mock import patch
 import pytest
 from hypothesis import settings
 
+# Tests never send traces anywhere: a developer's .env may switch on LangChain
+# auto-tracing (LANGSMITH_TRACING=true); load_dotenv() doesn't override these.
+for _var in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING"):
+    os.environ[_var] = "false"
+os.environ.setdefault("ARIA_TRACING", "")
+
 # TEST-03: property tests run 500 examples each in CI, 100 locally (override
 # with HYPOTHESIS_PROFILE=ci). Tests that pin max_examples keep their own.
 settings.register_profile("ci", max_examples=500, deadline=None)
@@ -33,7 +39,7 @@ def _no_real_database(request, monkeypatch):
     tests under tests/integration/ (which point utils.db at a throwaway
     database) may connect. psycopg_pool opens connections through
     psycopg.Connection.connect, so this also covers utils.db.get_conn()."""
-    if "integration" in request.node.nodeid.split("::")[0].replace("\\", "/").split("/"):
+    if {"integration", "e2e"} & set(request.node.nodeid.split("::")[0].replace("\\", "/").split("/")):
         return
 
     def _refuse(*args, **kwargs):

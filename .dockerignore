@@ -9,6 +9,7 @@ venv/
 data/
 !data/instruments/
 !data/market/
+!data/fake/
 docs/
 *.md
 .env
@@ -16,6 +17,7 @@ docs/
 !LEGAL.md
 tests/
 backups/
+test-results/
 evals/results/
 LEARNING_GUIDE.*
 !prompts/*.md

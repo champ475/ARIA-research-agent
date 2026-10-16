@@ -60,7 +60,7 @@ _cache_lock = threading.Lock()
 # many emails from one address is bounded too (the per-email limit alone let
 # one IP try every address in a leaked list).
 _IP_WINDOW_S = 5 * 60
-_IP_MAX_ATTEMPTS = 20
+_IP_MAX_ATTEMPTS = __import__("config").AUTH_IP_MAX_ATTEMPTS  # SEC-05 (raised only for e2e runs)
 # After this many failed logins for one account within a day, each further
 # attempt must wait exponentially longer (1, 2, 4 ... capped at 60 minutes).
 _BACKOFF_AFTER = 5

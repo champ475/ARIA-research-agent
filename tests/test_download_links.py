@@ -1,4 +1,4 @@
-"""OPS-02: the chat's download links point only at our own download routes."""
+"""OPS-02: download links in answers point only at our own download routes."""
 
 import pytest
 
@@ -7,10 +7,14 @@ from tests.conftest import import_app_without_side_effects
 app = import_app_without_side_effects()
 
 
-def test_links_to_our_routes_are_rendered_escaped():
-    html = app._download_link("/download/report/12.pdf", "⬇ Download PDF", primary=True)
-    assert html == '<a class="dl-btn dl-primary" href="/download/report/12.pdf" download>⬇ Download PDF</a>'
-    assert 'href="/download/file/' in app._download_link("/download/file/" + "a" * 32, "CSV")
+def test_links_to_our_routes():
+    token = "a" * 32
+    line = app._download_links("/download/report/12.pdf", "/download/report/12.md", f"/download/file/{token}")
+    assert line == (
+        "\n\n[⬇ Download PDF](/download/report/12.pdf) · [⬇ Download Markdown](/download/report/12.md)"
+        f" · [⬇ Export results (CSV)](/download/file/{token})"
+    )
+    assert app._download_links(None, None, None) == ""
 
 
 @pytest.mark.parametrize(
@@ -19,7 +23,7 @@ def test_links_to_our_routes_are_rendered_escaped():
         "https://evil.example/x.pdf",
         "javascript:alert(1)",
         "/download/report/12.pdf?x=1",
-        '/download/report/1.pdf" onclick="x',
+        "/download/report/1.pdf) [x](https://evil.example",
         "/tmp/aria_screener_results.csv",
         "",
     ],

@@ -250,9 +250,8 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     nowhere. Locking the input for the round-trip closes that window instead
     of just detecting it after the fact.
 
-    Yields: (cleared_input, send_btn, updated_history, chart, suggestions, pdf, md, csv, *btn_updates)
+    Yields: (cleared_input, send_btn, updated_history, chart, suggestions, *btn_updates)
     """
-    no_file = gr.update(value=None, visible=False)
     # VAL-01: one input contract — normalise, strip invisible/control chars,
     # bound the length — and use the cleaned text everywhere below.
     checked = clean_message(message)
@@ -264,9 +263,6 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
                 history,
                 gr.update(),
                 suggestions,
-                no_file,
-                no_file,
-                no_file,
             ) + tuple(gr.update() for _ in range(4))
             return
         log.info(f"[respond] input rejected: {checked.reason}")
@@ -283,9 +279,6 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
             rejected_hist,
             gr.update(),
             suggestions,
-            no_file,
-            no_file,
-            no_file,
         ) + tuple(gr.update() for _ in range(4))
         return
     message = checked.text
@@ -322,16 +315,10 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         loading_hist,
         gr.update(value=None, visible=False),
         suggestions,
-        no_file,
-        no_file,
-        no_file,
     ) + _make_btn_updates(suggestions)
 
     chart_fig = None
     new_sugg = suggestions
-    pdf_update = no_file
-    md_update = no_file
-    csv_update = no_file
     text = ""
     tab_used: str | None = None
     try:
@@ -357,9 +344,6 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
                     ],
                     gr.update(),
                     suggestions,
-                    no_file,
-                    no_file,
-                    no_file,
                 ) + _make_btn_updates(suggestions)
                 continue
             text, chart, pdf_url, md_url, csv_url, tab_used = out
@@ -375,22 +359,15 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
                 streaming_hist,
                 gr.update(value=chart_fig, visible=chart_fig is not None),
                 suggestions,
-                no_file,
-                no_file,
-                no_file,
             ) + _make_btn_updates(suggestions)
 
         new_sugg = orch.generate_suggestions(text, clean)
         text = _routing_badge(tab_used) + text
         # OPS-02: links to /download/... routes, which any replica can serve.
-        if pdf_url:
-            pdf_update = gr.update(
-                value=_download_link(pdf_url, "⬇ Download PDF", primary=True), visible=True
-            )
-        if md_url:
-            md_update = gr.update(value=_download_link(md_url, "⬇ Download Markdown"), visible=True)
-        if csv_url:
-            csv_update = gr.update(value=_download_link(csv_url, "⬇ Export Results CSV"), visible=True)
+        # Links live in the answer itself: a separate component's update raced
+        # the sidebar re-render and was often lost (TEST-04), and in the
+        # message they stay usable from the chat history.
+        text += _download_links(pdf_url, md_url, csv_url)
     except Exception as e:
         # SEC-08: the user gets a friendly message and a short error ID; the
         # exception text (which can carry SQL, paths, provider responses) goes
@@ -432,9 +409,6 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         updated_history,
         chart_update,
         new_sugg,
-        pdf_update,
-        md_update,
-        csv_update,
     ) + btn_updates
 
 
@@ -494,13 +468,12 @@ def _busy_outputs(message, history: list, suggestions: list, text: str = _BUSY_T
     """Reply for a message that can't start now: the user's previous turn is
     still running (e.g. another browser tab), or the server is draining for a
     restart (OPS-04). Keeps their text in the box."""
-    no_file = gr.update(value=None, visible=False)
     busy_hist = (history or []) + [
         {"role": "user", "content": (message or "")[:200]},
         {"role": "assistant", "content": text},
     ]
     keep_text = gr.update(value=message or "", interactive=True)
-    return (keep_text, _SEND_READY, busy_hist, gr.update(), suggestions, no_file, no_file, no_file) + tuple(
+    return (keep_text, _SEND_READY, busy_hist, gr.update(), suggestions) + tuple(
         gr.update() for _ in range(4)
     )
 
@@ -768,32 +741,6 @@ footer { display: none !important; }
 }
 .aria-dot:nth-child(2) { animation-delay: 0.2s; }
 .aria-dot:nth-child(3) { animation-delay: 0.4s; }
-/* Download links (OPS-02: plain anchors to /download/...) */
-.dl-link {
-    flex: 0 0 auto !important;
-    width: auto !important;
-    min-width: 0 !important;
-}
-a.dl-btn {
-    display: inline-block;
-    border-radius: 20px;
-    border: 1px solid #30363d;
-    color: #c9d1d9 !important;
-    text-decoration: none !important;
-    font-size: 12px;
-    padding: 5px 18px;
-    font-weight: 500;
-    letter-spacing: 0.2px;
-    white-space: nowrap;
-}
-a.dl-btn.dl-primary { background: #1f6feb; border-color: #1f6feb; color: #fff !important; }
-a.dl-btn:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
-.dl-row {
-    gap: 8px !important;
-    padding: 6px 0 2px 0 !important;
-    justify-content: flex-start !important;
-    flex-wrap: wrap !important;
-}
 /* Timeframe radio */
 .tf-radio label { font-size: 12px !important; color: #8b949e !important; }
 .tf-radio .wrap { gap: 4px !important; }
@@ -1032,10 +979,6 @@ def _build_chat_tab(user_state: gr.State):
             # Download links — report PDF/MD and screener CSV, hidden until
             # produced. OPS-02: plain links to /download/... (any replica
             # serves them), not Gradio file components tied to one replica.
-            with gr.Row(elem_classes=["dl-row"]):
-                pdf_btn = gr.HTML("", visible=False, elem_classes=["dl-link"])
-                md_btn = gr.HTML("", visible=False, elem_classes=["dl-link"])
-                csv_btn = gr.HTML("", visible=False, elem_classes=["dl-link"])
 
             gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
             with gr.Row():
@@ -1074,11 +1017,10 @@ def _build_chat_tab(user_state: gr.State):
             chart_panel,
             suggestions_state,
             sug_btns,
-            extra_reset=[pdf_btn, md_btn, csv_btn],
         )
 
     outputs = (
-        [msg_box, send_btn, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn]
+        [msg_box, send_btn, chatbot, chart_panel, suggestions_state]
         + sug_btns
         + [session_state, refresh_state]
     )
@@ -1104,8 +1046,7 @@ def _build_chat_tab(user_state: gr.State):
 
     def _clear(user_id):
         hist, chart, sugg, *btns = clear_chat(user_id)
-        no_dl = gr.update(value=None, visible=False)
-        return [hist, chart, sugg, no_dl, no_dl, no_dl] + list(btns) + [None]
+        return [hist, chart, sugg] + list(btns) + [None]
 
     # show_progress="hidden" on both: Gradio's own generic ETA overlay
     # ("processing | Xs/Ys" text + a stray link icon) otherwise renders on
@@ -1209,7 +1150,7 @@ def _build_chat_tab(user_state: gr.State):
     clear_btn.click(
         _clear,
         [user_state],
-        [chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn] + sug_btns + [session_state],
+        [chatbot, chart_panel, suggestions_state] + sug_btns + [session_state],
     )
 
     for btn in sug_btns:
@@ -1917,12 +1858,22 @@ def _inbox_md(rows: list[dict]) -> str:
 _DOWNLOAD_URL_RE = re.compile(r"^/download/(?:report/\d+\.(?:pdf|md)|file/[A-Za-z0-9_-]{16,64})$")
 
 
-def _download_link(url: str, label: str, primary: bool = False) -> str:
-    """An anchor to one of our own download routes (anything else renders nothing)."""
+def _download_link(url: str, label: str) -> str:
+    """A Markdown link to one of our own download routes (anything else renders nothing)."""
     if not _DOWNLOAD_URL_RE.match(url or ""):
         return ""
-    cls = "dl-btn dl-primary" if primary else "dl-btn"
-    return f'<a class="{cls}" href="{html_text(url)}" download>{html_text(label)}</a>'
+    return f"[{label}]({url})"
+
+
+def _download_links(pdf_url: str | None, md_url: str | None, csv_url: str | None) -> str:
+    """OPS-02: the answer's download links, as a line under it ("" if none)."""
+    links = [
+        _download_link(pdf_url or "", "⬇ Download PDF"),
+        _download_link(md_url or "", "⬇ Download Markdown"),
+        _download_link(csv_url or "", "⬇ Export results (CSV)"),
+    ]
+    links = [x for x in links if x]
+    return "\n\n" + " · ".join(links) if links else ""
 
 
 def _request_user(request: gr.Request | None) -> int | None:

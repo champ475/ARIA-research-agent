@@ -49,7 +49,7 @@ def check_models() -> dict[str, str]:
 def start_model_health_check() -> threading.Thread | None:
     import config
 
-    if config.APP_ENV == "test":
+    if config.APP_ENV == "test" or config.ARIA_FAKE_LLM:
         return None
     t = threading.Thread(target=check_models, name="aria-model-health", daemon=True)
     t.start()

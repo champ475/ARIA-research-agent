@@ -603,6 +603,16 @@ class LLMClient:
         self._secondary = None
         self._active = "none"
         self._is_byo = bool(provider_config)
+        from config import ARIA_FAKE_LLM
+
+        if ARIA_FAKE_LLM:
+            # TEST-04: deterministic answers for e2e tests and demos; no network.
+            from agents.providers.fake_llm import FakeLLMProvider
+
+            self._local = None
+            self._primary = FakeLLMProvider(self._system, node)
+            self._active = self._primary.name
+            return
         self._local = self._init_local()
         if provider_config:
             self._init_byo(provider_config)

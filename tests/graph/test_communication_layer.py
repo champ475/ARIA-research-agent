@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -416,7 +416,9 @@ class TestCommunicationLayerChart:
             "confidence": 1.0,
             "citation_key": "price_ohlcv",
         }
-        with patch("graph.nodes.communication_layer.candlestick", return_value="fake-figure") as mock_chart:
+        fig = MagicMock()
+        fig.to_json.return_value = '{"data": []}'
+        with patch("graph.nodes.communication_layer.candlestick", return_value=fig) as mock_chart:
             node = build_communication_layer_node(stub)
             result = node(
                 {
@@ -427,7 +429,7 @@ class TestCommunicationLayerChart:
                 }
             )
         mock_chart.assert_called_once()
-        assert result["chart_html"] == "fake-figure"
+        assert result["chart_html"] == '{"data": []}'  # JSON: state is checkpointed (TEST-04)
 
     def test_no_chart_without_ohlcv_evidence(self):
         stub = _StubClient("Report text")

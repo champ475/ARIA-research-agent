@@ -25,6 +25,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from config import DEGRADED_CONFIDENCE, TOOL_TIMEOUT_SECONDS
@@ -44,46 +45,74 @@ log = logging.getLogger(__name__)
 _INDEX_COL_FALLBACK = "index"  # pandas' own default name for reset_index() on an unnamed index
 
 
+def _frame_to_cacheable(payload: pd.DataFrame) -> dict:
+    orig_index_name = payload.index.name
+    index_name = orig_index_name or _INDEX_COL_FALLBACK
+    index_is_datetime = bool(pd.api.types.is_datetime64_any_dtype(payload.index))
+    records = payload.reset_index().to_dict(orient="records")
+    # OHLCV's DatetimeIndex becomes a column of pandas Timestamp objects
+    # here — those aren't msgpack-safe either (LangGraph's checkpointer
+    # serializer round-trips them via a method-call form its own
+    # deserializer then refuses to execute for security reasons), so every
+    # value is flattened to an ISO string. Column labels too: statements
+    # are keyed by fiscal-year-end Timestamps.
+    flat = []
+    for record in records:
+        flat.append(
+            {
+                (k.isoformat() if isinstance(k, (pd.Timestamp, datetime)) else str(k)): (
+                    v.isoformat() if isinstance(v, (pd.Timestamp, datetime)) else _to_cacheable(v)
+                )
+                for k, v in record.items()
+            }
+        )
+    return {
+        "__dataframe__": True,
+        "records": flat,
+        "index_name": str(index_name),
+        "index_had_no_name": orig_index_name is None,
+        "index_is_datetime": index_is_datetime,
+    }
+
+
 def _to_cacheable(payload: Any) -> Any:
+    """DataFrames anywhere in the payload become checkpoint-safe dicts —
+    including nested ones: fetch_financials returns {statement: DataFrame},
+    which the Postgres checkpointer couldn't serialise (found by TEST-04)."""
     if isinstance(payload, pd.DataFrame):
-        orig_index_name = payload.index.name
-        index_name = orig_index_name or _INDEX_COL_FALLBACK
-        index_is_datetime = bool(pd.api.types.is_datetime64_any_dtype(payload.index))
-        records = payload.reset_index().to_dict(orient="records")
-        # OHLCV's DatetimeIndex becomes a column of pandas Timestamp objects
-        # here — those aren't msgpack-safe either (LangGraph's checkpointer
-        # serializer round-trips them via a method-call form its own
-        # deserializer then refuses to execute for security reasons), so
-        # every record's values get flattened to plain ISO strings, not just
-        # the DataFrame shell.
-        for record in records:
-            for key, value in record.items():
-                if isinstance(value, (pd.Timestamp, datetime)):
-                    record[key] = value.isoformat()
-        return {
-            "__dataframe__": True,
-            "records": records,
-            "index_name": index_name,
-            "index_had_no_name": orig_index_name is None,
-            "index_is_datetime": index_is_datetime,
-        }
+        return _frame_to_cacheable(payload)
+    if isinstance(payload, dict) and not payload.get("__dataframe__"):
+        return {k: _to_cacheable(v) for k, v in payload.items()}
+    if isinstance(payload, list | tuple):
+        return [_to_cacheable(v) for v in payload]
+    if isinstance(payload, np.generic):  # numpy scalars from pandas/ta aren't msgpack-safe
+        return payload.item()
     return payload
+
+
+def _frame_from_cacheable(payload: dict) -> pd.DataFrame:
+    df = pd.DataFrame(payload["records"])
+    index_name = payload.get("index_name") or _INDEX_COL_FALLBACK
+    if index_name in df.columns:
+        if payload.get("index_is_datetime"):
+            df[index_name] = pd.to_datetime(df[index_name])
+        df = df.set_index(index_name)
+        if payload.get("index_had_no_name"):
+            df.index.name = None  # restore the original unnamed-index shape exactly
+    return df
 
 
 def from_cacheable(payload: Any) -> Any:
     """Public (no leading underscore) since research_executor.py and
-    communication_layer.py both need to reconstruct a DataFrame from
-    GraphState's checkpoint-safe Evidence.payload — see module docstring."""
-    if isinstance(payload, dict) and payload.get("__dataframe__"):
-        df = pd.DataFrame(payload["records"])
-        index_name = payload.get("index_name") or _INDEX_COL_FALLBACK
-        if index_name in df.columns:
-            if payload.get("index_is_datetime"):
-                df[index_name] = pd.to_datetime(df[index_name])
-            df = df.set_index(index_name)
-            if payload.get("index_had_no_name"):
-                df.index.name = None  # restore the original unnamed-index shape exactly
-        return df
+    communication_layer.py both need to reconstruct DataFrames from
+    GraphState's checkpoint-safe Evidence.payload — see module docstring.
+    Nested frames (a dict of statements) are restored too."""
+    if isinstance(payload, dict):
+        if payload.get("__dataframe__"):
+            return _frame_from_cacheable(payload)
+        return {k: from_cacheable(v) for k, v in payload.items()}
+    if isinstance(payload, list):
+        return [from_cacheable(v) for v in payload]
     return payload
 
 
@@ -179,6 +208,9 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
         fetched_at = cached.get("fetched_at") or datetime.now(UTC)
     else:
         fetched_at = datetime.now(UTC)
+        # Dependency outputs arrive checkpoint-safe (see research_executor);
+        # the tool gets the real objects back.
+        context = {k: (v if k.startswith("_") else from_cacheable(v)) for k, v in context.items()}
         if spec.side_effect:
             # Never abandon a write mid-flight: a timed-out caller could
             # report "failed" while the write still lands in the background.

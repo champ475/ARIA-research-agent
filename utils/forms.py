@@ -66,6 +66,10 @@ def probe_llm(model: str, api_key: str, base_url: str | None) -> None:
     """One 1-token call, at most TEST_CALL_TIMEOUT_SECONDS. Raises
     ConfigurationError with a coarse reason (never the provider's raw reply,
     SEC-01) if the provider doesn't answer."""
+    import config
+
+    if config.ARIA_FAKE_LLM:  # TEST-04: e2e runs have no real provider to call
+        return
     from agents.llm_client import _ERROR_CLASS_TEXT, LLMProvidersExhausted, _error_class
     from agents.providers.openai_compatible import OpenAICompatibleProvider
 
