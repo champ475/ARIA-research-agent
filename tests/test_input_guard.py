@@ -139,4 +139,4 @@ def test_respond_uses_cleaned_text_downstream(app_module):
         patch.object(app_module, "_persist_turn"),
     ):
         _drain(app_module.respond(1, "T​CS\x00 price", [], [], 7, "1M"))
-    orch.process_stream.assert_called_once_with("TCS price")
+    orch.process_stream.assert_called_once_with("TCS price", progress=True)

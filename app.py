@@ -25,6 +25,7 @@ from config import (
     TURNS_PER_MINUTE,
     check_boot,
 )
+from graph.progress import ProgressUpdate
 from utils import lifecycle
 from utils.db import ensure_schema
 from utils.errors import AriaError, ConfigurationError, UserInputError, error_id_from_turn, render_error
@@ -156,6 +157,24 @@ _TAB_LABELS = {
     "alert": "🔔 Alerts",
     "planning": "🧭 Financial Planner",
 }
+
+
+def _routing_badge(tab_used: str | None) -> str:
+    """UX-02: the "Routed to" line is a debugging aid, off unless SHOW_ROUTING_BADGE."""
+    from config import SHOW_ROUTING_BADGE
+
+    return f"*🔀 Routed to: {_tab_label(tab_used or 'equity')}*\n\n" if SHOW_ROUTING_BADGE else ""
+
+
+def _progress_html(steps: list[str]) -> str:
+    """Loading dots plus the last few research steps (UX-02)."""
+    shown = steps[-4:]
+    trail = " → ".join(html_text(s) for s in shown[:-1])
+    current = html_text(shown[-1]) + "…" if shown else ""
+    return (
+        f"{LOADING_HTML}<div class='aria-progress' role='status' aria-live='polite'>"
+        f"{trail + ' → ' if trail else ''}<strong>{current}</strong></div>"
+    )
 
 
 def _tab_label(tab_used: str) -> str:
@@ -305,12 +324,32 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         # result, so this loop renders identically for both — it just runs
         # once for a non-streaming tab.
         # Download links are read after the loop (final yield), hence B007.
-        for text, chart, pdf_url, md_url, csv_url, tab_used in orch.process_stream(clean):  # noqa: B007
+        steps: list[str] = []
+        for out in orch.process_stream(clean, progress=True):
+            if isinstance(out, ProgressUpdate):
+                # UX-02: the research steps so far, under the loading dots.
+                steps.append(out.label)
+                yield (
+                    _INPUT_BUSY,
+                    _SEND_BUSY,
+                    history
+                    + [
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": _progress_html(steps)},
+                    ],
+                    gr.update(),
+                    suggestions,
+                    no_file,
+                    no_file,
+                    no_file,
+                ) + _make_btn_updates(suggestions)
+                continue
+            text, chart, pdf_url, md_url, csv_url, tab_used = out
             if chart is not None:
                 chart_fig = chart
             streaming_hist = history + [
                 {"role": "user", "content": message},
-                {"role": "assistant", "content": f"*🔀 Routed to: {_tab_label(tab_used)}*\n\n" + text},
+                {"role": "assistant", "content": _routing_badge(tab_used) + text},
             ]
             yield (
                 _INPUT_BUSY,
@@ -324,7 +363,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
             ) + _make_btn_updates(suggestions)
 
         new_sugg = orch.generate_suggestions(text, clean)
-        text = f"*🔀 Routed to: {_tab_label(tab_used)}*\n\n" + text
+        text = _routing_badge(tab_used) + text
         # OPS-02: links to /download/... routes, which any replica can serve.
         if pdf_url:
             pdf_update = gr.update(
@@ -692,6 +731,9 @@ body, .gradio-container {
     padding: 8px 20px;
 }
 footer { display: none !important; }
+/* UX-02: research steps under the loading dots */
+.aria-progress { font-size: 12px; color: #8b949e; margin-top: 6px; line-height: 1.5; }
+.aria-progress strong { color: #c9d1d9; font-weight: 500; }
 /* Typing / loading indicator */
 @keyframes aria-bounce {
     0%, 80%, 100% { transform: translateY(0);    opacity: 0.35; }

@@ -10,7 +10,7 @@ def _fake_orch(on_stream=None):
     orch = MagicMock()
     orch.classify.return_value = "chat"
 
-    def stream(_msg):
+    def stream(_msg, progress=False):
         if on_stream:
             on_stream()
         yield ("answer", None, None, None, None, "chat")

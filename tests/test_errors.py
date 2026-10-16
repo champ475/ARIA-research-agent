@@ -53,7 +53,7 @@ def _orch_raising(exc: BaseException):
     orch = MagicMock()
     orch.classify.return_value = "chat"
 
-    def stream(_msg):
+    def stream(_msg, progress=False):
         raise exc
         yield  # pragma: no cover - makes this a generator
 

@@ -56,7 +56,9 @@ def test_eleventh_turn_in_a_minute_gets_a_clear_refusal(db, two_users, app_modul
     a, _ = two_users
     orch = MagicMock()
     orch.classify.return_value = "chat"
-    orch.process_stream.side_effect = lambda _m: iter([("answer", None, None, None, None, "chat")])
+    orch.process_stream.side_effect = lambda _m, progress=False: iter(
+        [("answer", None, None, None, None, "chat")]
+    )
     orch.generate_suggestions.return_value = []
     with (
         patch.object(app_module, "get_orchestrator", return_value=orch),

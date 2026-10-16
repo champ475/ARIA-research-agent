@@ -62,7 +62,7 @@ def _fake_orch(delay: float = 0.0):
     orch = MagicMock()
     orch.classify.return_value = "chat"
 
-    def stream(_msg):
+    def stream(_msg, progress=False):
         time.sleep(delay)
         yield ("full answer text", None, None, None, None, "chat")
 

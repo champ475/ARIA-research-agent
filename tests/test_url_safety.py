@@ -159,7 +159,8 @@ def test_exhausted_message_names_the_error_class_for_byo():
     msg = format_exhausted_message(
         LLMProvidersExhausted(RuntimeError("Error code: 401 - invalid api key"), is_byo=True)
     )
-    assert "authentication failed" in msg
+    # UX-02: a rejected key says what to do about it.
+    assert "API key was rejected" in msg and "Settings" in msg
 
 
 @pytest.mark.parametrize(

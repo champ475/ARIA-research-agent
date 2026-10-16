@@ -88,6 +88,7 @@ from graph.grounding import check as grounding_check
 from graph.grounding import record as record_grounding
 from graph.grounding import unverified_note
 from graph.guardrails import check_input, finalize
+from graph.progress import ProgressUpdate, run_with_progress
 
 log = logging.getLogger(__name__)
 
@@ -464,18 +465,34 @@ class GraphOrchestrator:
             pass
         return result
 
-    def process_stream(self, message: str):
+    _progress = False
+
+    def _run_graph(self, payload: Any, config: dict):
+        """The graph run for this turn: streamed with step progress when the
+        caller asked for it (UX-02), else a plain invoke."""
+        if self._progress:
+            return (yield from run_with_progress(self._graph, payload, config))
+        return self._graph.invoke(payload, config=config)
+
+    def process_stream(self, message: str, progress: bool = False):
         """OBS-02 wrapper: runs the turn inside a utils/tracing TurnRecord
         (one `turns` row per turn, plus a LangSmith trace when enabled). The
         turn's id comes from the logging context app.py's run_in_turn set, so
-        log lines, the turns row and the user-facing error ID all agree."""
+        log lines, the turns row and the user-facing error ID all agree.
+
+        UX-02: with progress=True, ProgressUpdate items (one per research
+        step) are yielded before the answer's tuples."""
         from utils import tracing
         from utils.logging_setup import session_id_var, turn_id_var
 
         turn_id = turn_id_var.get() or uuid.uuid4().hex
         with tracing.turn(turn_id, self._user_id, session_id_var.get() or None, message) as rec:
             try:
+                self._progress = progress
                 for out in self._process_stream(message, rec):
+                    if isinstance(out, ProgressUpdate):
+                        yield out
+                        continue
                     if out[0]:
                         rec.first_output()
                     yield out
@@ -526,7 +543,7 @@ class GraphOrchestrator:
                 approved = kind == "yes"
                 # A fresh deadline: the user's think time at the gate mustn't
                 # count against the research budget (REL-02).
-                result = self._graph.invoke(Command(resume=approved, update=new_deadline()), config=config)
+                result = yield from self._run_graph(Command(resume=approved, update=new_deadline()), config)
             else:
                 # LLM-09: refused requests get a fixed reply — no research, no
                 # LLM call, and no trial quota spent.
@@ -552,7 +569,7 @@ class GraphOrchestrator:
                 self._thread_id = self._new_thread_id()
                 config = {"configurable": {"thread_id": self._thread_id}}
                 self._memory.add_user(message)
-                result = self._graph.invoke(
+                result = yield from self._run_graph(
                     {
                         "query": message,
                         "max_loops": _DEFAULT_MAX_LOOPS,
@@ -563,7 +580,7 @@ class GraphOrchestrator:
                         "advice_caution": verdict.caution,
                         **new_deadline(),
                     },
-                    config=config,
+                    config,
                 )
 
             rec.intent = result.get("intent") or rec.intent

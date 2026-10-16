@@ -91,6 +91,8 @@ class Settings(BaseSettings):
     # OBS-03: bearer token Prometheus sends to GET /metrics. Required outside
     # dev/test — without it the route is off there (404).
     METRICS_TOKEN: str = ""
+    # UX-02: prefix answers with "Routed to: <domain>" (a debugging aid; off for users).
+    SHOW_ROUTING_BADGE: bool = False
     # OBS-03 SLOs (docs/SLO.md): monthly availability and equity p95 time to first output.
     SLO_AVAILABILITY: float = Field(0.995, gt=0, lt=1)
     SLO_EQUITY_P95_TTFT_SECONDS: float = Field(15.0, gt=0)
@@ -438,6 +440,7 @@ DATA_DIR = "data"
 DATABASE_URL = settings.DATABASE_URL
 JOBS_DATABASE_URL = settings.JOBS_DATABASE_URL
 METRICS_TOKEN = settings.METRICS_TOKEN
+SHOW_ROUTING_BADGE = settings.SHOW_ROUTING_BADGE
 SLO_AVAILABILITY = settings.SLO_AVAILABILITY
 SLO_EQUITY_P95_TTFT_SECONDS = settings.SLO_EQUITY_P95_TTFT_SECONDS
 OPERATOR_TELEGRAM_CHAT_ID = settings.OPERATOR_TELEGRAM_CHAT_ID
