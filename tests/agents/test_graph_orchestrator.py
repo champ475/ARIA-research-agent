@@ -1,6 +1,8 @@
 import contextlib
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agents.graph_orchestrator import GraphOrchestrator
 
 
@@ -402,3 +404,45 @@ class TestTurnRecords:
         g = MagicMock()
         g.invoke.side_effect = RuntimeError("graph blew up")
         assert self._statuses(g, ["hi"]) == ["error"]
+
+
+class TestStreamCutOff:
+    """REL-06: a synthesis stream that dies part-way keeps what arrived."""
+
+    def _orch(self):
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {
+            "final_report": "",
+            "pending_synthesis_prompt": "PROMPT",
+            "tasks": [],
+        }
+        return _build_orchestrator(fake_graph)
+
+    def test_partial_answer_kept_with_note_and_no_exception_text(self):
+        from graph.deadline import CUT_OFF_NOTE
+
+        def broken_stream(*_a, **_k):
+            yield "TCS trades "
+            yield "at a P/E of 30."
+            raise ConnectionError("upstream reset at 10.0.0.1:443")
+
+        orch = self._orch()
+        with patch("agents.llm_client.LLMClient") as client:
+            client.return_value.stream.side_effect = broken_stream
+            results = list(orch.process_stream("analyse TCS"))
+        final = results[-1][0]
+        assert final.startswith("TCS trades at a P/E of 30.")
+        assert CUT_OFF_NOTE.strip() in final
+        assert "10.0.0.1" not in final and "ConnectionError" not in final
+
+    def test_failure_before_any_text_reaches_the_error_boundary(self):
+        def dead_stream(*_a, **_k):
+            raise ConnectionError("boom")
+            yield  # pragma: no cover
+
+        orch = self._orch()
+        with patch("agents.llm_client.LLMClient") as client:
+            client.return_value.stream.side_effect = dead_stream
+            gen = orch.process_stream("analyse TCS")
+            with pytest.raises(ConnectionError):
+                list(gen)

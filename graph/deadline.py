@@ -78,25 +78,58 @@ _REASON_TEXT = {
     "error": "couldn't be fetched",
 }
 
+# REL-06: appended when the answer stream stops part-way.
+CUT_OFF_NOTE = "\n\n⚠️ *The answer was cut off — the model stopped responding. Ask again for the full answer.*"
 
-def _label(task: dict) -> str:
-    name = task["tool"]
+# REL-06: what each research tool's data is called in an answer.
+TOOL_LABELS = {
+    "fetch_info": "price and quote",
+    "fetch_financials": "financial statements",
+    "fetch_ohlcv": "price history",
+    "fetch_news": "news",
+    "compute_fundamentals": "fundamental ratios",
+    "compute_technicals": "technical indicators",
+    "fetch_quarterly_results": "quarterly results filing",
+    "fetch_annual_report_text": "annual report",
+    "fetch_nav": "fund NAV",
+    "fetch_category_funds": "fund rankings",
+    "fetch_mf_comparison": "fund comparison",
+    "fetch_mf_news": "fund news",
+    "screener_run": "screener data",
+    "fetch_top_movers": "top movers (NSE)",
+    "fetch_bulk_deals": "bulk deals (NSE)",
+    "fetch_block_deals": "block deals (NSE)",
+}
+
+
+def _tool_label(tool: str) -> str:
+    if tool in TOOL_LABELS:
+        return TOOL_LABELS[tool]
+    name = tool
     for prefix in ("fetch_", "compute_", "get_"):
         if name.startswith(prefix):
             name = name[len(prefix) :]
-    name = name.replace("_", " ")
-    entity = task.get("entity") or ""
-    return f"{name} for {entity}" if entity and entity.lower() != "market" else name
+    return name.replace("_", " ")
 
 
 def data_gaps_note(tasks: list[dict] | None) -> str:
-    """A deterministic line naming research that didn't make it into the
-    answer (failed or skipped tasks), or "" when nothing is missing."""
+    """One deterministic line naming the data that didn't make it into the
+    answer and why — "Data not available this time: news for TCS, INFY
+    (timed out); quarterly results filing for TCS (source temporarily
+    unavailable)." — or "" when nothing is missing. Never exception text."""
     gaps = [t for t in (tasks or []) if t.get("status") in ("failed", "skipped")]
     if not gaps:
         return ""
-    parts = []
+    grouped: dict[tuple[str, str], list[str]] = {}
     for t in gaps:
         reason = t.get("error") or ("deadline" if t["status"] == "skipped" else "error")
-        parts.append(f"{_label(t)} ({_REASON_TEXT.get(reason, _REASON_TEXT['error'])})")
-    return "\n\n⚠️ *Some data is missing from this answer:* " + "; ".join(parts) + "."
+        why = _REASON_TEXT.get(reason, _REASON_TEXT["error"])
+        entity = t.get("entity") or ""
+        entities = grouped.setdefault((_tool_label(t["tool"]), why), [])
+        if entity and entity.lower() != "market" and entity not in entities:
+            entities.append(entity)
+    parts = [
+        f"{label} for {', '.join(entities)} ({why})" if entities else f"{label} ({why})"
+        for (label, why), entities in grouped.items()
+    ]
+    return "\n\n⚠️ *Data not available this time:* " + "; ".join(parts) + "."

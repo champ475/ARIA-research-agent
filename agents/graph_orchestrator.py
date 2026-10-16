@@ -79,7 +79,7 @@ from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT, TRIAL_DAILY_TOKENS
 from graph.checkpointer import get_postgres_checkpointer
 from graph.confirmation import REASK_TEXT as CONFIRM_REPROMPT
 from graph.confirmation import classify_reply
-from graph.deadline import data_gaps_note, new_deadline
+from graph.deadline import CUT_OFF_NOTE, data_gaps_note, new_deadline
 from graph.entity_resolution import entity_notes_text
 from graph.graph import build_graph
 from graph.grounding import check as grounding_check
@@ -608,10 +608,23 @@ class GraphOrchestrator:
                     system_prompt=_COMM_SYSTEM, provider_config=self._provider_config, node="communication"
                 )
                 chunks: list[str] = []
-                for delta in synthesis_client.stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
-                    chunks.append(delta)
-                    yield "".join(chunks), chart, None, None, None, tab_used
+                cut_off = False
+                try:
+                    for delta in synthesis_client.stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
+                        chunks.append(delta)
+                        yield "".join(chunks), chart, None, None, None, tab_used
+                except Exception:
+                    # REL-06: a stream that dies mid-answer keeps what arrived,
+                    # plus a plain note; nothing streamed yet -> the normal
+                    # error boundary (LLMProvidersExhausted / render_error).
+                    if not chunks:
+                        raise
+                    log.warning("[GraphOrchestrator] synthesis stream broke mid-answer", exc_info=True)
+                    rec.status = "partial"
+                    cut_off = True
                 text = "".join(chunks)
+                if cut_off:
+                    text += CUT_OFF_NOTE
                 # LLM-03, streamed path: checked once the stream ends; anything
                 # unsupported gets a note in the final text.
                 grounded = grounding_check(text, pending_prompt)
