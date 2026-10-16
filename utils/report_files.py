@@ -1,14 +1,9 @@
 """
 utils/report_files.py
-Renders a report's Markdown text into on-disk .md/.pdf files for exactly one
-Gradio DownloadButton response — never a durable store. The report's actual
-persistence is Postgres (`reports.content`, utils/db.py); these files live
-in the system temp dir just long enough to be streamed to the user's own
-machine, then are the OS's problem, not ours (fine on an ephemeral host that
-wipes on restart, and cheap enough elsewhere not to bother sweeping).
-Called both for a freshly generated report (graph/nodes/communication_layer.py)
-and for re-downloading an older one from history (app.py), via the same
-function — there's exactly one render path, not two.
+Renders a report's Markdown text to downloadable bytes (.md and .pdf).
+Nothing is written to disk (OPS-02): /download/report/<id> re-renders from
+the durable `reports.content` (utils/db.py) on whichever replica serves the
+click, so a download never depends on the replica that wrote the report.
 
 Security (SEC-02): report text is LLM-written and shaped by user prompts,
 news and filing PDFs, so it is untrusted. Raw HTML in it is sanitised to a
@@ -21,10 +16,7 @@ network or the local filesystem (no <img src="file:///etc/passwd">, no
 from __future__ import annotations
 
 import logging
-import os
 import re
-import tempfile
-import uuid
 from typing import NoReturn
 
 log = logging.getLogger(__name__)
@@ -95,7 +87,7 @@ class _DenyFetcher:
 _deny_fetcher = _DenyFetcher()
 
 
-def _safe_name(part: str, fallback: str) -> str:
+def _safe_name(part: str | None, fallback: str) -> str:
     """Filename-safe slug — `sym`/`rtype` can carry user/LLM text; never let
     them add path separators or '..' to the temp path."""
     cleaned = _SAFE_NAME_RE.sub("", part or "")[:40]
@@ -124,22 +116,16 @@ def sanitise_html(html_body: str) -> str:
     )
 
 
-def render_report(sym: str, rtype: str, content: str) -> tuple[str | None, str | None]:
-    """Renders `content` as Markdown and (optionally) PDF into temp files.
-    Returns (md_path, pdf_path) — either may be None if that format failed
-    to render (PDF rendering failing shouldn't block the Markdown download)."""
+def report_filename(sym: str | None, rtype: str | None, ext: str) -> str:
+    """A download filename that can't carry path separators or '..'."""
+    return f"{_safe_name(sym, 'report')}_{_safe_name(rtype, 'report')}.{ext}"
+
+
+def render_report(content: str) -> tuple[bytes, bytes | None]:
+    """(markdown bytes, pdf bytes or None). PDF rendering failing (missing
+    native libraries) doesn't block the Markdown download."""
     content = _cap_content(content)
-    filename = f"{_safe_name(sym, 'report')}_{_safe_name(rtype, 'report')}_{uuid.uuid4().hex[:8]}"
-    base = os.path.join(tempfile.gettempdir(), filename)
-    md_path = pdf_path = None
-
-    try:
-        md_path = base + ".md"
-        with open(md_path, "w", encoding="utf-8") as f:
-            f.write(content)
-    except Exception:
-        md_path = None
-
+    md_bytes = content.encode("utf-8")
     try:
         import markdown as _md
         from weasyprint import HTML as _HTML
@@ -155,15 +141,10 @@ def render_report(sym: str, rtype: str, content: str) -> tuple[str | None, str |
             "code{background:#f5f5f5;padding:2px 4px;border-radius:3px;font-size:11px}"
             f"</style></head><body>{html_body}</body></html>"
         )
-        pdf_path = base + ".pdf"
-        _HTML(string=html_full, base_url=None, url_fetcher=_deny_fetcher).write_pdf(pdf_path)
+        pdf: bytes | None = _HTML(string=html_full, base_url=None, url_fetcher=_deny_fetcher).write_pdf()
     except Exception as e:
-        # Deliberately non-fatal (see module docstring) — but silent
-        # failure here means "why is there no PDF button" has zero signal
-        # for whoever's debugging. Most common local-dev cause: WeasyPrint
-        # needs native Pango/Cairo/GTK libs not on PATH (Dockerfile already
-        # installs them for the actual deployment target).
-        log.warning(f"PDF render failed, falling back to Markdown-only: {e}")
-        pdf_path = None
-
-    return md_path, pdf_path
+        # Most common local-dev cause: WeasyPrint needs native Pango/Cairo
+        # libraries (the Dockerfile installs them).
+        log.warning("PDF render failed, Markdown only: %s", type(e).__name__)
+        pdf = None
+    return md_bytes, pdf

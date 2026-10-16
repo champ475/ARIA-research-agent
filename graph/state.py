@@ -182,6 +182,7 @@ class GraphState(TypedDict):
     pending_fundamental_payload: dict | None  # footnote source for the deferred call above, applied
     # by GraphOrchestrator once the full text is streamed
     chart_html: str
-    pdf_path: str | None  # report-domain file output (Phase 7.1), None for other intents
-    md_path: str | None  # report-domain file output (Phase 7.1), None for other intents
-    csv_path: str | None  # screener-domain file output (Phase 7.3), None for other intents
+    # OPS-02: download links (web/download_routes.py), never local file paths.
+    pdf_url: str | None  # report-domain download, None for other intents
+    md_url: str | None  # report-domain download, None for other intents
+    csv_url: str | None  # screener-domain download, None for other intents

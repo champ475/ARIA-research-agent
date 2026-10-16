@@ -26,6 +26,7 @@ def run_housekeeping() -> dict[str, int]:
         "sessions": db.auth_sessions_purge_expired(),
         "auth_tokens": db.auth_tokens_purge_expired(),
         "telegram_link_codes": db.telegram_link_codes_purge_expired(),
+        "downloads": db.downloads_purge_expired(),
     }
     log.info("[maintenance] housekeeping purged %s", counts)
     return counts

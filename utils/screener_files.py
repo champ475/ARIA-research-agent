@@ -1,26 +1,20 @@
 """
-utils/screener_files.py
-Shared CSV writer for screener results. Extracted from
-agents/screener_agent.py::export_csv() (Phase 7.3 of the graph-expansion
-plan) so both the legacy ScreenerAgent and the LangGraph CommunicationLayer
-node produce identical output from the same code path.
+utils/screener_files.py — screener results as CSV bytes (OPS-02: stored in
+the `downloads` table and served by /download/file/<token>, never written
+to a replica's temp dir).
 """
 
 from __future__ import annotations
 
 import csv
-import os
-import tempfile
+import io
 
 
-def save_screener_csv(results: list[dict]) -> str | None:
-    """Write screener results to a temp CSV and return the file path."""
+def screener_csv_bytes(results: list[dict]) -> bytes:
     if not results:
-        return None
-    path = os.path.join(tempfile.gettempdir(), "aria_screener_results.csv")
-    fieldnames = list(results[0].keys())
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
-    return path
+        return b""
+    out = io.StringIO(newline="")
+    writer = csv.DictWriter(out, fieldnames=list(results[0].keys()))
+    writer.writeheader()
+    writer.writerows(results)
+    return out.getvalue().encode("utf-8")

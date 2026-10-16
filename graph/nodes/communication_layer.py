@@ -17,13 +17,10 @@ HERE, not in ConclusionBuilder, even though the graph-expansion plan's first
 draft assumed ConclusionBuilder — `final_report` (the actual markdown text)
 doesn't exist until this node's LLM call completes, so ConclusionBuilder
 never has a report body to save. Rendering immediately after the LLM call
-keeps the "only CommunicationLayer calls the model" contract intact —
-render_report() itself is a pure, deterministic I/O side effect, not a
-second model call. The rendered files are TEMPORARY (utils/report_files.py)
-— durable storage is `reports.content` in Postgres (report_save() below);
-re-downloading an older report re-renders from that stored text via the
-same render_report() call (see _handle_report_management below), not from
-a file that might not exist anymore.
+keeps the "only CommunicationLayer calls the model" contract intact. OPS-02:
+nothing is rendered here — the report is saved to `reports.content` and the
+answer carries /download/report/<id>.pdf|.md links, which any replica serves
+by re-rendering the stored text (web/download_routes.py).
 
 Report list/re-download (Phase 3 of the open-source restructure):
 `_handle_report_management` bypasses the Evidence/Conclusion pipeline
@@ -31,11 +28,9 @@ entirely for "show my reports" / "download report #N" style queries — same
 reasoning as the planning bypass below, there's no tool-selection/evidence-
 gathering step useful here, just a DB read and (for a download) a render.
 
-Screener-domain CSV export (Phase 7.3) follows the same pattern: `csv_path`
-is populated from the raw `screener_run` evidence (not a Conclusion — the
-full row-level CSV is genuinely raw tool output, not a decided fact), which
-is fine because it's a side-effect file write, not something CommunicationLayer
-reasons about or cites in the LLM prompt.
+Screener-domain CSV export (Phase 7.3): `csv_url` points at the raw
+`screener_run` rows (not a Conclusion — row-level output, not a decided
+fact), stored for a day in the `downloads` table (OPS-02).
 
 Planning domain (Phase 7.3) bypasses the Evidence/Conclusion pipeline
 entirely — it's handled here, at the top of communication_layer, before the
@@ -79,7 +74,15 @@ from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
 from utils.audit import audit
-from utils.db import profile_clear, profile_get, profile_upsert, report_get, report_list, report_save
+from utils.db import (
+    download_put,
+    profile_clear,
+    profile_get,
+    profile_upsert,
+    report_get,
+    report_list,
+    report_save,
+)
 from utils.escaping import md_cell
 from utils.financial_profile import is_complete as _profile_complete
 from utils.financial_profile import profile_summary as _profile_summary
@@ -92,8 +95,7 @@ from utils.planning_logic import (
 from utils.planning_logic import (
     intake_turn as _planning_intake_turn,
 )
-from utils.report_files import render_report
-from utils.screener_files import save_screener_csv
+from utils.screener_files import screener_csv_bytes
 
 _PLANNING_SHOW_KW = ["show my profile", "my financial profile", "what do you know about me"]
 _PLANNING_RESET_KW = [
@@ -202,15 +204,20 @@ def _intents(state: GraphState) -> set[str]:
     return {state.get("intent")} | set(state.get("secondary_intents") or [])
 
 
+def report_urls(report_id: int) -> dict[str, str]:
+    """OPS-02: download links any replica can serve (web/download_routes.py)."""
+    return {"pdf_url": f"/download/report/{report_id}.pdf", "md_url": f"/download/report/{report_id}.md"}
+
+
 def _empty_result(final_report: str, decision: str, reason: str) -> dict:
     return {
         "final_report": final_report,
         "pending_synthesis_prompt": None,
         "pending_fundamental_payload": None,
         "chart_html": None,
-        "pdf_path": None,
-        "md_path": None,
-        "csv_path": None,
+        "pdf_url": None,
+        "md_url": None,
+        "csv_url": None,
         "confidence_summary": {},
         **log_decision("CommunicationLayer", decision, reason),
     }
@@ -284,17 +291,13 @@ def _handle_report_management(state: GraphState) -> dict | None:
                 "report: download target not found",
                 f"user_id={user_id}, report_id={report_id}",
             )
-        # Re-renders from the durably stored text (reports.content) — the
-        # file from whenever this report was first generated is long gone
-        # on an ephemeral host, but the text never depended on it surviving.
-        md_path, pdf_path = render_report(row["symbol"] or "report", row["report_type"], row["content"])
+        # OPS-02: the link re-renders from reports.content on download.
         result = _empty_result(
             f"Here's report #{report_id} — **{row['title']}**.",
             "report: regenerated from history",
             f"user_id={user_id}, report_id={report_id}",
         )
-        result["md_path"] = md_path
-        result["pdf_path"] = pdf_path
+        result.update(report_urls(report_id))
         return result
 
     return None
@@ -465,9 +468,9 @@ def build_communication_layer_node(
                 + advice,
                 "pending_fundamental_payload": fundamental_payload or None,
                 "chart_html": chart,
-                "pdf_path": None,
-                "md_path": None,
-                "csv_path": None,
+                "pdf_url": None,
+                "md_url": None,
+                "csv_url": None,
                 "confidence_summary": _confidence_summary(conclusions),
                 **log_decision(
                     "CommunicationLayer", "deferred to streaming", f"{len(conclusions)} conclusion(s)"
@@ -480,17 +483,19 @@ def build_communication_layer_node(
         if fundamental_payload:
             report = report + cited_footnotes(report, fundamental_payload)
 
-        pdf_path = md_path = None
+        urls: dict[str, str | None] = {"pdf_url": None, "md_url": None, "csv_url": None}
         if "report" in intents and primary_entity:
             rtype = detect_report_type((query or objective).lower())
             # LLM-09: the saved/downloaded report carries the same checks and
             # footer as the chat answer (finalize() is idempotent).
             report = finalize(report, state)
-            md_path, pdf_path = render_report(primary_entity, rtype, report)
             user_id = state.get("user_id")
             if user_id is not None:
                 try:
-                    report_save(user_id, primary_entity, rtype, f"{rtype} — {primary_entity}", report)
+                    report_id = report_save(
+                        user_id, primary_entity, rtype, f"{rtype} — {primary_entity}", report
+                    )
+                    urls.update(report_urls(report_id))
                     audit(
                         "report.generate",
                         actor_user_id=user_id,
@@ -501,27 +506,33 @@ def build_communication_layer_node(
                     # Persistence failure shouldn't block returning the report itself.
                     log.warning(f"[CommunicationLayer] report_save failed: {e}")
 
-        csv_path = None
-        if "screener" in intents:
+        if "screener" in intents and state.get("user_id") is not None:
             screener_results = _find_screener_results(evidence)
             if screener_results:
-                csv_path = save_screener_csv(screener_results)
+                try:
+                    token = download_put(
+                        state["user_id"],
+                        "aria_screener_results.csv",
+                        "text/csv",
+                        screener_csv_bytes(screener_results),
+                    )
+                    urls["csv_url"] = f"/download/file/{token}"
+                except Exception as e:
+                    log.warning("[CommunicationLayer] screener CSV not stored: %s", type(e).__name__)
 
         return {
             "final_report": report,
             "pending_synthesis_prompt": None,
             "pending_fundamental_payload": None,
             "chart_html": chart,
-            "pdf_path": pdf_path,
-            "md_path": md_path,
-            "csv_path": csv_path,
+            **urls,
             "confidence_summary": _confidence_summary(conclusions),
             **log_decision(
                 "CommunicationLayer",
                 f"synthesized report from {len(conclusions)} conclusion(s)",
                 f"chart={'rendered' if chart is not None else 'none'}"
-                + (f", files=({md_path},{pdf_path})" if "report" in intents else "")
-                + (f", csv={csv_path}" if "screener" in intents else ""),
+                + (f", report={urls['pdf_url']}" if "report" in intents else "")
+                + (f", csv={'yes' if urls['csv_url'] else 'no'}" if "screener" in intents else ""),
             ),
         }
 

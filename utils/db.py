@@ -1614,3 +1614,40 @@ def job_heartbeat_finish(job: str, ok: bool, duration_ms: int, error: str | None
 
 def job_heartbeats() -> list[dict]:
     return _query("SELECT * FROM job_heartbeats ORDER BY job") or []
+
+
+# ── Downloads (OPS-02; web/download_routes.py) ──────────────────────────────
+
+DOWNLOAD_TTL_HOURS = 24
+MAX_DOWNLOAD_BYTES = 5_000_000
+
+
+def download_put(user_id: int, filename: str, content_type: str, content: bytes) -> str:
+    """Store a generated file for its owner; returns the unguessable token."""
+    import secrets
+
+    if len(content) > MAX_DOWNLOAD_BYTES:
+        raise ValueError("download too large")
+    token = secrets.token_urlsafe(24)
+    _query(
+        "INSERT INTO downloads (token, user_id, filename, content_type, content, expires_at) "
+        "VALUES (%s,%s,%s,%s,%s, now() + make_interval(hours => %s))",
+        (token, user_id, filename, content_type, content, DOWNLOAD_TTL_HOURS),
+        fetch=None,
+        commit=True,
+    )
+    return token
+
+
+def download_get(user_id: int, token: str) -> dict | None:
+    """The file, only for its owner and only until it expires."""
+    return _query(
+        "SELECT filename, content_type, content FROM downloads WHERE token=%s AND user_id=%s AND expires_at > now()",
+        (token, user_id),
+        fetch="one",
+    )
+
+
+def downloads_purge_expired() -> int:
+    rows = _query("DELETE FROM downloads WHERE expires_at < now() RETURNING token", commit=True)
+    return len(rows or [])

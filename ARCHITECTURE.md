@@ -16,6 +16,29 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Stateless downloads: re-render from Postgres or a downloads table (OPS-02)
+**Problem.** Report PDF/Markdown files and screener CSVs were written to the temp directory of the replica that ran the turn, and handed to Gradio DownloadButtons. Gradio serves those files only from that replica's file cache, so behind a load balancer the click could reach another replica and get a 404. A restart broke every link (OPS-02).
+**Alternatives considered.**
+- Sticky sessions. A stopgap that still breaks on restart.
+- Object storage (S3/R2) with signed URLs. That adds a cloud dependency and credentials, and the project isn't hosted (OPS-03).
+- Storing rendered PDFs in Postgres. Reports can be re-rendered from `reports.content`, so storing them would only duplicate data.
+
+**Final decision.**
+- CommunicationLayer no longer renders or writes files. A saved report yields `/download/report/<id>.pdf|.md` links, and `web/download_routes.py` re-renders `reports.content` in memory on whichever replica serves the click (`render_report(content) -> (md_bytes, pdf_bytes)`).
+- Content with no durable source (screener results) is stored in a new `downloads` table (migration 0018). Each row is keyed by a 32-byte URL-safe token, owned by a user, capped at 5 MB, and expires after 24 h; housekeeping purges expired rows.
+- Both routes need the session cookie and return the same 404 for "missing" and "not yours".
+- The chat tab shows plain anchor links, and `_download_link` renders only our own route shapes.
+- GraphState's `pdf_path/md_path/csv_path` became `pdf_url/md_url/csv_url`.
+- Together with VAL-10 (pending confirmations in the DB), REL-03 (orchestrators rebuilt from `chat_history`) and REL-05 (single-owner jobs and Telegram poller), any replica can now serve any request.
+
+**Trade-offs.**
+- A PDF is re-rendered on each download, which costs CPU. That's fine at this scale.
+- A screener CSV link lasts 24 h.
+- The Parquet OHLCV and bhavcopy caches stay per replica. They are caches, so correctness doesn't depend on them (DATA-10 is Phase 3).
+- The PRD's 2-replica staging run with a replica killed is shown with two app instances sharing one database in tests, not on a staging host (hosting was skipped).
+
+**Future improvements.** Cache rendered PDFs, keyed by a hash of the report. Move the market-data caches to Postgres or Redis (DATA-10).
+
 ## 2026-10-16 — Single-owner background jobs with heartbeats (REL-05)
 **Problem.** Every app process started its own Telegram getUpdates poller and its own housekeeping thread. Telegram allows only one poller per bot, so two replicas fight with 409 errors. Alert checks ran only on GitHub Actions cron, which can start late, is disabled after 60 days without repo activity, and installed the whole app (LangGraph, Gradio, WeasyPrint) on every run. Nothing recorded whether any job had run (REL-05).
 **Alternatives considered.**

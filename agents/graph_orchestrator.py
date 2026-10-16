@@ -458,7 +458,7 @@ class GraphOrchestrator:
         return _keyword_route(message)
 
     def process(self, message: str) -> tuple[str, object, str | None, str | None, str | None, str]:
-        """Returns (text, chart, pdf_path, md_path, csv_path, tab_used) — the final result of process_stream()."""
+        """Returns (text, chart, pdf_url, md_url, csv_url, tab_used) — the final result of process_stream()."""
         result = None
         for result in self.process_stream(message):  # noqa: B007 — keep only the final yield
             pass
@@ -489,7 +489,7 @@ class GraphOrchestrator:
                 self._charge_trial_tokens(rec)
 
     def _process_stream(self, message: str, rec):
-        """Yields (text, chart, pdf_path, md_path, csv_path, tab_used), text
+        """Yields (text, chart, pdf_url, md_url, csv_url, tab_used), text
         growing on each yield for equity/chat turns (CommunicationLayer
         deferred its LLM call to `pending_synthesis_prompt` — see that
         module's `_is_streamable`), or exactly once for every other domain,
@@ -582,9 +582,9 @@ class GraphOrchestrator:
                 self._set_pending(None)
             self._awaiting_confirmation = False
             chart = result.get("chart_html")
-            pdf_path = result.get("pdf_path")
-            md_path = result.get("md_path")
-            csv_path = result.get("csv_path")
+            pdf_url = result.get("pdf_url")
+            md_url = result.get("md_url")
+            csv_url = result.get("csv_url")
             # tab_used: primary intent, plus any secondary ones QueryAnalyzer
             # detected (Phase 7.4 multi-intent support), joined with "+" — still
             # a single string, so app.py's existing (text, chart, pdf, md, csv,
@@ -642,13 +642,13 @@ class GraphOrchestrator:
                     text = text + cited_footnotes(text, fundamental_payload)
                 text = header + finalize(text + as_of_note, result) + gaps_note
                 self._memory.add_assistant(text)
-                yield text, chart, pdf_path, md_path, csv_path, tab_used
+                yield text, chart, pdf_url, md_url, csv_url, tab_used
                 return
 
             report = result.get("final_report", "") or ""
             text = (header + finalize(report + as_of_note, result) if report else "") + gaps_note
             self._memory.add_assistant(text)
-            yield text, chart, pdf_path, md_path, csv_path, tab_used
+            yield text, chart, pdf_url, md_url, csv_url, tab_used
         except LLMProvidersExhausted as e:
             from agents.llm_client import format_exhausted_message
 

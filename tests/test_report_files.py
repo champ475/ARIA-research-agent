@@ -1,7 +1,6 @@
 """SEC-02 — rendering a report never fetches URLs or local files, and raw
 HTML in LLM-written report text is neutralised."""
 
-import os
 import sys
 import types
 from unittest.mock import patch
@@ -14,6 +13,7 @@ from utils.report_files import (
     BlockedFetchError,
     _deny_fetcher,
     render_report,
+    report_filename,
     sanitise_html,
 )
 
@@ -88,9 +88,8 @@ class _FakeHTML:
         self.string, self.base_url, self.url_fetcher = string, base_url, url_fetcher
         _FakeHTML.instances.append(self)
 
-    def write_pdf(self, path):
-        with open(path, "wb") as f:
-            f.write(b"%PDF-fake")
+    def write_pdf(self, target=None):
+        return b"%PDF-fake"
 
 
 @pytest.fixture
@@ -100,18 +99,13 @@ def fake_weasyprint(monkeypatch):
     return _FakeHTML
 
 
-def test_render_passes_deny_fetcher_and_no_base_url(fake_weasyprint, tmp_path):
-    md_path, pdf_path = render_report("TCS", "initiating_coverage", _HOSTILE)
-    try:
-        (doc,) = fake_weasyprint.instances
-        assert doc.url_fetcher is _deny_fetcher
-        assert doc.base_url is None
-        assert "<script" not in doc.string and "file://" not in doc.string
-        assert pdf_path and os.path.exists(pdf_path)
-    finally:
-        for p in (md_path, pdf_path):
-            if p and os.path.exists(p):
-                os.remove(p)
+def test_render_passes_deny_fetcher_and_no_base_url(fake_weasyprint):
+    md, pdf = render_report(_HOSTILE)
+    (doc,) = fake_weasyprint.instances
+    assert doc.url_fetcher is _deny_fetcher
+    assert doc.base_url is None
+    assert "<script" not in doc.string and "file://" not in doc.string
+    assert pdf == b"%PDF-fake" and md
 
 
 @pytest.mark.parametrize(
@@ -124,31 +118,22 @@ def test_render_passes_deny_fetcher_and_no_base_url(fake_weasyprint, tmp_path):
         (None, None),
     ],
 )
-def test_filename_parts_cannot_traverse(fake_weasyprint, sym, rtype):
-    md_path, pdf_path = render_report(sym, rtype, "# hi")
-    try:
-        for p in (md_path, pdf_path):
-            assert os.path.dirname(p) == os.path.dirname(
-                os.path.join(report_files.tempfile.gettempdir(), "x")
-            )
-            assert ".." not in os.path.basename(p)
-    finally:
-        for p in (md_path, pdf_path):
-            if p and os.path.exists(p):
-                os.remove(p)
+def test_filename_parts_cannot_traverse(sym, rtype):
+    name = report_filename(sym, rtype, "pdf")
+    assert "/" not in name and "\\" not in name and ".." not in name and name.endswith(".pdf")
+
+
+def test_nothing_is_written_to_disk(fake_weasyprint, tmp_path, monkeypatch):
+    """OPS-02: downloads are rendered in memory, never as temp files."""
+    monkeypatch.chdir(tmp_path)
+    render_report("# hi")
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_oversized_content_is_capped(fake_weasyprint):
-    md_path, pdf_path = render_report("TCS", "note", "a" * (MAX_REPORT_BYTES * 3))
-    try:
-        with open(md_path, encoding="utf-8") as f:
-            text = f.read()
-        assert len(text.encode("utf-8")) < MAX_REPORT_BYTES + 500
-        assert "truncated" in text
-    finally:
-        for p in (md_path, pdf_path):
-            if p and os.path.exists(p):
-                os.remove(p)
+    md, _pdf = render_report("a" * (MAX_REPORT_BYTES * 3))
+    assert len(md) < MAX_REPORT_BYTES + 500
+    assert b"truncated" in md
 
 
 def _weasyprint_available() -> bool:
@@ -162,6 +147,8 @@ def _weasyprint_available() -> bool:
 @pytest.mark.skipif(not _weasyprint_available(), reason="WeasyPrint native libraries (Pango) not installed")
 def test_real_render_never_fetches_and_pdf_has_no_hosts_content(tmp_path):
     """End-to-end with the real WeasyPrint (runs in CI, which installs Pango)."""
+    import io
+
     import pdfplumber
 
     hosts = tmp_path / "hosts"
@@ -169,15 +156,10 @@ def test_real_render_never_fetches_and_pdf_has_no_hosts_content(tmp_path):
     content = _HOSTILE + f'\n<img src="file://{hosts.as_posix()}">\n'
     # Bypass the sanitiser so the fetcher itself is exercised against live tags.
     with patch.object(report_files, "sanitise_html", side_effect=lambda h: h):
-        md_path, pdf_path = render_report("TCS", "ic", content)
-    try:
-        assert pdf_path, "PDF should still render without the blocked resources"
-        with pdfplumber.open(pdf_path) as pdf:
-            text = "".join(page.extract_text() or "" for page in pdf.pages)
-        assert "SECRET-HOSTS-LINE" not in text
-        assert "document.cookie" not in text
-        assert "24.3" in text
-    finally:
-        for p in (md_path, pdf_path):
-            if p and os.path.exists(p):
-                os.remove(p)
+        _md, pdf = render_report(content)
+    assert pdf, "PDF should still render without the blocked resources"
+    with pdfplumber.open(io.BytesIO(pdf)) as doc:
+        text = "".join(page.extract_text() or "" for page in doc.pages)
+    assert "SECRET-HOSTS-LINE" not in text
+    assert "document.cookie" not in text
+    assert "24.3" in text

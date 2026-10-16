@@ -18,6 +18,14 @@ pytestmark = pytest.mark.integration
 # ── utils/db.py ───────────────────────────────────────────────────────────────
 
 
+def test_downloads_are_per_user(db, two_users):
+    """OPS-02: a stored download is readable only by its owner."""
+    a, b = two_users
+    token = db.download_put(a, "r.csv", "text/csv", b"a,b")
+    assert db.download_get(b, token) is None
+    assert db.download_get(a, token)["filename"] == "r.csv"
+
+
 def test_portfolio_lots_are_per_user(db, two_users):
     """UX-05: B can't edit, remove or replace A's lots."""
     a, b = two_users
@@ -255,6 +263,8 @@ COVERED = {
     "portfolio_update": test_portfolio_lots_are_per_user,
     "portfolio_remove_lot": test_portfolio_lots_are_per_user,
     "portfolio_import": test_portfolio_lots_are_per_user,
+    "download_put": test_downloads_are_per_user,
+    "download_get": test_downloads_are_per_user,
     "watchlist_add": test_watchlist,
     "watchlist_remove": test_watchlist,
     "watchlist_all": test_watchlist,

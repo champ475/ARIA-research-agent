@@ -5,6 +5,7 @@ Gradio 6 compatible. show_api=False fixes the proxy/launch error.
 
 import logging
 import os
+import re
 import threading
 import time
 
@@ -303,8 +304,8 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         # every other specialist yields exactly once with its finished
         # result, so this loop renders identically for both — it just runs
         # once for a non-streaming tab.
-        # pdf/md/csv paths are read after the loop (final yield), hence B007.
-        for text, chart, pdf_path, md_path, csv_path, tab_used in orch.process_stream(clean):  # noqa: B007
+        # Download links are read after the loop (final yield), hence B007.
+        for text, chart, pdf_url, md_url, csv_url, tab_used in orch.process_stream(clean):  # noqa: B007
             if chart is not None:
                 chart_fig = chart
             streaming_hist = history + [
@@ -324,12 +325,15 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
 
         new_sugg = orch.generate_suggestions(text, clean)
         text = f"*🔀 Routed to: {_tab_label(tab_used)}*\n\n" + text
-        if pdf_path:
-            pdf_update = gr.update(value=pdf_path, label=f"⬇ {os.path.basename(pdf_path)}", visible=True)
-        if md_path:
-            md_update = gr.update(value=md_path, label=f"⬇ {os.path.basename(md_path)}", visible=True)
-        if csv_path:
-            csv_update = gr.update(value=csv_path, label="⬇ Export Results CSV", visible=True)
+        # OPS-02: links to /download/... routes, which any replica can serve.
+        if pdf_url:
+            pdf_update = gr.update(
+                value=_download_link(pdf_url, "⬇ Download PDF", primary=True), visible=True
+            )
+        if md_url:
+            md_update = gr.update(value=_download_link(md_url, "⬇ Download Markdown"), visible=True)
+        if csv_url:
+            csv_update = gr.update(value=_download_link(csv_url, "⬇ Export Results CSV"), visible=True)
     except Exception as e:
         # SEC-08: the user gets a friendly message and a short error ID; the
         # exception text (which can carry SQL, paths, provider responses) goes
@@ -704,20 +708,26 @@ footer { display: none !important; }
 }
 .aria-dot:nth-child(2) { animation-delay: 0.2s; }
 .aria-dot:nth-child(3) { animation-delay: 0.4s; }
-/* Download buttons */
-.dl-btn {
+/* Download links (OPS-02: plain anchors to /download/...) */
+.dl-link {
     flex: 0 0 auto !important;
     width: auto !important;
     min-width: 0 !important;
 }
-.dl-btn button {
-    border-radius: 20px !important;
-    font-size: 12px !important;
-    padding: 5px 18px !important;
-    font-weight: 500 !important;
-    letter-spacing: 0.2px !important;
-    white-space: nowrap !important;
+a.dl-btn {
+    display: inline-block;
+    border-radius: 20px;
+    border: 1px solid #30363d;
+    color: #c9d1d9 !important;
+    text-decoration: none !important;
+    font-size: 12px;
+    padding: 5px 18px;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
 }
+a.dl-btn.dl-primary { background: #1f6feb; border-color: #1f6feb; color: #fff !important; }
+a.dl-btn:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
 .dl-row {
     gap: 8px !important;
     padding: 6px 0 2px 0 !important;
@@ -925,32 +935,13 @@ def _build_chat_tab(user_state: gr.State):
                     scale=1,
                 )
 
-            # Download buttons — report PDF/MD and screener CSV, hidden until produced
+            # Download links — report PDF/MD and screener CSV, hidden until
+            # produced. OPS-02: plain links to /download/... (any replica
+            # serves them), not Gradio file components tied to one replica.
             with gr.Row(elem_classes=["dl-row"]):
-                pdf_btn = gr.DownloadButton(
-                    "⬇ Download PDF",
-                    value=None,
-                    visible=False,
-                    variant="primary",
-                    size="sm",
-                    elem_classes=["dl-btn"],
-                )
-                md_btn = gr.DownloadButton(
-                    "⬇ Download Markdown",
-                    value=None,
-                    visible=False,
-                    variant="secondary",
-                    size="sm",
-                    elem_classes=["dl-btn"],
-                )
-                csv_btn = gr.DownloadButton(
-                    "⬇ Export Results CSV",
-                    value=None,
-                    visible=False,
-                    variant="secondary",
-                    size="sm",
-                    elem_classes=["dl-btn"],
-                )
+                pdf_btn = gr.HTML("", visible=False, elem_classes=["dl-link"])
+                md_btn = gr.HTML("", visible=False, elem_classes=["dl-link"])
+                csv_btn = gr.HTML("", visible=False, elem_classes=["dl-link"])
 
             gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
             with gr.Row():
@@ -1794,6 +1785,17 @@ def _inbox_md(rows: list[dict]) -> str:
         dot = "🔵 " if r.get("read_at") is None else ""
         lines.append(f"- {dot}**{when}** — {_html.escape(str(r['message']))}")
     return "\n".join(lines)
+
+
+_DOWNLOAD_URL_RE = re.compile(r"^/download/(?:report/\d+\.(?:pdf|md)|file/[A-Za-z0-9_-]{16,64})$")
+
+
+def _download_link(url: str, label: str, primary: bool = False) -> str:
+    """An anchor to one of our own download routes (anything else renders nothing)."""
+    if not _DOWNLOAD_URL_RE.match(url or ""):
+        return ""
+    cls = "dl-btn dl-primary" if primary else "dl-btn"
+    return f'<a class="{cls}" href="{html_text(url)}" download>{html_text(label)}</a>'
 
 
 def _request_user(request: gr.Request | None) -> int | None:

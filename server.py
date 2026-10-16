@@ -3,6 +3,7 @@ server.py — the ASGI app: FastAPI routes around the mounted Gradio UI (SEC-04)
 
     /login, /signup, /terms, /auth/logout   web/auth_routes.py (server-rendered)
     /healthz, /readyz, /health/data          web/ops_routes.py (OPS-04, DATA-02)
+    /download/report/<id>.pdf, /download/file/<token>  web/download_routes.py (OPS-02)
     /                                        Gradio (app.build_ui), cookie-authenticated
 
 Gradio is mounted with `auth_dependency`, so every Gradio route (page config,
@@ -26,7 +27,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 import config
 from utils import lifecycle
-from web import account_routes, auth_routes, ops_routes
+from web import account_routes, auth_routes, download_routes, ops_routes
 from web.session import COOKIE_NAME, current_session, gradio_auth_dependency
 
 log = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ def create_app(demo: gr.Blocks | None = None) -> FastAPI:
     api.include_router(ops_routes.router)
     api.include_router(auth_routes.router)
     api.include_router(account_routes.router)
+    api.include_router(download_routes.router)
     api.add_middleware(LoginRedirectMiddleware)
     demo = demo if demo is not None else build_ui()
     kwargs: dict[str, Any] = {
