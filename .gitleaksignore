@@ -25,3 +25,10 @@ ad9712cdb989f4bbd3f6ea1bd42c6b3438c9eb74:evals/fixtures/llm.jsonl:generic-api-ke
 ad9712cdb989f4bbd3f6ea1bd42c6b3438c9eb74:evals/fixtures/llm.jsonl:generic-api-key:22
 ad9712cdb989f4bbd3f6ea1bd42c6b3438c9eb74:evals/fixtures/llm.jsonl:generic-api-key:23
 ad9712cdb989f4bbd3f6ea1bd42c6b3438c9eb74:evals/fixtures/llm.jsonl:generic-api-key:24
+# Verified false positives (generic-api-key), Phase 2: test-only dummy values.
+# The e2e stack's SECRET_KEY ("e2e-secret-key-...") only encrypts BYO keys in a
+# throwaway test database; the brute-force test's password belongs to a
+# throwaway test account. Neither is a real credential.
+847d18d2786a991c0e06162467a5ef0671c5fef2:compose.test.yml:generic-api-key:34
+847d18d2786a991c0e06162467a5ef0671c5fef2:tests/e2e/conftest.py:generic-api-key:89
+afff370fc8db6821231b8b893a0502cfa0730720:tests/integration/test_brute_force.py:generic-api-key:48

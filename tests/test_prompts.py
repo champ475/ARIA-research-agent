@@ -79,10 +79,11 @@ def test_no_inline_prompt_constants_outside_the_registry():
     assert hits == [], "move these into prompts/:\n" + "\n".join(hits)
 
 
-def test_turn_records_the_prompt_id():
+def test_turn_records_the_prompt_id(monkeypatch):
     from agents.llm_client import LLMClient
     from utils import tracing
 
+    monkeypatch.setattr("config.ARIA_FAKE_LLM", True)  # no cloud keys needed (CI has none)
     client = LLMClient(prompts.get("planner.system"))
     provider = type("P", (), {"name": "stub", "last_usage": (3, 1)})()
     with tracing.turn("t", 1, None, "q") as rec:

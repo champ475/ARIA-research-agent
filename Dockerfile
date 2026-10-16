@@ -16,7 +16,10 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements.lock .
-RUN pip install --require-hashes --no-deps -r requirements.lock
+# setuptools/wheel are build tools the app never imports, and the vendored
+# copies inside them carry HIGH CVEs (Trivy): keep them out of the image (here
+# and in the base image's own site-packages, below).
+RUN pip install --require-hashes --no-deps -r requirements.lock     && pip uninstall -y setuptools wheel
 
 # ── runtime ───────────────────────────────────────────────────────────────────
 FROM ${PYTHON_IMAGE} AS runtime
@@ -26,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         shared-mime-info libpq5 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 app \
-    && useradd --system --uid 10001 --gid app --home-dir /app --shell /usr/sbin/nologin app
+    && useradd --system --uid 10001 --gid app --home-dir /app --shell /usr/sbin/nologin app     && python -m pip uninstall -y setuptools wheel
 
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
