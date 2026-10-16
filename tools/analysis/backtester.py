@@ -2,7 +2,15 @@
 tools/analysis/backtester.py
 Simple backtesting engine: MA crossover and RSI-based strategies.
 No external libraries needed.
+
+UX-04: every trade pays `cost_pct` per side (brokerage, STT, exchange
+charges and slippage, BACKTEST_COST_PCT by default), the result states its
+assumptions, and `parse_params` reads explicit parameters from the question
+("20/50 crossover", "RSI 25/75", "over 3 years").
 """
+
+import re
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -32,11 +40,36 @@ def _metrics(equity: pd.Series) -> dict:
     }
 
 
+def parse_params(query: str) -> dict[str, Any]:
+    """Strategy and parameters named in the question, with defaults:
+    MA crossover 20/50 unless RSI is mentioned (RSI 30/70); 5 years of bars."""
+    q = (query or "").lower()
+    params: dict[str, Any] = {"strategy": "rsi" if re.search(r"\brsi\b", q) else "ma_crossover", "years": 5}
+    pair = re.search(r"\b(\d{1,3})\s*(?:/|and|-|vs\.?|x)\s*(\d{1,3})\b", q)
+    if params["strategy"] == "ma_crossover":
+        fast, slow = (int(pair.group(1)), int(pair.group(2))) if pair else (20, 50)
+        fast, slow = min(fast, slow), max(fast, slow)
+        if not (2 <= fast < slow <= 250):
+            fast, slow = 20, 50
+        params.update(fast=fast, slow=slow)
+    else:
+        buy, sell = (int(pair.group(1)), int(pair.group(2))) if pair else (30, 70)
+        buy, sell = min(buy, sell), max(buy, sell)
+        if not (5 <= buy < sell <= 95):
+            buy, sell = 30, 70
+        params.update(rsi_buy=buy, rsi_sell=sell)
+    years = re.search(r"\b(\d{1,2})\s*(?:y|yr|yrs|year|years)\b", q)
+    if years and 1 <= int(years.group(1)) <= 10:
+        params["years"] = int(years.group(1))
+    return params
+
+
 def ma_crossover_backtest(
     df: pd.DataFrame,
     fast: int = 20,
     slow: int = 50,
     initial_capital: float = 100_000,
+    cost_pct: float = 0.0,
 ) -> dict:
     """
     Simple MA crossover strategy: buy when fast MA crosses above slow MA, sell when below.
@@ -65,7 +98,7 @@ def ma_crossover_backtest(
 
         # Buy signal
         if fast_prev < slow_prev and fast_curr >= slow_curr and position == 0:
-            shares = cash / price
+            shares = cash * (1 - cost_pct / 100) / price
             holdings = shares
             cash = 0
             position = 1
@@ -74,7 +107,7 @@ def ma_crossover_backtest(
 
         # Sell signal
         elif fast_prev > slow_prev and fast_curr <= slow_curr and position == 1:
-            cash = holdings * price
+            cash = holdings * price * (1 - cost_pct / 100)
             pnl = (price - entry_price) / entry_price * 100
             holdings = 0
             position = 0
@@ -112,6 +145,7 @@ def rsi_backtest(
     rsi_buy: int = 30,
     rsi_sell: int = 70,
     initial_capital: float = 100_000,
+    cost_pct: float = 0.0,
 ) -> dict:
     """
     RSI mean-reversion strategy: buy when RSI < rsi_buy, sell when RSI > rsi_sell.
@@ -137,7 +171,7 @@ def rsi_backtest(
         rsi = float(df_ta["RSI"].iloc[i])
 
         if rsi < rsi_buy and position == 0:
-            shares = cash / price
+            shares = cash * (1 - cost_pct / 100) / price
             holdings = shares
             cash = 0
             position = 1
@@ -152,7 +186,7 @@ def rsi_backtest(
             )
 
         elif rsi > rsi_sell and position == 1:
-            cash = holdings * price
+            cash = holdings * price * (1 - cost_pct / 100)
             pnl = (price - entry_price) / entry_price * 100
             holdings = 0
             position = 0

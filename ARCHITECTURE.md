@@ -16,6 +16,27 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Analysis tools offered on request; DCF dropped (UX-04)
+**Problem.** Backtesting, peer comparison, risk scoring and sentiment existed in `tools/analysis/`, but no catalogue tool reached them. The README promised them, so users got made-up answers. Adding catalogue tools changes the Planner's prompt, and with it every recorded eval fixture. No working LLM key was available to re-record (UX-04).
+**Alternatives considered.**
+- Add the four tools to the catalogue for every turn. That invalidates all Planner fixtures, and the model might still skip "backtest".
+- Remove the modules and the README claims. That loses useful, cheap features.
+- A separate intent or route per analysis. That is too heavy, because these are equity sub-questions.
+
+**Final decision.**
+- `graph/analysis_tools.py` holds four tools: `peer_comparison` (same-industry peers closest in market cap from the snapshot, else the curated sector quoted live), `risk_assessment`, `news_sentiment`, and `backtest` (5 years of daily bars, parameters parsed from the question, `BACKTEST_COST_PCT`=0.15% per side).
+- Each payload carries deterministic `claims`, which ConclusionBuilder turns into conclusions. The evidence renderer shows the peer table, method notes and the backtest assumptions.
+- `triggered_tools(query, intent)` uses explicit phrase patterns, on equity and report turns only. A triggered tool is planned by the Planner itself, even for "simple" questions. Untriggered analysis tools are hidden from the model's catalogue, so every other Planner prompt stays byte-identical and the recorded fixtures stay valid.
+- The backtest's assumptions and a past-performance caveat are appended by code.
+- The DCF was dropped until its inputs are validated, together with dead helpers (`get_sector_peers` with its Technology fallback, `sector_heatmap`, `backtest_chart`).
+
+**Trade-offs.**
+- Phrase triggers miss unusual wordings, such as "who else makes cars like Maruti".
+- The macro factor in the risk score is a neutral baseline. Leverage and liquidity are not scored for lenders.
+- The three new golden cases are unrecorded, so only their guard and entity checks run until someone re-records with working keys. The PRD's ≥4/5 judge score is pending.
+
+**Future improvements.** Re-record the eval fixtures and show the analysis tools to the Planner on all equity turns. Add an equity-curve chart to the backtest. Use a real macro feed for the risk factor.
+
 ## 2026-10-16 — Full-universe screener over a nightly fundamentals snapshot (DATA-05)
 **Problem.** The screener checked only the first 30 of about 100 hand-picked stocks, fetching each one live and in sequence. "PE below 20" ignored most of the market and took more than 30 s (DATA-05).
 **Alternatives considered.**

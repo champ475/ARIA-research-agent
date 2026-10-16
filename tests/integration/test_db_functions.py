@@ -324,6 +324,7 @@ COVERED = {
     "fundamentals_screen": test_fundamentals_snapshot.test_three_filters_match_a_manual_check_and_run_fast,
     "fundamentals_status": test_fundamentals_snapshot.test_refresh_writes_and_resumes,
     "fundamentals_fresh_symbols": test_fundamentals_snapshot.test_refresh_writes_and_resumes,
+    "fundamentals_peers": test_fundamentals_snapshot.test_peers_come_from_the_same_industry_closest_in_size,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.

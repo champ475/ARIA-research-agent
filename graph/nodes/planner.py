@@ -30,6 +30,7 @@ from collections.abc import Callable
 import prompts
 from agents.llm_client import LLMClient
 from config import TOKENS_AGENT
+from graph.analysis_tools import ANALYSIS_TOOLS, triggered_tools
 from graph.entity_resolution import blocking_resolutions
 from graph.journal import log_decision
 from graph.schemas import ToolSelection
@@ -59,7 +60,7 @@ def _parse_tool_selection(raw: str, hidden: frozenset[str] = frozenset()) -> lis
         tools = parsed.get("tools", [])
         dropped = [t for t in tools if t in hidden]
         if dropped:
-            log.warning("Planner: dropped write tool(s) not allowed for this intent: %s", dropped)
+            log.warning("Planner: dropped tool(s) not offered this turn: %s", dropped)
         return [t for t in tools if t in _ALL_TOOL_NAMES and t not in hidden]
     except (ParseFailure, AttributeError, TypeError):
         log.warning("Planner: failed to parse tool selection: %r", raw)
@@ -127,6 +128,25 @@ def build_planner_node(
                 ),
             }
 
+        # UX-04: analysis tools the question names ("compare with peers",
+        # "backtest", "risk profile", "sentiment") are planned outright; the
+        # rest stay out of the model's catalogue.
+        triggered = (
+            triggered_tools(state.get("query"), state.get("intent"), state.get("secondary_intents"))
+            if entities
+            else []
+        )
+        if complexity == "simple" and triggered:
+            tool_names = _with_transitive_deps(triggered)
+            tasks = _build_tasks(tool_names, entities)
+            return {
+                "plan": {"objective": objective, "tasks": tasks, "complexity": complexity},
+                "tasks": tasks,
+                **log_decision(
+                    "Planner", f"planned requested analysis {triggered}", "simple question, named tool"
+                ),
+            }
+
         if complexity == "simple":
             plan: ResearchPlan = {"objective": objective, "tasks": [], "complexity": complexity}
             return {
@@ -142,6 +162,7 @@ def build_planner_node(
         # SEC-03: write tools this turn's intent doesn't own are neither shown
         # to the model nor accepted from it.
         hidden = WRITE_TOOLS - allowed_write_tools(state.get("intent"), state.get("secondary_intents"))
+        hidden = frozenset(hidden | (ANALYSIS_TOOLS - set(triggered)))
         raw = json_reply(
             client,
             ToolSelection,
@@ -151,6 +172,7 @@ def build_planner_node(
             temperature=0.0,
         )
         selected = _parse_tool_selection(raw, hidden)
+        selected += [t for t in triggered if t not in selected]
         tool_names = _with_transitive_deps(selected)
         tasks = _build_tasks(tool_names, entities)
         plan: ResearchPlan = {"objective": objective, "tasks": tasks, "complexity": complexity}

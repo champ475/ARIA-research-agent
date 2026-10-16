@@ -46,7 +46,15 @@ _NUMERIC_EVIDENCE_TYPES = {"fundamental_ratio", "quote_info", "technical_indicat
 # per entity) doesn't apply here: screener's entity is the synthetic
 # NO_ENTITY_SENTINEL, and the tool itself returns every matching row at once.
 _TEXT_EVIDENCE_TYPES = {"pdf_extract", "mf_comparison", "screener_table"}
-_NOT_AVAILABLE_MARKERS = ("no ",)  # tools/data/pdf_scraper.py's "not found" convention
+_NOT_AVAILABLE_MARKERS = ("no ",)
+
+# UX-04 analysis tools (graph/analysis_tools.py): payload["claims"].
+_ANALYSIS_EVIDENCE_TYPES = {
+    "peer_comparison",
+    "risk_profile",
+    "news_sentiment",
+    "backtest_result",
+}  # tools/data/pdf_scraper.py's "not found" convention
 
 # DataFrame payloads worth a match-count Conclusion, same idea as
 # news_headline's count-based Conclusion — covers mf (NAV search/category
@@ -104,6 +112,19 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
                     "confidence": ev["confidence"],
                     "evidence_ids": [ev["id"]],
                     "citation_key": citation_key,
+                }
+            )
+
+    elif ev["evidence_type"] in _ANALYSIS_EVIDENCE_TYPES and isinstance(ev["payload"], dict):
+        # UX-04: the analysis tools write their own deterministic claims.
+        for c in ev["payload"].get("claims") or []:
+            conclusions.append(
+                {
+                    "claim": c["claim"],
+                    "value": c.get("value"),
+                    "confidence": ev["confidence"],
+                    "evidence_ids": [ev["id"]],
+                    "citation_key": f"{ev['entity']}.{c.get('key') or ev['tool']}",
                 }
             )
 

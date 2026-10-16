@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import prompts
+from graph import analysis_tools
 from graph.alert_spec import (  # noqa: E402  (after the db imports it depends on)
     ALERT_TYPES,
     AlertRefusal,
@@ -505,6 +506,35 @@ def _fetch_block_deals(entity: str, context: dict[str, Any]) -> Any:
     return get_block_deals(symbol)
 
 
+# UX-04 analysis tools (graph/analysis_tools.py). Offered to the Planner only
+# when the question asks for them (analysis_tools.triggered_tools).
+def _peer_comparison(entity: str, context: dict[str, Any]) -> dict:
+    return analysis_tools.peer_comparison(entity)
+
+
+def _risk_assessment(entity: str, context: dict[str, Any]) -> dict:
+    return analysis_tools.risk_profile(
+        entity,
+        context.get("compute_fundamentals") or {},
+        context.get("compute_technicals") or {},
+        context.get("fetch_news") or [],
+    )
+
+
+def _news_sentiment(entity: str, context: dict[str, Any]) -> dict:
+    return analysis_tools.news_sentiment(entity, context.get("fetch_news") or [])
+
+
+def _backtest(entity: str, context: dict[str, Any]) -> dict:
+    return analysis_tools.backtest(entity, context.get("_query") or "")
+
+
+def _key_on_backtest_params(entity: str, context: dict[str, Any]) -> dict[str, Any]:
+    from tools.analysis.backtester import parse_params
+
+    return parse_params(context.get("_query") or "")
+
+
 _CATALOGUE: dict[str, ToolSpec] = {}
 
 
@@ -775,6 +805,50 @@ def get_tool(name: str) -> ToolSpec:
 
 def list_tools() -> list[ToolSpec]:
     return list(_CATALOGUE.values())
+
+
+_register(
+    ToolSpec(
+        name="peer_comparison",
+        evidence_type="peer_comparison",
+        depends_on=(),
+        cost="medium",
+        fn=_peer_comparison,
+        description="Compare a company's P/E, P/B, ROE, ROCE and D/E with same-industry peers of similar size.",
+    )
+)
+_register(
+    ToolSpec(
+        name="risk_assessment",
+        evidence_type="risk_profile",
+        depends_on=("compute_fundamentals", "compute_technicals", "fetch_news"),
+        cost="low",
+        fn=_risk_assessment,
+        description="Score a stock's risk 0-100 across valuation, leverage, liquidity, profitability, "
+        "volatility and news sentiment.",
+    )
+)
+_register(
+    ToolSpec(
+        name="news_sentiment",
+        evidence_type="news_sentiment",
+        depends_on=("fetch_news",),
+        cost="low",
+        fn=_news_sentiment,
+        description="Score the tone of a company's recent news headlines (-1 bearish to +1 bullish).",
+    )
+)
+_register(
+    ToolSpec(
+        name="backtest",
+        evidence_type="backtest_result",
+        depends_on=(),
+        cost="medium",
+        fn=_backtest,
+        description="Backtest an MA-crossover or RSI rule on a stock's past daily prices, with trading costs.",
+        cache_key=_key_on_backtest_params,
+    )
+)
 
 
 def catalogue_summary(exclude: frozenset[str] | set[str] = frozenset()) -> str:

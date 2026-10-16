@@ -6,7 +6,7 @@ You ask a question in plain language; a LangGraph research engine (see [docs/RFC
 
 ## Features
 
-- **📈 Equity research** — fundamentals, technicals (RSI/MACD/Bollinger/moving averages), news, charts, peer comparison, backtesting, streamed live token-by-token.
+- **📈 Equity research** — fundamentals (lender-aware: no ROCE or D/E for banks/NBFCs), technicals (RSI/MACD/Bollinger/moving averages), news and headline sentiment, charts, same-industry peer comparison, a 0–100 risk profile, and MA-crossover/RSI backtests with trading costs — streamed live token-by-token.
 - **📄 IC-style reports** — initiating coverage, result updates, sector thematics, quick notes — downloadable as PDF/Markdown.
 - **💰 Mutual funds** — NAV lookup, category comparison (large/mid/small cap, ELSS, debt, hybrid, index), SIP-vs-lumpsum guidance.
 - **🔍 Screener** — filter the market by PE/ROE/ROCE/D-E/sector, top gainers/losers, bulk/block deals, save screens for reuse.

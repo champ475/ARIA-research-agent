@@ -315,42 +315,6 @@ def candlestick(
     return fig
 
 
-def sector_heatmap(peers: list[dict], sector: str):
-    if not peers:
-        return None
-    syms = [p["symbol"] for p in peers]
-    changes = [p["change"] for p in peers]
-    prices = [f"₹{p['price']}" for p in peers]
-    labels = [f"{s}<br>{c:+.2f}%<br>{pr}" for s, c, pr in zip(syms, changes, prices, strict=False)]
-    max_abs = max(abs(c) for c in changes) or 1
-    norm = [c / max_abs for c in changes]
-    colors = []
-    for n in norm:
-        if n >= 0:
-            r = int(38 + (166 - 38) * (1 - n))
-            g = int(166 + (200 - 166) * n)
-            b = int(154 - 154 * n)
-            colors.append(f"rgb({r},{g},{b})")
-        else:
-            r = int(239 + (200 - 239) * (-n))
-            g = int(83 * (1 + n))
-            b = int(80 * (1 + n))
-            colors.append(f"rgb({r},{g},{b})")
-
-    fig = go.Figure(
-        go.Treemap(
-            labels=labels,
-            parents=[""] * len(peers),
-            values=[abs(c) + 0.5 for c in changes],
-            marker=dict(colors=colors, line=dict(width=2, color=BG)),
-            textfont=dict(size=12, color="white"),
-            hovertemplate="%{label}<extra></extra>",
-        )
-    )
-    fig.update_layout(**_layout(f"{sector} — Peer Heatmap (1D)", height=300))
-    return fig
-
-
 def portfolio_chart(holdings: list[dict]):
     if not holdings:
         return None
@@ -391,28 +355,4 @@ def portfolio_chart(holdings: list[dict]):
     fig.update_layout(**_layout("Portfolio Overview", height=340))
     fig.update_xaxes(showgrid=False, row=1, col=2)
     fig.update_yaxes(showgrid=True, gridcolor=GRID, row=1, col=2)
-    return fig
-
-
-def backtest_chart(equity_data: list[float], dates: list, strategy: str, buy_hold: float):
-    if not equity_data:
-        return None
-    norm_eq = [v / equity_data[0] * 100 for v in equity_data]
-    bh_line = [100 + (buy_hold / len(equity_data)) * i for i in range(len(equity_data))]
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(x=list(range(len(norm_eq))), y=norm_eq, name=strategy, line=dict(color=BLUE, width=2))
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=list(range(len(bh_line))),
-            y=bh_line,
-            name="Buy & Hold",
-            line=dict(color=AMBER, width=1.5, dash="dash"),
-        )
-    )
-    fig.update_layout(**_layout(f"Backtest — {strategy}", height=350))
-    fig.update_xaxes(showgrid=True, gridcolor=GRID)
-    fig.update_yaxes(showgrid=True, gridcolor=GRID, ticksuffix="%")
     return fig

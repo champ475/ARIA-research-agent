@@ -1483,3 +1483,29 @@ def fundamentals_fresh_symbols(since) -> set[str]:
     """Symbols refreshed at or after `since` — a resumed run skips them."""
     rows = _query("SELECT symbol FROM fundamentals_snapshot WHERE as_of >= %s", (since,))
     return {r["symbol"] for r in rows or []}
+
+
+def fundamentals_peers(symbol: str, limit: int = 5) -> dict:
+    """{self, peers, basis, lender}: up to `limit` companies in the same
+    industry (else sector) closest in market cap, from the snapshot (UX-04)."""
+    cols = ", ".join(FUNDAMENTALS_COLUMNS)
+    me = _query(f"SELECT {cols} FROM fundamentals_snapshot WHERE symbol=%s", (symbol,), fetch="one")  # noqa: S608
+    if not me:
+        return {"self": None, "peers": [], "basis": None, "lender": False}
+    for basis in ("industry", "sector"):
+        if not me.get(basis):
+            continue
+        peers = _query(
+            f"SELECT {cols} FROM fundamentals_snapshot "  # noqa: S608 (fixed columns; basis is one of two names)
+            f"WHERE {basis}=%s AND symbol<>%s AND mcap_cr IS NOT NULL "
+            "ORDER BY abs(ln(greatest(mcap_cr, 1)) - ln(greatest(coalesce(%s, mcap_cr), 1))) LIMIT %s",
+            (me[basis], symbol, me.get("mcap_cr"), limit),
+        )
+        if len(peers or []) >= 2 or basis == "sector":
+            return {
+                "self": me,
+                "peers": peers or [],
+                "basis": f"{basis}: {me[basis]}",
+                "lender": me["lender"],
+            }
+    return {"self": me, "peers": [], "basis": None, "lender": me["lender"]}

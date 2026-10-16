@@ -151,3 +151,33 @@ def test_refresh_writes_and_resumes(db):
         rf.main([])
     assert again.call_args[0][0] == []  # both fresh: nothing left to fetch
     assert db.fundamentals_fresh_symbols(datetime.now(UTC) - timedelta(hours=1)) == {"TCS", "SBIN"}
+
+
+def test_peers_come_from_the_same_industry_closest_in_size(db):
+    def row(sym, industry, mcap, sector="Technology"):
+        return {
+            "symbol": sym,
+            "name": sym,
+            "sector": sector,
+            "industry": industry,
+            "price": 1.0,
+            "mcap_cr": mcap,
+        }
+
+    db.fundamentals_upsert(
+        [
+            row("TCS", "IT Services", 1_000_000),
+            row("INFY", "IT Services", 700_000),
+            row("WIPRO", "IT Services", 300_000),
+            row("TINYIT", "IT Services", 500),
+            row("NAUKRI", "Internet", 900_000),
+            row("LONER", "Niche Software", 1_000),
+        ]
+    )
+    out = db.fundamentals_peers("TCS", limit=2)
+    assert out["basis"] == "industry: IT Services"
+    assert [p["symbol"] for p in out["peers"]] == ["INFY", "WIPRO"]  # nearest in size, not TINYIT
+    # One same-industry company isn't a peer group: widen to the sector.
+    lone = db.fundamentals_peers("LONER", limit=5)
+    assert lone["basis"] == "sector: Technology" and len(lone["peers"]) == 5
+    assert db.fundamentals_peers("NOPE") == {"self": None, "peers": [], "basis": None, "lender": False}

@@ -1,4 +1,4 @@
-"""Tests for tools/analysis/fundamental.py — ratio recomputation and DCF."""
+"""Tests for tools/analysis/fundamental.py — ratio recomputation."""
 
 import pandas as pd
 import pytest
@@ -103,23 +103,6 @@ class TestRatio:
         assert fundamental._ratio(50, 0, "x") is None
 
 
-class TestDCF:
-    def test_none_when_fcf_missing(self):
-        assert fundamental._dcf({"fcf": None, "mktcap": 1000, "price": 100}) is None
-
-    def test_none_when_fcf_negative(self):
-        assert fundamental._dcf({"fcf": -10, "mktcap": 1000, "price": 100}) is None
-
-    def test_produces_three_scenarios_bear_lt_base_lt_bull(self):
-        out = fundamental._dcf({"fcf": 60.0, "mktcap": 30000.0, "price": 150.0})
-        assert out is not None
-        assert out["Bear"] < out["Base"] < out["Bull"]
-
-    def test_shares_derived_from_mktcap_over_price(self):
-        out = fundamental._dcf({"fcf": 60.0, "mktcap": 30000.0, "price": 150.0})
-        assert out["shares"] == pytest.approx(200.0)
-
-
 class TestComputeEndToEnd:
     def test_full_compute_returns_expected_ratios(self):
         financials = {"balance_annual": _bs(), "income_annual": _inc(), "cashflow_annual": _cf()}
@@ -130,7 +113,7 @@ class TestComputeEndToEnd:
         assert d["current_ratio"] == pytest.approx(2.0)
         assert d["pe"] == pytest.approx(15.0)
         assert d["pb"] == pytest.approx(7.5)
-        assert d["dcf"] is not None
+        assert "dcf" not in d  # UX-04: dropped until its inputs are validated
 
     def test_missing_financials_does_not_crash(self):
         d = fundamental.compute(_info(), {})

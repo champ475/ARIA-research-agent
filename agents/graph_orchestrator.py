@@ -76,6 +76,7 @@ import prompts
 from agents.conversation_memory import ConversationMemory, strip_badge
 from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT, TRIAL_DAILY_TOKENS
+from graph.analysis_tools import analysis_notes
 from graph.checkpointer import get_postgres_checkpointer
 from graph.confirmation import REASK_TEXT as CONFIRM_REPROMPT
 from graph.confirmation import classify_reply
@@ -598,7 +599,7 @@ class GraphOrchestrator:
             # DATA-06: market figures say when they're from (and, on a closed
             # day, that they're the last session's).
             header = closed_today_header(result)
-            as_of_note = freshness_note(result)
+            as_of_note = analysis_notes(result) + freshness_note(result)
             rec.data_gaps = sum(
                 1 for t in result.get("tasks") or [] if t.get("status") in ("failed", "skipped")
             )

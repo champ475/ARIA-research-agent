@@ -101,6 +101,10 @@ TOOL_LABELS = {
     "fetch_top_movers": "top movers (NSE)",
     "fetch_bulk_deals": "bulk deals (NSE)",
     "fetch_block_deals": "block deals (NSE)",
+    "peer_comparison": "peer comparison",
+    "risk_assessment": "risk profile",
+    "news_sentiment": "news sentiment",
+    "backtest": "backtest",
 }
 
 

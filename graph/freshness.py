@@ -27,6 +27,9 @@ MARKET_EVIDENCE = frozenset(
         "screener_table",
         "bulk_deals",
         "block_deals",
+        "peer_comparison",
+        "risk_profile",
+        "backtest_result",
     }
 )
 # "Today" figures: on a closed day these are the last session's.

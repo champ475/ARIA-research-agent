@@ -214,9 +214,6 @@ def compute(info: dict, financials: dict) -> dict:
             else "NIM: net interest income not in the source data"
         )
 
-    # ── DCF (multi-scenario) ──────────────────────────────────────────────────
-    d["dcf"] = _dcf(d)
-
     # ── Revenue/NI trend ──────────────────────────────────────────────────────
     d["margins_trend"] = _margins_trend(financials)
 
@@ -364,68 +361,6 @@ def _ratio(num, denom, formula: str) -> float | None:
     return round(n / d, 4)
 
 
-# ── DCF (multi-scenario, transparent assumptions) ─────────────────────────────
-
-
-def _dcf(d: dict) -> dict | None:
-    fcf = safe_float(d.get("fcf"))
-    mktcap = safe_float(d.get("mktcap"))
-    price = safe_float(d.get("price"))
-
-    # Need shares outstanding: derive from mktcap / price
-    if not fcf or fcf <= 0:
-        return None
-    if not mktcap or not price or price == 0:
-        return None
-    shares = mktcap / price
-
-    scenarios = {
-        "Bear": {"growth": 0.06, "wacc": 0.13, "terminal": 0.03},
-        "Base": {"growth": 0.10, "wacc": 0.12, "terminal": 0.04},
-        "Bull": {"growth": 0.15, "wacc": 0.11, "terminal": 0.05},
-    }
-    results = {}
-    steps = {}
-    for label, s in scenarios.items():
-        pv = 0.0
-        cf = fcf
-        yr_detail = []
-        for yr in range(1, 6):
-            cf *= 1 + s["growth"]
-            pv += cf / ((1 + s["wacc"]) ** yr)
-            yr_detail.append(
-                f"  Y{yr}: FCF=₹{cf / 1e7:.1f}Cr PV=₹{(cf / ((1 + s['wacc']) ** yr)) / 1e7:.1f}Cr"
-            )
-        tv = (cf * (1 + s["terminal"])) / (s["wacc"] - s["terminal"])
-        tv_pv = tv / ((1 + s["wacc"]) ** 5)
-        pv += tv_pv
-        iv = round(pv / shares, 2)
-        results[label] = iv
-        steps[label] = {
-            "detail": "\n".join(yr_detail),
-            "tv": round(tv / 1e7, 1),
-            "tv_pv": round(tv_pv / 1e7, 1),
-            "iv": iv,
-        }
-
-    return {
-        "Bear": results["Bear"],
-        "Base": results["Base"],
-        "Bull": results["Bull"],
-        "price": price,
-        "upside_base": round(((results["Base"] - price) / price) * 100, 1) if price else None,
-        "fcf_used": fcf,
-        "shares": shares,
-        "steps": steps,
-        "note": (
-            f"DCF Assumptions: FCF base=₹{fmt_num(fcf)}\n"
-            f"Bear: 6% growth, 13% WACC, 3% terminal\n"
-            f"Base: 10% growth, 12% WACC, 4% terminal\n"
-            f"Bull: 15% growth, 11% WACC, 5% terminal"
-        ),
-    }
-
-
 def _margins_trend(financials: dict) -> dict:
     try:
         inc = financials.get("income_annual")
@@ -458,7 +393,6 @@ def to_text(d: dict) -> str:
     def v(key):
         return safe_val(d.get(key)) if d.get(key) is not None else "N/A"
 
-    dcf = d.get("dcf") or {}
     mt = d.get("margins_trend") or {}
     lines = [
         f"**{d.get('name')}** | {d.get('sector')} / {d.get('industry')} | {d.get('country')}",
@@ -479,10 +413,6 @@ def to_text(d: dict) -> str:
             f"NII/Total Assets (NIM proxy) {pct(d.get('nim_proxy'))} [^nim]"
         )
         lines[5] = f"**Lender note:** {LENDER_NOTE}"
-    if dcf:
-        lines.append(
-            f"**DCF:** Bear ₹{dcf.get('Bear', 'N/A')} | Base ₹{dcf.get('Base', 'N/A')} (upside {dcf.get('upside_base', 'N/A')}%) | Bull ₹{dcf.get('Bull', 'N/A')}"
-        )
     if mt.get("revenue"):
         lines.append("**Rev trend (Cr):** " + " → ".join(f"₹{v}" for v in list(mt["revenue"].values())[:4]))
     lines.append(
@@ -524,26 +454,6 @@ def cited_footnotes(llm_out: str, d: dict) -> str:
     return "\n".join(lines)
 
 
-def dcf_section(d: dict) -> str:
-    """
-    DCF scenario breakdown only — split out of calc_breakdown() so callers
-    that show cited_footnotes() for the citable ratios (P/E, P/B, ROCE, D/E,
-    Current Ratio) can still show the DCF working unconditionally: it has no
-    [^key] marker of its own for the model to cite, so gating it on citation
-    would silently drop it from every report.
-    """
-    dcf = d.get("dcf")
-    if not dcf:
-        return ""
-    lines = ["", "---", "### 🧮 DCF Model", dcf.get("note", "")]
-    for scenario, steps in (dcf.get("steps") or {}).items():
-        lines.append(f"\n**{scenario} Case:**")
-        lines.append(steps.get("detail", ""))
-        lines.append(f"  Terminal Value PV: ₹{steps.get('tv_pv', 'N/A')}Cr")
-        lines.append(f"  **Intrinsic Value: ₹{steps.get('iv', 'N/A')}**")
-    return "\n".join(lines)
-
-
 def calc_breakdown(d: dict) -> str:
     """Full calculation transparency section for reports."""
     lines = [
@@ -566,12 +476,4 @@ def calc_breakdown(d: dict) -> str:
         "### P/B Ratio",
         d.get("pb_detail", "N/A"),
     ]
-    dcf = d.get("dcf")
-    if dcf:
-        lines += ["", "### DCF Model", dcf.get("note", "")]
-        for scenario, steps in (dcf.get("steps") or {}).items():
-            lines.append(f"\n**{scenario} Case:**")
-            lines.append(steps.get("detail", ""))
-            lines.append(f"  Terminal Value PV: ₹{steps.get('tv_pv', 'N/A')}Cr")
-            lines.append(f"  **Intrinsic Value: ₹{steps.get('iv', 'N/A')}**")
     return "\n".join(lines)
