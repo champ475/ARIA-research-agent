@@ -185,6 +185,15 @@ def test_trial_tokens(db, two_users):
     assert db.trial_tokens_add(a, 5, day2) == 5
 
 
+def test_feedback(db, two_users):
+    """LLM-12: B's ratings never land on or reveal A's."""
+    a, b = two_users
+    db.feedback_record(a, "turn-a", -1, reason="wrong number")
+    assert db.feedback_for(b) == []
+    db.feedback_record(b, "turn-a", 1)  # B rating the same turn id is B's own row
+    assert db.feedback_for(a)[0]["rating"] == -1
+
+
 def test_trial_quota(db, two_users):
     a, b = two_users
     today = date(2026, 10, 14)
@@ -242,6 +251,8 @@ COVERED = {
     "session_pending_set": test_session_pending,
     "trial_tokens_used": test_trial_tokens,
     "trial_tokens_add": test_trial_tokens,
+    "feedback_record": test_feedback,
+    "feedback_for": test_feedback,
     "session_delete": test_sessions_and_chat_history,
     "chat_save": test_sessions_and_chat_history,
     "chat_load": test_sessions_and_chat_history,

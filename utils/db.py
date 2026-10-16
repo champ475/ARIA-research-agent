@@ -342,14 +342,24 @@ def session_delete(user_id: int, session_id: int):
         release_conn(conn)
 
 
-def chat_save(user_id: int, session_id: int, tab: str, role: str, content: str):
+def chat_save(user_id: int, session_id: int, tab: str, role: str, content: str, meta: dict | None = None):
     """Appends a message to a session — only if `user_id` owns that session
-    (SEC-13: a forged session id can't write into someone else's history)."""
+    (SEC-13: a forged session id can't write into someone else's history).
+    `meta` (LLM-12): turn id, route — never part of the model's history."""
     _query(
-        "INSERT INTO chat_history (user_id, session_id, tab, role, content) "
-        "SELECT %s, %s, %s, %s, %s "
+        "INSERT INTO chat_history (user_id, session_id, tab, role, content, meta) "
+        "SELECT %s, %s, %s, %s, %s, %s "
         "WHERE EXISTS (SELECT 1 FROM chat_sessions WHERE id=%s AND user_id=%s)",
-        (user_id, session_id, tab, role, content, session_id, user_id),
+        (
+            user_id,
+            session_id,
+            tab,
+            role,
+            content,
+            None if meta is None else json.dumps(meta),
+            session_id,
+            user_id,
+        ),
         fetch=None,
         commit=True,
     )
@@ -364,7 +374,7 @@ def chat_load(user_id: int, session_id: int) -> list[dict]:
         if not cur.fetchone():
             return []
         cur.execute(
-            "SELECT role, content FROM chat_history WHERE session_id=%s ORDER BY ts ASC",
+            "SELECT role, content, meta FROM chat_history WHERE session_id=%s ORDER BY ts ASC, id ASC",
             (session_id,),
         )
         return [dict(r) for r in cur.fetchall()]
@@ -856,6 +866,83 @@ def terms_version_get(version: str) -> dict | None:
         (version,),
         fetch="one",
     )
+
+
+# ── Answer feedback (LLM-12) ─────────────────────────────────────────────────
+
+
+def feedback_record(
+    user_id: int,
+    turn_id: str,
+    rating: int,
+    session_id: int | None = None,
+    reason: str | None = None,
+    free_text: str | None = None,
+) -> None:
+    """Rate an answer (1 / -1); rating again updates the same row."""
+    _query(
+        "INSERT INTO answer_feedback (user_id, turn_id, session_id, rating, reason, free_text) "
+        "VALUES (%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (user_id, turn_id) DO UPDATE SET rating=EXCLUDED.rating, "
+        "reason=COALESCE(EXCLUDED.reason, answer_feedback.reason), "
+        "free_text=COALESCE(EXCLUDED.free_text, answer_feedback.free_text), updated_at=now()",
+        (user_id, turn_id, session_id, rating, reason, (free_text or "")[:2000] or None),
+        fetch=None,
+        commit=True,
+    )
+
+
+def feedback_for(user_id: int) -> list[dict]:
+    """A user's own ratings (data export / support)."""
+    return (
+        _query(
+            "SELECT turn_id, rating, reason, free_text, created_at FROM answer_feedback WHERE user_id=%s "
+            "ORDER BY created_at DESC",
+            (user_id,),
+        )
+        or []
+    )
+
+
+def feedback_negative_since(since, include_triaged: bool = False) -> list[dict]:
+    """Operator triage (cross-tenant by design): thumbs-down since `since`,
+    with the question and answer they were about."""
+    return (
+        _query(
+            "SELECT f.id, f.turn_id, f.reason, f.free_text, f.created_at, t.intent, t.status, "
+            "  (SELECT content FROM chat_history h WHERE h.meta->>'turn_id' = f.turn_id AND h.role='assistant' "
+            "   LIMIT 1) AS answer, "
+            "  (SELECT content FROM chat_history q WHERE q.session_id = f.session_id AND q.role='user' "
+            "   AND q.id < (SELECT id FROM chat_history h2 WHERE h2.meta->>'turn_id' = f.turn_id LIMIT 1) "
+            "   ORDER BY q.id DESC LIMIT 1) AS question "
+            "FROM answer_feedback f LEFT JOIN turns t ON t.turn_id::text = f.turn_id "
+            "WHERE f.rating = -1 AND f.created_at >= %s AND (%s OR f.triaged_at IS NULL) "
+            "ORDER BY f.created_at DESC",
+            (since, include_triaged),
+        )
+        or []
+    )
+
+
+def feedback_mark_triaged(feedback_ids: list[int]) -> int:
+    rows = _query(
+        "UPDATE answer_feedback SET triaged_at=now() WHERE id = ANY(%s) RETURNING id",
+        (feedback_ids,),
+        fetch="all",
+        commit=True,
+    )
+    return len(rows or [])
+
+
+def feedback_rate(since) -> dict:
+    """Rated answers and the negative share since `since` (OBS-03)."""
+    row = _query(
+        "SELECT count(*) AS rated, count(*) FILTER (WHERE rating = -1) AS negative FROM answer_feedback "
+        "WHERE created_at >= %s",
+        (since,),
+        fetch="one",
+    ) or {"rated": 0, "negative": 0}
+    return {"rated": row["rated"], "negative": row["negative"]}
 
 
 # ── Audit log (COMP-04: append-only, enforced by a trigger) ───────────────────

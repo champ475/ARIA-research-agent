@@ -288,6 +288,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     md_update = no_file
     csv_update = no_file
     text = ""
+    tab_used: str | None = None
     try:
         orch = get_orchestrator(user_id, session_id)
         tab_used = "equity"
@@ -346,7 +347,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     # Finding-1 fix). Losing one turn's chat-history row is a much smaller
     # problem than leaving the whole input permanently locked.
     try:
-        _persist_turn(user_id, session_id, message, text, is_first=not history)
+        _persist_turn(user_id, session_id, message, text, is_first=not history, route=tab_used)
     except Exception as e:
         log.warning(f"[respond] failed to persist turn for session {session_id}: {e}")
 
@@ -436,11 +437,19 @@ def _busy_outputs(message, history: list, suggestions: list, text: str = _BUSY_T
     )
 
 
-def _persist_turn(user_id: int, session_id: int, user_msg: str, assistant_msg: str, is_first: bool):
+def _persist_turn(
+    user_id: int, session_id: int, user_msg: str, assistant_msg: str, is_first: bool, route: str | None = None
+):
+    """Saves the exchange. The assistant row carries its turn id (feedback and
+    traces link to it, LLM-12) and the route in `meta`; the stored text has no
+    routing badge, so it never reaches the model as history."""
+    from agents.conversation_memory import strip_badge
     from utils.db import chat_save, session_touch
+    from utils.logging_setup import turn_id_var
 
+    meta = {"turn_id": turn_id_var.get() or None, "route": route}
     chat_save(user_id, session_id, "chat", "user", user_msg)
-    chat_save(user_id, session_id, "chat", "assistant", assistant_msg)
+    chat_save(user_id, session_id, "chat", "assistant", strip_badge(assistant_msg), meta=meta)
     session_touch(user_id, session_id, title=_session_title(user_msg) if is_first else None)
 
 
@@ -886,6 +895,19 @@ def _build_chat_tab(user_state: gr.State):
             )
             chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
 
+            # LLM-12: a thumbs-down opens this so the user can say what was wrong.
+            feedback_turn = gr.State(None)
+            with gr.Group(visible=False, elem_id=f"feedback-{tab_id}") as feedback_box:
+                feedback_reason = gr.Radio(
+                    ["A number is wrong", "Out of date", "Not what I asked", "Other"],
+                    label="What was wrong with this answer?",
+                )
+                feedback_text = gr.Textbox(label="Details (optional)", max_lines=3, max_length=2000)
+                with gr.Row():
+                    feedback_send = gr.Button("Send feedback", size="sm", variant="primary")
+                    feedback_skip = gr.Button("Skip", size="sm")
+            feedback_note = gr.Markdown("", elem_id=f"feedback-note-{tab_id}")
+
             # Timeframe selector — only applies when the orchestrator routes to equity
             with gr.Row(elem_classes=["tf-radio"]):
                 tf_radio = gr.Radio(
@@ -1009,6 +1031,43 @@ def _build_chat_tab(user_state: gr.State):
         user_id = _request_user(request) or user_id
         orch = _orchestrators.get((user_id, session_id)) if user_id else None
         return gr.update(visible=bool(orch and getattr(orch, "_awaiting_confirmation", False)))
+
+    def _on_like(data: gr.LikeData, user_id, session_id, request: gr.Request):
+        """Thumbs up/down on an answer, linked to the turn that produced it."""
+        user_id = _request_user(request) or user_id
+        hidden = (gr.update(visible=False), None, "")
+        if not user_id or session_id is None:
+            return hidden
+        from utils.db import chat_load, feedback_record
+
+        index = data.index[0] if isinstance(data.index, (list, tuple)) else data.index
+        rows = chat_load(user_id, session_id)
+        if not isinstance(index, int) or index >= len(rows) or rows[index]["role"] != "assistant":
+            return hidden
+        turn_id = (rows[index].get("meta") or {}).get("turn_id")
+        if not turn_id or data.liked is None:
+            return hidden
+        rating = 1 if data.liked else -1
+        feedback_record(user_id, turn_id, rating, session_id=session_id)
+        if rating == 1:
+            return gr.update(visible=False), None, "👍 Thanks for the feedback."
+        return gr.update(visible=True), turn_id, ""
+
+    def _send_feedback(user_id, session_id, turn_id, reason, details, request: gr.Request):
+        user_id = _request_user(request) or user_id
+        if user_id and turn_id:
+            from utils.db import feedback_record
+
+            feedback_record(user_id, turn_id, -1, session_id=session_id, reason=reason, free_text=details)
+        return gr.update(visible=False), None, None, "", "🙏 Thanks — this helps us fix wrong answers."
+
+    chatbot.like(_on_like, [user_state, session_state], [feedback_box, feedback_turn, feedback_note])
+    feedback_send.click(
+        _send_feedback,
+        [user_state, session_state, feedback_turn, feedback_reason, feedback_text],
+        [feedback_box, feedback_turn, feedback_reason, feedback_text, feedback_note],
+    )
+    feedback_skip.click(lambda: (gr.update(visible=False), None), None, [feedback_box, feedback_turn])
 
     chat_kwargs = {"show_progress": "hidden", "concurrency_id": "chat", "concurrency_limit": CHAT_CONCURRENCY}
     msg_box.submit(_respond, chat_inputs, outputs, **chat_kwargs).then(

@@ -18,6 +18,7 @@ from tests.integration import (
     test_brute_force,
     test_consent,
     test_data_export,
+    test_feedback,
     test_rate_limits,
     test_sessions,
 )
@@ -315,6 +316,9 @@ COVERED = {
     "terms_version_get": test_consent.test_legal_md_version_is_published,
     "user_scoped_tables": test_data_export.test_export_contains_every_user_table_and_only_the_users_rows,
     "rate_limit_take": test_rate_limits.test_rate_limit_is_exact_under_a_burst,
+    "feedback_negative_since": test_feedback.test_rating_twice_updates_one_row_and_triage_shows_context,
+    "feedback_mark_triaged": test_feedback.test_export_writes_golden_stubs_and_marks_triaged,
+    "feedback_rate": test_feedback.test_rating_twice_updates_one_row_and_triage_shows_context,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.
