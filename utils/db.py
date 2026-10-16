@@ -1490,7 +1490,7 @@ def fundamentals_upsert(rows: list[dict]) -> int:
     placeholders = ", ".join(f"%({c})s" for c in FUNDAMENTALS_COLUMNS)
     updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in FUNDAMENTALS_COLUMNS if c != "symbol")
     sql = (
-        f"INSERT INTO fundamentals_snapshot ({cols}) VALUES ({placeholders}) "  # noqa: S608 (fixed column list)
+        f"INSERT INTO fundamentals_snapshot ({cols}) VALUES ({placeholders}) "  # noqa: S608 (fixed column list)  # nosec B608
         f"ON CONFLICT (symbol) DO UPDATE SET {updates}, as_of=now()"
     )
     payload = [{c: r.get(c) for c in FUNDAMENTALS_COLUMNS} | {"lender": bool(r.get("lender"))} for r in rows]
@@ -1533,7 +1533,7 @@ def fundamentals_screen(
         where.append("sector = ANY(%s)")
         params.append(list(sectors))
     sql = (
-        f"SELECT {', '.join(FUNDAMENTALS_COLUMNS)}, as_of FROM fundamentals_snapshot "  # noqa: S608 (whitelisted)
+        f"SELECT {', '.join(FUNDAMENTALS_COLUMNS)}, as_of FROM fundamentals_snapshot "  # noqa: S608 (whitelisted)  # nosec B608
         f"{'WHERE ' + ' AND '.join(where) if where else ''} "
         "ORDER BY mcap_cr DESC NULLS LAST LIMIT %s"
     )
@@ -1560,14 +1560,14 @@ def fundamentals_peers(symbol: str, limit: int = 5) -> dict:
     """{self, peers, basis, lender}: up to `limit` companies in the same
     industry (else sector) closest in market cap, from the snapshot (UX-04)."""
     cols = ", ".join(FUNDAMENTALS_COLUMNS)
-    me = _query(f"SELECT {cols} FROM fundamentals_snapshot WHERE symbol=%s", (symbol,), fetch="one")  # noqa: S608
+    me = _query(f"SELECT {cols} FROM fundamentals_snapshot WHERE symbol=%s", (symbol,), fetch="one")  # noqa: S608  # nosec B608
     if not me:
         return {"self": None, "peers": [], "basis": None, "lender": False}
     for basis in ("industry", "sector"):
         if not me.get(basis):
             continue
         peers = _query(
-            f"SELECT {cols} FROM fundamentals_snapshot "  # noqa: S608 (fixed columns; basis is one of two names)
+            f"SELECT {cols} FROM fundamentals_snapshot "  # noqa: S608 (fixed columns; basis is one of two names)  # nosec B608
             f"WHERE {basis}=%s AND symbol<>%s AND mcap_cr IS NOT NULL "
             "ORDER BY abs(ln(greatest(mcap_cr, 1)) - ln(greatest(coalesce(%s, mcap_cr), 1))) LIMIT %s",
             (me[basis], symbol, me.get("mcap_cr"), limit),

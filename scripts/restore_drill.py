@@ -83,7 +83,7 @@ def checks(url: str) -> dict[str, Any]:
             out["schema"] = "behind"
             out["problems"].append(f"schema: {e}")
         for table in TABLES:
-            row = conn.execute(f"SELECT count(*) AS n FROM {table}").fetchone()  # noqa: S608 (fixed names)
+            row = conn.execute(f"SELECT count(*) AS n FROM {table}").fetchone()  # noqa: S608 (fixed names)  # nosec B608
             out["counts"][table] = int(row["n"]) if row else 0
         keys = conn.execute("SELECT api_key_encrypted FROM user_llm_config LIMIT 20").fetchall()
     from utils.crypto import decrypt
