@@ -59,10 +59,9 @@ from tools.analysis.fundamental import compute as compute_fundamental_ratios
 from tools.analysis.technical import compute_all as compute_technical_indicators
 from tools.analysis.technical import snapshot as technical_snapshot
 from tools.data.amfi import get_all_nav, get_category_funds, get_mf_comparison, search_fund
-from tools.data.fetcher import get_financials, get_info, get_ohlcv
 from tools.data.news_fetcher import company_news, google_news
-from tools.data.nse_scraper import get_block_deals, get_bulk_deals, get_top_movers
 from tools.data.pdf_scraper import get_annual_report_text, get_latest_quarterly_results
+from tools.data.providers import market_data
 from tools.screener import (
     parse_query as screener_parse_query,
 )
@@ -146,6 +145,33 @@ def _movers_direction(context: dict[str, Any]) -> str:
 
 def _key_on_movers_direction(entity: str, context: dict[str, Any]) -> dict[str, Any]:
     return {"direction": _movers_direction(context)}
+
+
+# DATA-02: market fetches go through the active provider (yfinance + NSE, or
+# FakeProvider under ARIA_FAKE_DATA). Kept as module functions so tests and
+# the alert code have one stable name to patch.
+def get_info(symbol: str) -> dict:
+    return market_data().quote(symbol)
+
+
+def get_financials(symbol: str) -> dict:
+    return market_data().financials(symbol)
+
+
+def get_ohlcv(symbol: str) -> Any:
+    return market_data().ohlcv(symbol)
+
+
+def get_top_movers(direction: str) -> Any:
+    return market_data().movers(direction)
+
+
+def get_bulk_deals(symbol: str | None) -> Any:
+    return market_data().bulk_deals(symbol)
+
+
+def get_block_deals(symbol: str | None) -> Any:
+    return market_data().block_deals(symbol)
 
 
 def _fetch_info(entity: str, context: dict[str, Any]) -> dict:

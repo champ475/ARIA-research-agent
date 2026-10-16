@@ -3,12 +3,14 @@ web/ops_routes.py — liveness and readiness (OPS-04).
 
     GET /healthz   200 while the process can answer HTTP at all (liveness:
                    restart the container if this fails).
+    GET /health/data  per-source data health (DATA-02): breaker state, counts,
+                   last success/failure.
     GET /readyz    200 only when this instance should get traffic: the
                    database answers, the schema is at the Alembic head, at
                    least one LLM provider is configured, and it isn't
                    draining for shutdown. 503 lists what is wrong.
 
-Both are unauthenticated and reveal nothing beyond pass/fail per check.
+All are unauthenticated and reveal no user data or error text.
 """
 
 from __future__ import annotations
@@ -75,4 +77,26 @@ def readyz() -> JSONResponse:
             "in_flight_turns": lifecycle.in_flight(),
         },
         status_code=200 if ok else 503,
+    )
+
+
+@router.get("/health/data")
+def health_data() -> JSONResponse:
+    """DATA-02: each external data source's breaker state, call counts and
+    last success/failure in this process. 200 always (a source being down
+    is information, not this instance being unready); `degraded` lists the
+    sources currently skipped."""
+    from tools.data.providers import market_data
+    from utils.resilience import breaker_states
+
+    sources = breaker_states()
+    provider = market_data()
+    routes = getattr(provider, "routes", None)
+    return JSONResponse(
+        {
+            "provider": getattr(provider, "name", "unknown"),
+            "routes": {m: p.name for m, p in routes.items()} if routes else None,
+            "degraded": [name for name, s in sources.items() if s["state"] != "closed"],
+            "sources": sources,
+        }
     )

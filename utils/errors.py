@@ -56,6 +56,20 @@ class DataUnavailableError(AriaError):
     default_message = "The market data needed for that isn't available right now. Please try again shortly."
 
 
+# DATA-02: how each data source is named to users when it's down.
+SOURCE_NAMES = {"nse": "NSE", "bse": "BSE", "yfinance": "Market quote", "amfi": "AMFI fund", "news": "News"}
+
+
+class SourceUnavailable(DataUnavailableError):
+    """A data source refused or failed the request (blocked, 5xx, timeout,
+    malformed reply) — as opposed to answering with no rows."""
+
+    def __init__(self, source: str, detail: str | None = None):
+        self.source = source
+        label = SOURCE_NAMES.get(source, source)
+        super().__init__(f"{label} data is temporarily unavailable.", detail=detail)
+
+
 class ProviderError(AriaError):
     default_message = "The AI model couldn't be reached right now. Please try again in a minute."
 

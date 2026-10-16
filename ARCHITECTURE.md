@@ -16,6 +16,44 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Market data provider interface, source health, licensing pending (DATA-02)
+**Problem.**
+- yfinance is unofficial and rate-limited.
+- NSE's site API needs browser cookies and blocks cloud IPs with 401/403.
+- The NSE fetchers swallowed every failure and returned an empty table, so a blocked NSE looked like "no movers today". The breaker also counted a 403 as a success.
+- Tools imported scrapers directly, so a licensed source could not be swapped in, and there was no offline data for end-to-end tests (DATA-02).
+
+**Alternatives considered.**
+- Keep direct imports and only fix the error handling. That leaves no seam for a vendor or a fake.
+- A full plugin registry configured by env var. That is over-built for two sources.
+- Switch to a licensed or broker API now. That is the owner's commercial decision (see below), not an engineering one.
+
+**Final decision.**
+- `tools/data/providers/` defines a `MarketDataProvider` protocol with quote, ohlcv, financials, corporate_actions, movers, bulk_deals and block_deals. Implementations:
+  - `YFinanceProvider` wraps fetcher.py, keeping its bhavcopy fallback.
+  - `NseProvider` uses new strict fetchers.
+  - `FakeProvider` is deterministic and offline, enabled with `ARIA_FAKE_DATA=1`.
+  - `RoutedProvider` sends each method to the provider that owns it.
+- The catalogue's market tools call `market_data()`.
+- The strict NSE fetchers (`nse_scraper.api_json` / `fetch_*`) raise `SourceUnavailable("nse")` on a block, a 5xx or a non-JSON page. A 404 means no data. The old `get_*` functions keep their quiet empty-frame contract for other callers.
+- `CircuitOpen` now carries `.source`. A failed task records `source`.
+- `data_gaps_note` leads with "NSE data is temporarily unavailable." when a source is down or its breaker is open.
+- The HTTP breaker counts 401/403 as failures.
+- Breakers keep success and failure counts and last-success and last-failure times. These are exposed by `resilience.breaker_states()` and by `GET /health/data`, which also shows the provider routes and the sources currently degraded.
+- Evidence built from a `_degraded_source` payload gets `DEGRADED_CONFIDENCE` (0.6).
+
+**Licensing.** Undecided, and the owner's call before any public launch. NSE's terms restrict automated access to its site. Yahoo's terms don't allow redistributing its data. Candidates are a broker market-data API (Kite Connect, Upstox, Dhan) or a commercial vendor. The project isn't hosted publicly (OPS-03), so the current sources are acceptable for development and demos only. A new source plugs in as one provider class plus a route.
+
+**Trade-offs.**
+- Health is per process and resets on restart.
+- The nightly per-source success-rate job from a production host belongs to the data canary (TEST-05) and the worker (REL-05). There is no production host.
+- Corporate actions are wired through the provider but no tool uses them yet (DATA-07).
+
+**Future improvements.**
+- Persist source health in `job_heartbeats` or metrics (OBS-03).
+- Add a licensed provider and route quotes to it.
+- Route quotes to a second source for live failover instead of falling back to end-of-day bhavcopy.
+
 ## 2026-10-16 — Vendored NSE calendar and as-of times on market evidence (DATA-06)
 **Problem.** NSE trading holidays weren't modelled. The alert checker ran on holidays. "Today" answers on a weekend or holiday showed the last session's numbers without saying so. Quotes, which can be cached or delayed, were presented as current, with no time attached (DATA-06).
 **Alternatives considered.**

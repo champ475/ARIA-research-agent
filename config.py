@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     MAX_ENTITIES_PER_TURN: int = Field(5, ge=1, le=20)
     # LLM-11: free-trial users' LLM tokens per day (input + output); 0 = no cap.
     TRIAL_DAILY_TOKENS: int = Field(60_000, ge=0)
+    # DATA-02: deterministic offline market data (e2e tests, demos).
+    ARIA_FAKE_DATA: bool = False
+    # Evidence confidence when a fallback source stood in (e.g. bhavcopy for a quote).
+    DEGRADED_CONFIDENCE: float = Field(0.6, gt=0, lt=1)
     # Rupees per US dollar, for the per-turn cost estimate.
     USD_INR: float = Field(84.0, gt=0)
     # Skip Reflection's LLM call when every planned task already succeeded.
@@ -337,6 +341,8 @@ TRIAL_DAILY_LIMIT = settings.TRIAL_DAILY_LIMIT  # free messages/day on the opera
 TURNS_PER_MINUTE = settings.TURNS_PER_MINUTE
 MAX_ENTITIES_PER_TURN = settings.MAX_ENTITIES_PER_TURN
 TRIAL_DAILY_TOKENS = settings.TRIAL_DAILY_TOKENS
+ARIA_FAKE_DATA = settings.ARIA_FAKE_DATA
+DEGRADED_CONFIDENCE = settings.DEGRADED_CONFIDENCE
 USD_INR = settings.USD_INR
 REFLECTION_SKIP_WHEN_COMPLETE = settings.REFLECTION_SKIP_WHEN_COMPLETE
 

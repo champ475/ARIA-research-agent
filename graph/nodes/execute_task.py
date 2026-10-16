@@ -27,7 +27,7 @@ from typing import Any
 
 import pandas as pd
 
-from config import TOOL_TIMEOUT_SECONDS
+from config import DEGRADED_CONFIDENCE, TOOL_TIMEOUT_SECONDS
 from graph.deadline import remaining_seconds
 from graph.journal import log_decision
 from graph.state import Evidence, Task
@@ -35,6 +35,7 @@ from graph.tool_catalogue import get_tool
 from graph.write_policy import write_allowed
 from tools.data import evidence_cache
 from utils import tracing
+from utils.errors import SourceUnavailable
 from utils.resilience import CallTimeout, CircuitOpen, call_with_timeout
 
 log = logging.getLogger(__name__)
@@ -129,7 +130,18 @@ def _failure_reason(e: Exception) -> str:
         return "timeout"
     if isinstance(e, CircuitOpen):
         return "circuit_open"
+    if isinstance(e, SourceUnavailable):
+        return "source_unavailable"
     return "error"
+
+
+def _failure_source(e: Exception) -> str | None:
+    """DATA-02: which data source let the task down, when known."""
+    if isinstance(e, SourceUnavailable):
+        return e.source
+    if isinstance(e, CircuitOpen):
+        return e.source
+    return None
 
 
 def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
@@ -175,7 +187,10 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
             raw_payload = call_with_timeout(
                 spec.fn, task["entity"], context, timeout=_tool_budget(context), pool="tool"
             )
-        confidence = 1.0
+        # DATA-02: a fallback source stood in (bhavcopy for a quote) — say so
+        # through confidence, which the answer's sourcing reflects.
+        degraded = isinstance(raw_payload, dict) and raw_payload.get("_degraded_source")
+        confidence = DEGRADED_CONFIDENCE if degraded else 1.0
         cacheable_payload = _to_cacheable(raw_payload)
         if spec.cacheable:
             evidence_cache.put(
@@ -217,6 +232,9 @@ def execute_task_node(send_state: dict) -> dict:
         evidence = execute_task(task, context)
     except Exception as e:
         failed_task = {**task, "status": "failed", "error": _failure_reason(e)}
+        source = _failure_source(e)
+        if source:
+            failed_task["source"] = source
         return {
             "tasks": [failed_task],
             **log_decision("execute_task", f"failed: {task['id']}", _failure_reason(e)),

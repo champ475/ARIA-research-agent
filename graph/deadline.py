@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from config import RESEARCH_DEADLINE_FRACTION, TURN_DEADLINE_SECONDS
+from utils.errors import SourceUnavailable
 
 
 def new_deadline(now: float | None = None, seconds: float | None = None) -> dict[str, float]:
@@ -74,6 +75,7 @@ def _is_write(get_tool: Any, tool: str) -> bool:
 _REASON_TEXT = {
     "timeout": "timed out",
     "circuit_open": "source temporarily unavailable",
+    "source_unavailable": "source temporarily unavailable",
     "deadline": "skipped to answer in time",
     "error": "couldn't be fetched",
 }
@@ -132,4 +134,14 @@ def data_gaps_note(tasks: list[dict] | None) -> str:
         f"{label} for {', '.join(entities)} ({why})" if entities else f"{label} ({why})"
         for (label, why), entities in grouped.items()
     ]
-    return "\n\n⚠️ *Data not available this time:* " + "; ".join(parts) + "."
+    # DATA-02: name a source that is down outright ("NSE data is temporarily
+    # unavailable.") ahead of the per-item list.
+    down = sorted(
+        {
+            t["source"]
+            for t in gaps
+            if t.get("source") and t.get("error") in ("source_unavailable", "circuit_open")
+        }
+    )
+    lead = "".join(f"{SourceUnavailable(s).user_message} " for s in down)
+    return f"\n\n⚠️ {lead}*Data not available this time:* " + "; ".join(parts) + "."

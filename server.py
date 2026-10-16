@@ -2,7 +2,7 @@
 server.py — the ASGI app: FastAPI routes around the mounted Gradio UI (SEC-04).
 
     /login, /signup, /terms, /auth/logout   web/auth_routes.py (server-rendered)
-    /healthz, /readyz                        web/ops_routes.py (OPS-04)
+    /healthz, /readyz, /health/data          web/ops_routes.py (OPS-04, DATA-02)
     /                                        Gradio (app.build_ui), cookie-authenticated
 
 Gradio is mounted with `auth_dependency`, so every Gradio route (page config,

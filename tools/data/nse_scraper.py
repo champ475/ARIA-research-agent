@@ -7,8 +7,12 @@ Uses headers to avoid bot detection.
 import requests
 import pandas as pd
 
+from typing import Any
+
 from utils import http
+from utils.errors import SourceUnavailable
 from utils.market_clock import is_trading_day
+from utils.resilience import CircuitOpen
 from datetime import datetime, timedelta
 from io import StringIO
 import logging
@@ -65,59 +69,79 @@ def get_bhavcopy(date: datetime = None) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def get_bulk_deals(symbol: str = None) -> pd.DataFrame:
-    """Fetch bulk deal data from NSE (last available)."""
+def api_json(url: str) -> Any:
+    """DATA-02 strict fetch: the parsed JSON, or SourceUnavailable("nse") when
+    NSE refuses or fails (blocked, 5xx, not JSON). CircuitOpen passes through
+    so the answer can say the source is being skipped. 404 = no data (None)."""
     try:
-        s   = _session()
-        url = "https://www.nseindia.com/api/bulk-deal-data"
-        r   = s.get(url, timeout=10)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        data = r.json()
-        if not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data)
-        if symbol and not df.empty and "symbol" in df.columns:
-            df = df[df["symbol"].str.upper() == symbol.upper()]
-        return df
+        r = _session().get(url, timeout=10)
+    except CircuitOpen:
+        raise
     except Exception as e:
-        log.warning(f"Bulk deals fetch failed: {e}")
+        raise SourceUnavailable("nse", detail=type(e).__name__) from e
+    if r.status_code == 404:
+        return None
+    if r.status_code != 200:
+        raise SourceUnavailable("nse", detail=f"HTTP {r.status_code}")
+    try:
+        return r.json()
+    except ValueError as e:
+        raise SourceUnavailable("nse", detail="not JSON (likely a block page)") from e
+
+
+def _quiet(fetch, *args, what: str):
+    """Legacy callers expect an empty frame on failure, never an exception."""
+    try:
+        return fetch(*args)
+    except Exception as e:
+        log.warning(f"{what} fetch failed: {type(e).__name__}")
         return pd.DataFrame()
+
+
+def _deals(kind: str, symbol: str | None) -> pd.DataFrame:
+    data = api_json(f"https://www.nseindia.com/api/{kind}-deal-data")
+    if not data:
+        return pd.DataFrame()
+    df = pd.DataFrame(data)
+    if symbol and not df.empty and "symbol" in df.columns:
+        df = df[df["symbol"].str.upper() == symbol.upper()]
+    return df
+
+
+def fetch_bulk_deals(symbol: str | None = None) -> pd.DataFrame:
+    return _deals("bulk", symbol)
+
+
+def fetch_block_deals(symbol: str | None = None) -> pd.DataFrame:
+    return _deals("block", symbol)
+
+
+def fetch_corporate_actions(symbol: str) -> pd.DataFrame:
+    data = api_json(f"https://www.nseindia.com/api/corporates-corporateActions?index=equities&symbol={symbol}")
+    return pd.DataFrame(data) if data else pd.DataFrame()
+
+
+def fetch_top_movers(category: str = "gainers") -> pd.DataFrame:
+    index = "loosers" if category == "losers" else "gainers"  # NSE spells it "loosers"
+    data = api_json(f"https://www.nseindia.com/api/live-analysis-variations?index={index}") or {}
+    if not isinstance(data, dict):
+        raise SourceUnavailable("nse", detail="unexpected movers shape")
+    return pd.DataFrame(data.get("NIFTY", {}).get("data", []) or [])
+
+
+def get_bulk_deals(symbol: str = None) -> pd.DataFrame:
+    """Fetch bulk deal data from NSE (last available); empty on failure."""
+    return _quiet(fetch_bulk_deals, symbol, what="Bulk deals")
 
 
 def get_block_deals(symbol: str = None) -> pd.DataFrame:
-    """Fetch block deal data from NSE."""
-    try:
-        s   = _session()
-        url = "https://www.nseindia.com/api/block-deal-data"
-        r   = s.get(url, timeout=10)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        data = r.json()
-        if not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data)
-        if symbol and not df.empty and "symbol" in df.columns:
-            df = df[df["symbol"].str.upper() == symbol.upper()]
-        return df
-    except Exception as e:
-        log.warning(f"Block deals fetch failed: {e}")
-        return pd.DataFrame()
+    """Fetch block deal data from NSE; empty on failure."""
+    return _quiet(fetch_block_deals, symbol, what="Block deals")
 
 
 def get_corporate_actions(symbol: str) -> pd.DataFrame:
-    """Fetch corporate actions (dividends, splits, bonuses) from NSE."""
-    try:
-        s   = _session()
-        url = f"https://www.nseindia.com/api/corporates-corporateActions?index=equities&symbol={symbol}"
-        r   = s.get(url, timeout=10)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        data = r.json()
-        return pd.DataFrame(data) if data else pd.DataFrame()
-    except Exception as e:
-        log.warning(f"Corporate actions for {symbol} failed: {e}")
-        return pd.DataFrame()
+    """Fetch corporate actions (dividends, splits, bonuses) from NSE; empty on failure."""
+    return _quiet(fetch_corporate_actions, symbol, what=f"Corporate actions for {symbol}")
 
 
 def get_shareholding_pattern(symbol: str) -> dict:
@@ -135,24 +159,8 @@ def get_shareholding_pattern(symbol: str) -> dict:
 
 
 def get_top_movers(category: str = "gainers") -> pd.DataFrame:
-    """
-    Fetch top gainers or losers from NSE.
-    category: 'gainers' | 'losers'
-    """
-    try:
-        s   = _session()
-        url = f"https://www.nseindia.com/api/live-analysis-variations?index=gainers"
-        if category == "losers":
-            url = "https://www.nseindia.com/api/live-analysis-variations?index=loosers"
-        r   = s.get(url, timeout=10)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        data = r.json()
-        records = data.get("NIFTY", {}).get("data", []) or []
-        return pd.DataFrame(records)
-    except Exception as e:
-        log.warning(f"Top movers fetch failed: {e}")
-        return pd.DataFrame()
+    """Top gainers ('gainers') or losers ('losers') from NSE; empty on failure."""
+    return _quiet(fetch_top_movers, category, what="Top movers")
 
 
 def format_bulk_deals(df: pd.DataFrame, symbol: str) -> str:

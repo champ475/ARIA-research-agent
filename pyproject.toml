@@ -50,7 +50,7 @@ known-first-party = ["agents", "graph", "tools", "utils", "config", "app", "scri
 
 [tool.mypy]
 python_version = "3.11"
-files = ["graph", "utils", "agents", "web", "prompts", "config.py", "server.py"]
+files = ["graph", "utils", "agents", "web", "prompts", "tools/data/providers", "config.py", "server.py"]
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = true
 check_untyped_defs = true

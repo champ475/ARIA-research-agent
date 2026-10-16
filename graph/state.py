@@ -47,6 +47,8 @@ class Task(TypedDict):
     # "timeout" | "circuit_open" | "deadline" | "error" — graph/deadline.py
     # turns it into the user-visible "data missing" note.
     error: NotRequired[str]
+    # DATA-02: the data source that failed ("nse", "yfinance"), when known.
+    source: NotRequired[str]
 
 
 class ResearchPlan(TypedDict):
