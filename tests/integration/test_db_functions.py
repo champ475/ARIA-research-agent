@@ -20,6 +20,7 @@ from tests.integration import (
     test_data_export,
     test_feedback,
     test_fundamentals_snapshot,
+    test_jobs,
     test_rate_limits,
     test_sessions,
 )
@@ -325,6 +326,10 @@ COVERED = {
     "fundamentals_status": test_fundamentals_snapshot.test_refresh_writes_and_resumes,
     "fundamentals_fresh_symbols": test_fundamentals_snapshot.test_refresh_writes_and_resumes,
     "fundamentals_peers": test_fundamentals_snapshot.test_peers_come_from_the_same_industry_closest_in_size,
+    "job_heartbeat_start": test_jobs.test_run_records_a_heartbeat_and_is_not_repeated,
+    "job_heartbeat_finish": test_jobs.test_a_failure_is_recorded_without_its_message,
+    "job_heartbeats": test_jobs.test_run_records_a_heartbeat_and_is_not_repeated,
+    "telegram_link_codes_purge_expired": test_jobs.test_expired_link_codes_are_purged,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.

@@ -78,6 +78,12 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────────────────────────────────────
     DATABASE_URL: str = ""
+    # REL-05: a direct (non-pooler) Postgres URL for job advisory locks; empty = DATABASE_URL.
+    JOBS_DATABASE_URL: str = ""
+    # REL-05: run the background jobs (alerts, housekeeping, Telegram poller,
+    # nightly refreshes) inside the app process. Default: on in dev, off
+    # elsewhere (run `python worker.py`). Locks keep it safe either way.
+    RUN_JOBS_IN_APP: bool | None = None
     DB_POOL_MAX: int = Field(20, ge=1, le=500)
     DB_POOL_ACQUIRE_TIMEOUT: float = Field(10, gt=0)
     DB_POOL_MIN: int = Field(2, ge=0)
@@ -155,7 +161,7 @@ class Settings(BaseSettings):
             return v
         return v.strip().upper() if info.field_name == "LOG_LEVEL" else v.strip().lower()
 
-    @field_validator("LOCAL_LLM_BASE_URL", "DATABASE_URL", mode="before")
+    @field_validator("LOCAL_LLM_BASE_URL", "DATABASE_URL", "JOBS_DATABASE_URL", mode="before")
     @classmethod
     def _strip(cls, v: object) -> object:
         return v.strip() if isinstance(v, str) else v
@@ -176,6 +182,12 @@ class Settings(BaseSettings):
         if self.COOKIE_SECURE is not None:
             return self.COOKIE_SECURE
         return self.APP_ENV not in ("dev", "test")
+
+    @property
+    def run_jobs_in_app(self) -> bool:
+        if self.RUN_JOBS_IN_APP is not None:
+            return self.RUN_JOBS_IN_APP
+        return self.APP_ENV == "dev"
 
     @property
     def require_email_verification(self) -> bool:
@@ -379,6 +391,8 @@ DATA_DIR = "data"
 
 # ── Database (Neon Postgres — shared by the app and the alert checker) ────────
 DATABASE_URL = settings.DATABASE_URL
+JOBS_DATABASE_URL = settings.JOBS_DATABASE_URL
+RUN_JOBS_IN_APP = settings.run_jobs_in_app
 DB_POOL_MAX = settings.DB_POOL_MAX
 DB_POOL_ACQUIRE_TIMEOUT = settings.DB_POOL_ACQUIRE_TIMEOUT
 DB_POOL_MIN = settings.DB_POOL_MIN

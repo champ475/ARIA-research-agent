@@ -1580,3 +1580,37 @@ def fundamentals_peers(symbol: str, limit: int = 5) -> dict:
                 "lender": me["lender"],
             }
     return {"self": me, "peers": [], "basis": None, "lender": me["lender"]}
+
+
+def telegram_link_codes_purge_expired() -> int:
+    """Housekeeping: unused Telegram link codes past their expiry."""
+    rows = _query("DELETE FROM telegram_link_codes WHERE expires_at < now() RETURNING code", commit=True)
+    return len(rows or [])
+
+
+# ── Background job heartbeats (REL-05; utils/jobs.py) ────────────────────────
+
+
+def job_heartbeat_start(job: str, owner: str) -> None:
+    _query(
+        "INSERT INTO job_heartbeats (job, owner, last_started_at, last_status) VALUES (%s, %s, now(), 'running') "
+        "ON CONFLICT (job) DO UPDATE SET owner=EXCLUDED.owner, last_started_at=now(), last_status='running'",
+        (job, owner),
+        fetch=None,
+        commit=True,
+    )
+
+
+def job_heartbeat_finish(job: str, ok: bool, duration_ms: int, error: str | None = None) -> None:
+    _query(
+        "UPDATE job_heartbeats SET last_finished_at=now(), last_status=%s, last_error=%s, "
+        "last_duration_ms=%s, runs=runs+1, failures=failures + %s, "
+        "last_ok_at=CASE WHEN %s THEN now() ELSE last_ok_at END WHERE job=%s",
+        ("ok" if ok else "error", error, duration_ms, 0 if ok else 1, ok, job),
+        fetch=None,
+        commit=True,
+    )
+
+
+def job_heartbeats() -> list[dict]:
+    return _query("SELECT * FROM job_heartbeats ORDER BY job") or []

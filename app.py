@@ -31,7 +31,6 @@ from utils.escaping import html_text, md_cell
 from utils.helpers import IST as IST_TZ
 from utils.helpers import now_ist
 from utils.input_guard import CleanMessage, InputRejected, clean_message
-from utils.telegram_link import start_polling_thread
 from utils.tracing import warn_if_auto_tracing_on
 from utils.url_safety import UnsafeURLError
 
@@ -49,8 +48,16 @@ def startup() -> None:
     ensure_schema()
     # OBS-02: refuse silently-unredacted tracing setups loudly.
     warn_if_auto_tracing_on()
-    # The Telegram /start-code listener (no-ops if no bot token set).
-    start_polling_thread()
+    # REL-05: background jobs (alert check, housekeeping, Telegram poller,
+    # nightly refreshes) run in worker.py; in dev, in this process too.
+    from config import RUN_JOBS_IN_APP
+
+    if RUN_JOBS_IN_APP:
+        import threading
+
+        import worker
+
+        worker.start(threading.Event())
     # LLM-08: probe every routed model once, in the background.
     from agents.model_health import start_model_health_check
 

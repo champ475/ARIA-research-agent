@@ -14,7 +14,7 @@ def import_app_without_side_effects():
     thread. Unit tests must never touch a real database."""
     if "app" in sys.modules:
         return sys.modules["app"]
-    with patch("utils.db.ensure_schema"), patch("utils.telegram_link.start_polling_thread"):
+    with patch("utils.db.ensure_schema"):
         import app
     return app
 

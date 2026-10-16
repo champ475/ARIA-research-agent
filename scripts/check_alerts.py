@@ -402,7 +402,16 @@ def main() -> int:
         except SchemaOutOfDate as e:
             log.error(f"Alert check aborted: {e}")
             return 1
-        run_once(conn)
+        # REL-05: the same lock and heartbeat as worker.py's alert_check, so a
+        # worker and this cron never evaluate (and deliver) the same run twice.
+        from datetime import timedelta
+
+        from utils.jobs import Job, run_job
+
+        outcome = run_job(Job("alert_check", lambda: run_once(conn), every=timedelta(minutes=4)))
+        log.info(f"Alert check: {outcome}")
+        if outcome == "failed":
+            return 1
     finally:
         conn.close()
     return 0

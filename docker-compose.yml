@@ -26,7 +26,30 @@ services:
       # bundled `db` service when run via compose, regardless of what's
       # in .env (e.g. a Neon URL left over from non-Docker use).
       DATABASE_URL: postgresql://aria:aria@db:5432/aria
+      # REL-05: background jobs run in the `worker` service below.
+      RUN_JOBS_IN_APP: "false"
     depends_on:
+      db:
+        condition: service_healthy
+
+  # REL-05: alert checks, housekeeping, the Telegram poller and the nightly
+  # refreshes — each job under an advisory lock, so `docker compose up
+  # --scale worker=2` is safe (one owner per job, the other on standby).
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "worker.py"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://aria:aria@db:5432/aria
+    # No HTTP server here; liveness is the job_heartbeats table, which the
+    # ops watchdog (OBS-04) checks.
+    healthcheck:
+      disable: true
+    depends_on:
+      app:
+        condition: service_started  # the app's start command applies migrations
       db:
         condition: service_healthy
 

@@ -50,7 +50,7 @@ known-first-party = ["agents", "graph", "tools", "utils", "config", "app", "scri
 
 [tool.mypy]
 python_version = "3.11"
-files = ["graph", "utils", "agents", "web", "prompts", "tools/data/providers", "config.py", "server.py"]
+files = ["graph", "utils", "agents", "web", "prompts", "tools/data/providers", "config.py", "server.py", "worker.py"]
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = true
 check_untyped_defs = true
@@ -61,7 +61,7 @@ no_implicit_optional = true
 
 # tools/ isn't in `files` yet; don't report its errors when it's imported.
 [[tool.mypy.overrides]]
-module = ["tools.*"]
+module = ["tools.*", "scripts.*"]
 follow_imports = "silent"
 
 # Ratchet toward the PRD's --strict (TEST-01). Every module NOT listed here is

@@ -16,6 +16,30 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-16 — Single-owner background jobs with heartbeats (REL-05)
+**Problem.** Every app process started its own Telegram getUpdates poller and its own housekeeping thread. Telegram allows only one poller per bot, so two replicas fight with 409 errors. Alert checks ran only on GitHub Actions cron, which can start late, is disabled after 60 days without repo activity, and installed the whole app (LangGraph, Gradio, WeasyPrint) on every run. Nothing recorded whether any job had run (REL-05).
+**Alternatives considered.**
+- APScheduler with a job store. That adds another dependency and still needs an external lock across processes.
+- A Telegram webhook route. That needs a public HTTPS URL, and the project isn't hosted (OPS-03).
+- A cron container per job. That means more moving parts and still no single owner.
+- Keeping GitHub Actions only. Its timing problems remain and other jobs have nowhere to run.
+
+**Final decision.**
+- `utils/jobs.py`: each job runs under `pg_try_advisory_lock(hashtext('aria.jobs'), hashtext(job))`, taken on a dedicated autocommit connection. Whether a job is due is decided from its `job_heartbeats` row (migration 0017) and re-checked under the lock, so a job another process just ran is not repeated.
+- `run_service` keeps a lock for a whole loop (the Telegram poller); standbys retry every minute and take over if the owner dies.
+- `worker.py` schedules `alert_check` (every 5 min, market open per DATA-06), `housekeeping` (hourly, now also purging expired link codes), `fundamentals_snapshot` (19:30 IST on trading days) and `mf_refresh` (23:30 IST). Jobs run on a small pool so a long refresh never delays alerts.
+- The app runs the same scheduler in-process only when `RUN_JOBS_IN_APP` is set (default: dev only). Compose adds a `worker` service.
+- The GitHub Actions alert check takes the same `alert_check` lock and writes the heartbeat. It installs only `requirements-alerts.lock`, a third hashed lock produced by `scripts/lock.py` and constrained by the runtime lock.
+- `JOBS_DATABASE_URL` gives the lock a direct connection when `DATABASE_URL` is a transaction-mode pooler.
+
+**Trade-offs.**
+- One extra Postgres connection is held per running job, plus one for the poller.
+- If the database is unreachable no jobs run. That is acceptable because every job needs the database anyway.
+- Instrument-master refresh stays a manual step that the owner commits, because the vendored files live in the image.
+- The PRD's "two replicas, 1 hour, no 409s" is demonstrated by lock and failover tests and a local worker run, not by an hour-long run with a real bot.
+
+**Future improvements.** Run the ops watchdog (OBS-04) and data canary (TEST-05) as jobs here. Add per-job metrics (OBS-03). Use a Telegram webhook once the app is hosted behind HTTPS.
+
 ## 2026-10-16 — Portfolio of lots with exact amounts, tab, import and chat tool (UX-05)
 **Problem.** A `portfolio_pnl` alert could be created, but no screen or tool could add holdings, so the alert never fired. Quantities and prices were stored as REAL (float4, about 7 significant digits) (UX-05).
 **Alternatives considered.** One option was to remove `portfolio_pnl` until a portfolio feature existed; the owner chose to build it. Another was to store one row per symbol, but lots (buy date, price per purchase) are what users import from brokers. A third was to keep floats and round on display, which means sums and averages drift.

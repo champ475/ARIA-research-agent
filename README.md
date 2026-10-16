@@ -47,6 +47,8 @@ python app.py
 
 The app checks the schema version at startup and refuses to start (with this instruction) if migrations haven't been applied.
 
+**Background jobs** (alert checks in market hours, housekeeping, the Telegram link listener, the nightly fundamentals snapshot and fund metrics) live in `worker.py`. In dev (`APP_ENV=dev`, the default) the app runs them in-process. Anywhere else, run `python worker.py` next to the app. Each job holds a Postgres advisory lock, so extra workers or app replicas never double-run anything. If `DATABASE_URL` points at a connection pooler (Neon's `-pooler` host), set `JOBS_DATABASE_URL` to the direct host: advisory locks need a real session.
+
 Open **http://localhost:7860**, sign up with an email and password, and start chatting.
 
 ### Or run it with Docker
@@ -58,7 +60,7 @@ cp .env.example .env   # fill in SECRET_KEY at minimum
 docker compose up --build
 ```
 
-Open **http://localhost:7860**. Data persists in a named Docker volume (`aria_pg_data`) across restarts.
+Open **http://localhost:7860**. Data persists in a named Docker volume (`aria_pg_data`) across restarts. Compose also starts a `worker` service for the background jobs.
 
 ### Or deploy it for free on Hugging Face Spaces
 

@@ -1,7 +1,7 @@
 """
 scripts/lock.py — regenerate or verify the hashed lock files (SEC-14).
 
-requirements.txt / requirements-dev.txt hold the human-edited version ranges;
+requirements.txt / requirements-dev.txt / requirements-alerts.txt hold the human-edited version ranges;
 requirements.lock / requirements-dev.lock are the exact, hashed pins the
 Docker image and CI install (`pip install --require-hashes`), resolved for the
 production platform (Linux x86_64, Python 3.11) whatever OS runs this.
@@ -26,7 +26,11 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PAIRS = [("requirements.txt", "requirements.lock"), ("requirements-dev.txt", "requirements-dev.lock")]
+PAIRS = [
+    ("requirements.txt", "requirements.lock"),
+    ("requirements-dev.txt", "requirements-dev.lock"),
+    ("requirements-alerts.txt", "requirements-alerts.lock"),  # REL-05: the alert cron's slim set
+]
 PLATFORM = ["--python-platform", "x86_64-manylinux_2_28", "--python-version", "3.11"]
 
 
@@ -81,8 +85,13 @@ def main(argv: list[str] | None = None) -> int:
                         f"{d}\n" for d in difflib.unified_diff(old, new, lock, "fresh", n=0)
                     )
 
-    runtime, dev = _pins(ROOT / "requirements.lock"), _pins(ROOT / "requirements-dev.lock")
-    mismatched = sorted(p for p in runtime if p in dev and runtime[p] != dev[p])
+    runtime = _pins(ROOT / "requirements.lock")
+    mismatched = sorted(
+        p
+        for other in ("requirements-dev.lock", "requirements-alerts.lock")
+        for p, v in _pins(ROOT / other).items()
+        if p in runtime and runtime[p] != v
+    )
     if mismatched:
         stale.append(f"version mismatch between locks: {mismatched}")
     if stale:
