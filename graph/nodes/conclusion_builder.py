@@ -23,6 +23,7 @@ import pandas as pd
 
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
+from graph.quote_fields import display_value, quote_rows
 from graph.state import Conclusion, Evidence, GraphState
 from utils.helpers import trim_text
 
@@ -79,7 +80,21 @@ def _flagged_evidence_ids(verification_issues: list[dict]) -> set[str]:
 def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
     conclusions: list[Conclusion] = []
 
-    if ev["evidence_type"] in _NUMERIC_EVIDENCE_TYPES:
+    if ev["evidence_type"] == "quote_info":
+        # LLM-04: only the ~20 allowlisted quote fields, labelled, in ₹/₹ crore/%.
+        for field, label, value, unit in quote_rows(ev["payload"]):
+            shown = display_value(value, unit)
+            conclusions.append(
+                {
+                    "claim": f"{ev['entity']} {label} = {shown}",
+                    "value": value,
+                    "confidence": ev["confidence"],
+                    "evidence_ids": [ev["id"]],
+                    "citation_key": f"{ev['entity']}.{field}",
+                }
+            )
+
+    elif ev["evidence_type"] in _NUMERIC_EVIDENCE_TYPES:
         for field, value in _numeric_fields(ev["payload"]).items():
             citation_key = field if field in CANONICAL_RATIO_KEYS else f"{ev['entity']}.{field}"
             conclusions.append(
