@@ -16,6 +16,31 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-17 — Releases: one image per tag, verify by digest, promote and roll back by retag (TEST-07)
+**Problem.** No path from a commit to a running build was repeatable. There was nothing to roll back to, and nothing stopped a migration from breaking the previous release (TEST-07).
+
+**Alternatives considered.**
+- Rebuild on deploy: the image that runs isn't the image that was tested.
+- Promote with a deploy tool: there is no host (OPS-03).
+- Down-migrations for rollback: they destroy data written since, and they are rarely tested.
+
+**Final decision.**
+- A `vX.Y.Z` tag runs `.github/workflows/release.yml`:
+  1. Build once and push to GHCR, with an SBOM, max provenance and a GitHub attestation.
+  2. Verify that exact digest with `compose.test.yml` (offline fake LLM and data): the Playwright smoke journeys plus the golden-set eval.
+  3. Promote by retagging `:stable` in a `release` environment, which can be gated by an approval. The deploy step is a no-op hook.
+- Rollback is `scripts/rollback.sh vX.Y.Z`, which retags `:stable` to an earlier image without a rebuild.
+- The database only ever moves forward. Migrations are expand/contract: a destructive upgrade after 0021 must declare `CONTRACT:` (`tests/test_migration_policy.py`). See docs/RELEASING.md.
+
+**Trade-offs.**
+- The registry path (push, attest, approval) runs only on a real tag, and only the owner pushes tags. The local drill covers build → verify → promote → rollback with local images.
+- Contract steps need two releases and discipline. The test only checks that the step is declared.
+
+**Future improvements.**
+- A canary or blue-green deploy once there is a host.
+- Verify image signatures (cosign) on pull.
+- Run the smoke subset against the restored backup in the restore drill.
+
 ## 2026-10-16 — End-to-end tests in a real browser, with a deterministic offline mode (TEST-04)
 **Problem.** UI regressions were found by hand. The first real-browser run against a real Postgres checkpointer showed that every research turn with a dependency crashed (TEST-04).
 **Alternatives considered.**

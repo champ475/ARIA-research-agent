@@ -610,6 +610,7 @@ def _build_chat_sidebar(
                         fn=lambda uid=user_id, s=sid: _load_session(uid, s),
                         inputs=[],
                         outputs=load_outputs,
+                        show_progress="hidden",
                     )
                     d.click(
                         fn=lambda current_sid, refresh, uid=user_id, s=sid: _delete_session(
@@ -617,10 +618,11 @@ def _build_chat_sidebar(
                         ),
                         inputs=[session_state, refresh_state],
                         outputs=load_outputs + [refresh_state],
+                        show_progress="hidden",
                     )
 
-    new_chat_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs)
-    new_chat_icon_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs)
+    new_chat_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs, show_progress="hidden")
+    new_chat_icon_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs, show_progress="hidden")
 
     def _toggle(is_open):
         new_state = not is_open
@@ -1282,6 +1284,7 @@ def _build_chat_tab(user_state: gr.State):
         _clear,
         [user_state],
         [chatbot, chart_panel, suggestions_state] + sug_btns + [session_state],
+        show_progress="hidden",
     )
 
     for btn in sug_btns:
@@ -2062,10 +2065,15 @@ def build_ui() -> gr.Blocks:
         def _reset_chat(user_id):
             return [], gr.update(value=None, visible=False), CHAT_DEFAULTS, None
 
+        # show_progress="hidden" here and on every other event that writes the
+        # chatbot: Gradio draws its own "•••" pending bubble on a target
+        # component while such an event waits in the queue, and on a slow
+        # first load it outlived the answer (TEST-07 found it on the container).
         user_state.change(
             _reset_chat,
             [user_state],
             [chat_chatbot, chat_chart, chat_sugg_state, chat_session],
+            show_progress="hidden",
         )
 
         demo.load(_identify_user, None, [user_state])
