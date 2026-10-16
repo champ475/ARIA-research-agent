@@ -165,6 +165,10 @@ Use the Watchlist tab to add/remove stocks you're tracking — separate from ale
 
 Bug reports, feature requests, and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, test running, and how to add a new agent or tool.
 
+## Data sources
+
+Data: Yahoo Finance (via yfinance), NSE, BSE, AMFI, mfapi.in, Google News and publisher RSS. These are free public sources, used for non-commercial, education-only research. Each one's terms, permitted use and attribution are in [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md). Before any commercial use, read that register's status column: NSE and Yahoo data need a licence.
+
 ## Legal
 
 ARIA is a research tool, not financial advice — see [LEGAL.md](LEGAL.md) for the full terms of use and privacy notice every user agrees to at signup (not investment advice, no SEBI registration, AI output may be wrong, third-party data has no accuracy guarantee, where your data goes if you bring your own LLM key). If you're operating an instance for other people, read it and make sure it actually reflects your setup before shipping it as-is.

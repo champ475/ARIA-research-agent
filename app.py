@@ -1005,8 +1005,8 @@ HEADER_HTML = """
 
 FOOTER_HTML = """
 <div class='aria-footer'>
-  Data: NSE/BSE via yfinance · NSE bhavcopy · AMFI · Google News RSS — All free &nbsp;|&nbsp;
-  ⚠️ Not SEBI-registered. For professional research purposes only.
+  Data: Yahoo Finance (via yfinance), NSE, BSE, AMFI, mfapi.in, Google News and publisher RSS &nbsp;|&nbsp;
+  ⚠️ Not SEBI-registered. Educational information, not investment advice.
 </div>
 """
 
