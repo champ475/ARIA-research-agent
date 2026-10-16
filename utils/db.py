@@ -1651,3 +1651,21 @@ def download_get(user_id: int, token: str) -> dict | None:
 def downloads_purge_expired() -> int:
     rows = _query("DELETE FROM downloads WHERE expires_at < now() RETURNING token", commit=True)
     return len(rows or [])
+
+
+# ── SLO (OBS-03; scripts/slo_report.py, ops watchdog) ───────────────────────
+
+FAILED_TURN_STATUSES = ("error", "llm_unavailable")
+
+
+def slo_summary(since) -> dict:
+    """Turns, good turns and the equity p95 time to first output since `since`."""
+    row = _query(
+        "SELECT count(*) AS turns, count(*) FILTER (WHERE NOT (status = ANY(%s))) AS good, "
+        "percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms) "
+        "FILTER (WHERE intent = 'equity' AND ttft_ms IS NOT NULL) AS equity_p95_ttft_ms "
+        "FROM turns WHERE created_at >= %s",
+        (list(FAILED_TURN_STATUSES), since),
+        fetch="one",
+    )
+    return row or {"turns": 0, "good": 0, "equity_p95_ttft_ms": None}

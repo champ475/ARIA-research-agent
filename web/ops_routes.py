@@ -5,12 +5,15 @@ web/ops_routes.py — liveness and readiness (OPS-04).
                    restart the container if this fails).
     GET /health/data  per-source data health (DATA-02): breaker state, counts,
                    last success/failure.
+    GET /metrics   Prometheus metrics (OBS-03); needs `Authorization: Bearer
+                   <METRICS_TOKEN>` — outside dev/test the route is off
+                   without a token.
     GET /readyz    200 only when this instance should get traffic: the
                    database answers, the schema is at the Alembic head, at
                    least one LLM provider is configured, and it isn't
                    draining for shutdown. 503 lists what is wrong.
 
-All are unauthenticated and reveal no user data or error text.
+The others are unauthenticated and reveal no user data or error text.
 """
 
 from __future__ import annotations
@@ -19,8 +22,8 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse, Response
 
 import config
 from utils import lifecycle
@@ -100,3 +103,20 @@ def health_data() -> JSONResponse:
             "sources": sources,
         }
     )
+
+
+@router.get("/metrics")
+def metrics_route(request: Request) -> Response:
+    import secrets
+
+    from prometheus_client import CONTENT_TYPE_LATEST
+
+    from utils import metrics
+
+    token = config.METRICS_TOKEN
+    if not token:
+        if config.APP_ENV not in ("dev", "test"):
+            return Response("Not found", status_code=404, media_type="text/plain")
+    elif not secrets.compare_digest(request.headers.get("authorization", ""), f"Bearer {token}"):
+        return Response("Unauthorized", status_code=401, headers={"WWW-Authenticate": "Bearer"})
+    return Response(metrics.render(), media_type=CONTENT_TYPE_LATEST)

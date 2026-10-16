@@ -329,6 +329,9 @@ def turn(turn_id: str, user_id: int | None, session_id: str | None, query: str) 
                 )
             except Exception as e:
                 log.debug(f"[tracing] could not end trace: {e}")
+        from utils import metrics
+
+        metrics.observe_turn(rec, latency_ms)  # OBS-03
         _persist(rec, latency_ms, sink)
 
 

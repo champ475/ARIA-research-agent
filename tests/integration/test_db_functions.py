@@ -24,6 +24,7 @@ from tests.integration import (
     test_jobs,
     test_rate_limits,
     test_sessions,
+    test_slo,
 )
 from tests.integration.test_tenant_isolation import COVERED as ISOLATION_COVERED
 
@@ -332,6 +333,7 @@ COVERED = {
     "job_heartbeats": test_jobs.test_run_records_a_heartbeat_and_is_not_repeated,
     "telegram_link_codes_purge_expired": test_jobs.test_expired_link_codes_are_purged,
     "downloads_purge_expired": test_downloads.test_stored_files_expire_and_are_purged,
+    "slo_summary": test_slo.test_slo_report_matches_a_hand_count,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.

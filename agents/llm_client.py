@@ -540,6 +540,18 @@ class LLMClient:
     _extra: tuple | list = ()  # route entries after primary/secondary (LLM-08)
     _node: str | None = None
 
+    def _observe(self, provider, model: str | None, tokens_in: int, tokens_out: int, cost: float) -> None:
+        """OBS-03 counters; a call served by other than the first choice is a fallback."""
+        from utils import metrics
+
+        try:
+            first = self._chain()[0]
+        except Exception:
+            first = provider
+        metrics.observe_llm_call(
+            self._node, str(provider.name), model, tokens_in, tokens_out, cost, provider is not first
+        )
+
     def _record_llm_call(
         self, provider, prompt: str, output: str, streamed: bool = False, ms: int = 0
     ) -> None:
@@ -547,8 +559,6 @@ class LLMClient:
         tokens from the provider's usage report (also for streams that sent
         one), else estimated; plus node, model, latency and rupee cost."""
         rec = tracing.current()
-        if rec is None:
-            return
         usage = getattr(provider, "last_usage", None)
         if isinstance(usage, tuple):
             tokens_in, tokens_out, estimated = usage[0], usage[1], False
@@ -559,7 +569,12 @@ class LLMClient:
 
         model = getattr(provider, "model", None)
         model = model if isinstance(model, str) else None
+        if rec is None:
+            # Outside a turn (startup probe, worker job): metrics only.
+            self._observe(provider, model, tokens_in, tokens_out, 0.0)
+            return
         cost = 0.0 if self._is_byo else call_cost_inr(model, tokens_in, tokens_out)
+        self._observe(provider, model, tokens_in, tokens_out, cost)
         rec.add_llm_call(
             str(provider.name),
             self._prompt_version,

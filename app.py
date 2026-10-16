@@ -1047,6 +1047,9 @@ def _build_chat_tab(user_state: gr.State):
             return hidden
         rating = 1 if data.liked else -1
         feedback_record(user_id, turn_id, rating, session_id=session_id)
+        from utils.metrics import observe_feedback
+
+        observe_feedback(rating)
         if rating == 1:
             return gr.update(visible=False), None, "👍 Thanks for the feedback."
         return gr.update(visible=True), turn_id, ""

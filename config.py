@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     # other APP_ENV refuses to start against them (dev/staging never touch
     # real users' data). Set it in every non-prod env file.
     PROD_DATABASE_HOSTS: str = ""
+    # OBS-03: bearer token Prometheus sends to GET /metrics. Required outside
+    # dev/test — without it the route is off there (404).
+    METRICS_TOKEN: str = ""
+    # OBS-03 SLOs (docs/SLO.md): monthly availability and equity p95 time to first output.
+    SLO_AVAILABILITY: float = Field(0.995, gt=0, lt=1)
+    SLO_EQUITY_P95_TTFT_SECONDS: float = Field(15.0, gt=0)
     DB_POOL_MAX: int = Field(20, ge=1, le=500)
     DB_POOL_ACQUIRE_TIMEOUT: float = Field(10, gt=0)
     DB_POOL_MIN: int = Field(2, ge=0)
@@ -422,6 +428,9 @@ DATA_DIR = "data"
 # ── Database (Neon Postgres — shared by the app and the alert checker) ────────
 DATABASE_URL = settings.DATABASE_URL
 JOBS_DATABASE_URL = settings.JOBS_DATABASE_URL
+METRICS_TOKEN = settings.METRICS_TOKEN
+SLO_AVAILABILITY = settings.SLO_AVAILABILITY
+SLO_EQUITY_P95_TTFT_SECONDS = settings.SLO_EQUITY_P95_TTFT_SECONDS
 RUN_JOBS_IN_APP = settings.run_jobs_in_app
 DB_POOL_MAX = settings.DB_POOL_MAX
 DB_POOL_ACQUIRE_TIMEOUT = settings.DB_POOL_ACQUIRE_TIMEOUT

@@ -106,6 +106,37 @@ services:
       app-staging:
         condition: service_started
 
+  # ── Observability (OBS-03): `docker compose --profile observability up` ──
+  # Prometheus scrapes the app's /metrics; Grafana (http://localhost:3000,
+  # admin/admin on first login) has the ARIA dashboard provisioned.
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - aria_prometheus:/prometheus
+    depends_on:
+      - app
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - aria_grafana:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   aria_pg_data:
   aria_pg_staging:
+  aria_prometheus:
+  aria_grafana:

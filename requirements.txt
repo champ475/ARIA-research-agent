@@ -50,6 +50,7 @@ alembic>=1.13.0                  # versioned schema migrations (ARCH-01); pulls 
 python-dotenv>=1.0.0
 pydantic-settings>=2.6.0         # typed, validated configuration (ARCH-03)
 cachetools>=5.5.0                # bounded TTL caches: sessions (SEC-04), orchestrators (REL-03)
+prometheus-client>=0.20.0        # /metrics for dashboards and alerts (OBS-03)
 pytz>=2024.1
 
 # ── Testing ───────────────────────────────────────────────────────────────────
