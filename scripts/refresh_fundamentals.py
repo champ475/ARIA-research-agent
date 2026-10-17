@@ -9,9 +9,16 @@ scripts/refresh_fundamentals.py — nightly fundamentals snapshot (DATA-05).
 Walks every EQ-series symbol in the instrument master (data/instruments/),
 fetches its quote through the market-data provider (bounded, breaker-guarded,
 DATA-02) and upserts the screen fields into `fundamentals_snapshot`. A rerun
-skips symbols refreshed within --resume-hours (default 20), so a run cut
-short resumes where it stopped. Calls are spread over --workers threads with
-a --delay between each worker's calls to stay under Yahoo's rate limits.
+skips symbols refreshed within --resume-hours (default 20) that have real
+fundamentals, so a run cut short resumes where it stopped. Calls are spread
+over --workers threads with a --delay between each worker's calls to stay
+under Yahoo's rate limits (4 workers / 0.25 s got throttled on the full
+universe; 2 / 0.6 didn't, about 21 min for ~2350 symbols).
+
+When Yahoo refuses, the quote falls back to the NSE bhavcopy, a price with
+no fundamentals (tagged `_degraded_source`). Such a quote never overwrites
+a complete row from an earlier run, only fills a symbol that has none, and
+the degraded symbols get one slower retry pass after --retry-pause seconds.
 
 The worker (REL-05) runs this nightly; the screener flags data older than
 FUNDAMENTALS_MAX_AGE_HOURS.
@@ -74,42 +81,58 @@ def snapshot_row(symbol: str, name: str, isin: str, info: dict[str, Any]) -> dic
 
 
 def refresh(
-    symbols: list[tuple[str, str, str]], workers: int = 4, delay: float = 0.25, fetch=None
+    symbols: list[tuple[str, str, str]],
+    workers: int = 2,
+    delay: float = 0.6,
+    fetch=None,
+    degraded_out: list[tuple[str, str, str]] | None = None,
 ) -> dict[str, int]:
-    """Fetch and upsert; returns counts {written, empty, failed}."""
+    """Fetch and upsert; returns counts {written, degraded, empty, failed}.
+    `written` counts complete rows; a degraded (price-only) quote is only
+    inserted for a symbol with no row yet and is appended to `degraded_out`."""
     from tools.data.providers import market_data
     from utils.db import fundamentals_upsert
 
     quote = fetch or (lambda s: market_data().quote(s))
-    counts = {"written": 0, "empty": 0, "failed": 0}
+    counts = {"written": 0, "degraded": 0, "empty": 0, "failed": 0}
     pending: list[dict[str, Any]] = []
+    price_only: list[dict[str, Any]] = []
 
-    def one(item: tuple[str, str, str]) -> dict[str, Any] | None | Exception:
+    def one(item: tuple[str, str, str]) -> tuple[dict[str, Any] | None | Exception, bool]:
         symbol, name, isin = item
         try:
-            row = snapshot_row(symbol, name, isin, quote(symbol))
+            info = quote(symbol)
+            return snapshot_row(symbol, name, isin, info), bool(info and info.get("_degraded_source"))
         except Exception as e:
-            return e
+            return e, False
         finally:
             if delay:
                 time.sleep(delay)
-        return row
+
+    def flush() -> None:
+        counts["written"] += fundamentals_upsert(pending)
+        fundamentals_upsert(price_only, keep_existing=True)
+        pending.clear()
+        price_only.clear()
 
     with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="fundamentals") as pool:
-        for i, result in enumerate(pool.map(one, symbols), 1):
+        for i, (item, (result, degraded)) in enumerate(zip(symbols, pool.map(one, symbols), strict=True), 1):
             if isinstance(result, Exception):
                 counts["failed"] += 1
             elif result is None:
                 counts["empty"] += 1
+            elif degraded:
+                counts["degraded"] += 1
+                price_only.append(result)
+                if degraded_out is not None:
+                    degraded_out.append(item)
             else:
                 pending.append(result)
-            if len(pending) >= BATCH:
-                counts["written"] += fundamentals_upsert(pending)
-                pending.clear()
+            if len(pending) + len(price_only) >= BATCH:
+                flush()
             if i % 250 == 0:
                 log.info("%d/%d done %s", i, len(symbols), counts)
-    if pending:
-        counts["written"] += fundamentals_upsert(pending)
+    flush()
     return counts
 
 
@@ -122,8 +145,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--symbols", default="")
     ap.add_argument("--resume-hours", type=float, default=20.0)
-    ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--delay", type=float, default=0.25)
+    ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--delay", type=float, default=0.6)
+    ap.add_argument("--retry-pause", type=float, default=60.0, help="seconds before retrying degraded quotes")
     args = ap.parse_args(argv)
 
     todo = universe()
@@ -137,7 +161,17 @@ def main(argv: list[str] | None = None) -> int:
         todo = todo[: args.limit]
     started = time.monotonic()
     log.info("refreshing %d symbols", len(todo))
-    counts = refresh(todo, workers=args.workers, delay=args.delay)
+    degraded: list[tuple[str, str, str]] = []
+    counts = refresh(todo, workers=args.workers, delay=args.delay, degraded_out=degraded)
+    if degraded:
+        # Yahoo throttled part of the run: one slower pass over those symbols
+        # once it has cooled down. Still-degraded ones wait for the next run.
+        log.warning("%d degraded (price-only) quotes; retrying in %.0fs", len(degraded), args.retry_pause)
+        time.sleep(max(0.0, args.retry_pause))
+        again = refresh(degraded, workers=1, delay=max(1.0, args.delay * 2))
+        counts["written"] += again["written"]
+        counts["degraded"] = again["degraded"]
+        counts["failed"] += again["failed"]
     log.info("done in %.0fs: %s", time.monotonic() - started, counts)
     return 0 if counts["written"] or not todo else 1
 

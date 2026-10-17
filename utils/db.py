@@ -1489,16 +1489,21 @@ SCREEN_COLUMNS = {
 _SCREEN_OPS = {"<": "<", "<=": "<=", ">": ">", ">=": ">="}
 
 
-def fundamentals_upsert(rows: list[dict]) -> int:
-    """Insert or refresh snapshot rows (as_of = now). Returns rows written."""
+def fundamentals_upsert(rows: list[dict], *, keep_existing: bool = False) -> int:
+    """Insert or refresh snapshot rows (as_of = now). Returns rows sent.
+
+    keep_existing=True only inserts symbols with no row yet: a degraded quote
+    (price only, from the bhavcopy fallback) must not blank out a complete
+    row from an earlier run."""
     if not rows:
         return 0
     cols = ", ".join(FUNDAMENTALS_COLUMNS)
     placeholders = ", ".join(f"%({c})s" for c in FUNDAMENTALS_COLUMNS)
     updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in FUNDAMENTALS_COLUMNS if c != "symbol")
+    on_conflict = "DO NOTHING" if keep_existing else f"DO UPDATE SET {updates}, as_of=now()"
     sql = (
         f"INSERT INTO fundamentals_snapshot ({cols}) VALUES ({placeholders}) "  # noqa: S608 (fixed column list)  # nosec B608
-        f"ON CONFLICT (symbol) DO UPDATE SET {updates}, as_of=now()"
+        f"ON CONFLICT (symbol) {on_conflict}"
     )
     payload = [{c: r.get(c) for c in FUNDAMENTALS_COLUMNS} | {"lender": bool(r.get("lender"))} for r in rows]
     conn = get_conn()
@@ -1558,8 +1563,13 @@ def fundamentals_status() -> dict:
 
 
 def fundamentals_fresh_symbols(since) -> set[str]:
-    """Symbols refreshed at or after `since` — a resumed run skips them."""
-    rows = _query("SELECT symbol FROM fundamentals_snapshot WHERE as_of >= %s", (since,))
+    """Symbols refreshed at or after `since` with real fundamentals — a resumed
+    run skips them. A price-only row (degraded quote) isn't fresh: retry it."""
+    rows = _query(
+        "SELECT symbol FROM fundamentals_snapshot WHERE as_of >= %s "
+        "AND (mcap_cr IS NOT NULL OR pe IS NOT NULL OR sector IS NOT NULL)",
+        (since,),
+    )
     return {r["symbol"] for r in rows or []}
 
 
