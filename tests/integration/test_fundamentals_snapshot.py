@@ -141,16 +141,71 @@ def test_refresh_writes_and_resumes(db):
         },
     }
     counts = rf.refresh(universe, workers=2, delay=0, fetch=lambda s: quotes[s])
-    assert counts == {"written": 2, "empty": 0, "failed": 0}
+    assert counts == {"written": 2, "degraded": 0, "empty": 0, "failed": 0}
     rows = {r["symbol"]: r for r in db.fundamentals_screen([], None, limit=10)}
     assert rows["TCS"]["de"] == 0.1 and rows["SBIN"]["lender"] and rows["SBIN"]["de"] is None
     assert db.fundamentals_status()["rows"] == 2
 
     with patch.object(rf, "universe", return_value=universe), patch.object(rf, "refresh") as again:
-        again.return_value = {"written": 0, "empty": 0, "failed": 0}
+        again.return_value = {"written": 0, "degraded": 0, "empty": 0, "failed": 0}
         rf.main([])
     assert again.call_args[0][0] == []  # both fresh: nothing left to fetch
     assert db.fundamentals_fresh_symbols(datetime.now(UTC) - timedelta(hours=1)) == {"TCS", "SBIN"}
+
+
+FULL_TCS = {"currentPrice": 3000.0, "trailingPE": 25.0, "marketCap": 1.1e13, "sector": "Technology"}
+DEGRADED = {
+    "currentPrice": 3100.0,
+    "_degraded_source": "NSE bhavcopy (latest session) — yfinance unavailable",
+}
+
+
+def test_a_degraded_quote_never_blanks_a_complete_row(db):
+    import scripts.refresh_fundamentals as rf
+
+    tcs = [("TCS", "Tata Consultancy Services Limited", "INE467B01029")]
+    rf.refresh(tcs, workers=1, delay=0, fetch=lambda s: FULL_TCS)
+    before = db.fundamentals_screen([], None, limit=10)[0]
+
+    out: list = []
+    counts = rf.refresh(tcs, workers=1, delay=0, fetch=lambda s: DEGRADED, degraded_out=out)
+    assert counts == {"written": 0, "degraded": 1, "empty": 0, "failed": 0} and out == tcs
+    after = db.fundamentals_screen([], None, limit=10)[0]
+    assert after == before  # yesterday's complete row, price and P/E included, untouched
+    assert after["pe"] == 25.0 and after["sector"] == "Technology"
+
+
+def test_a_degraded_quote_fills_a_new_symbol_but_is_not_fresh(db):
+    import scripts.refresh_fundamentals as rf
+
+    rf.refresh([("NEWCO", "New Co", "X")], workers=1, delay=0, fetch=lambda s: DEGRADED)
+    row = db.fundamentals_screen([], None, limit=10)[0]
+    assert row["symbol"] == "NEWCO" and row["price"] == 3100.0 and row["pe"] is None
+    assert "NEWCO" not in db.fundamentals_fresh_symbols(datetime.now(UTC) - timedelta(hours=1))
+
+
+def test_main_retries_degraded_quotes_once_after_a_pause(db):
+    import scripts.refresh_fundamentals as rf
+
+    universe = [("TCS", "Tata Consultancy Services Limited", "INE467B01029")]
+    calls: list[str] = []
+
+    def quote(symbol):  # throttled on the first pass, fine on the retry
+        calls.append(symbol)
+        return DEGRADED if len(calls) == 1 else FULL_TCS
+
+    with (
+        patch.object(rf, "universe", return_value=universe),
+        patch("tools.data.providers.market_data") as md,
+        patch.object(rf.time, "sleep") as pause,
+    ):
+        md.return_value.quote.side_effect = quote
+        assert rf.main(["--retry-pause", "5", "--delay", "0"]) == 0
+    assert calls == ["TCS", "TCS"] and any(c.args == (5.0,) for c in pause.call_args_list)
+    row = db.fundamentals_screen([], None, limit=10)[0]
+    assert row["pe"] == 25.0 and "TCS" in db.fundamentals_fresh_symbols(
+        datetime.now(UTC) - timedelta(hours=1)
+    )
 
 
 def test_peers_come_from_the_same_industry_closest_in_size(db):
