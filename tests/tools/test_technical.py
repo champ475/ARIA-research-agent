@@ -136,3 +136,20 @@ class TestSnapshot:
         for _k, v in snap.items():
             if isinstance(v, float):
                 assert v == v  # not NaN
+
+    def test_snapshot_holds_python_numbers_only(self, ohlcv_df):
+        # NumPy 2 reprs scalars as np.float64(1.5); any str() of the evidence
+        # (logs, prompts) would show that instead of 1.5.
+        import numpy as np
+
+        def numpy_scalars(o, path="snap"):
+            if isinstance(o, dict):
+                return [p for k, v in o.items() for p in numpy_scalars(v, f"{path}.{k}")]
+            if isinstance(o, (list, tuple)):
+                return [p for i, v in enumerate(o) for p in numpy_scalars(v, f"{path}[{i}]")]
+            return [path] if isinstance(o, np.generic) else []
+
+        snap = technical.snapshot(technical.compute_all(ohlcv_df))
+        assert snap["swings"]["swing_highs"] or snap["swings"]["swing_lows"]
+        assert numpy_scalars(snap) == []
+        assert "np." not in str(snap)
