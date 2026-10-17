@@ -446,3 +446,39 @@ class TestStreamCutOff:
             gen = orch.process_stream("analyse TCS")
             with pytest.raises(ConnectionError):
                 list(gen)
+
+
+class TestAdminTrialExemption:
+    """OBS-05: an admin is not held to the trial's daily message/token limits."""
+
+    def _orch(self):
+        with (
+            patch("agents.graph_orchestrator.shared_graph", return_value=MagicMock()),
+            patch("agents.graph_orchestrator.get_turn_checkpointer", return_value=None),
+            patch.object(GraphOrchestrator, "_resolve_byo_config", return_value=None),
+        ):
+            return GraphOrchestrator(user_id=7)
+
+    def test_admin_skips_the_limits(self):
+        with (
+            patch("utils.db.user_is_admin", return_value=True),
+            patch("utils.db.trial_quota_check_and_increment") as take,
+        ):
+            assert self._orch()._trial_quota_exceeded() is False
+        take.assert_not_called()
+
+    def test_regular_user_is_still_limited(self):
+        with (
+            patch("utils.db.user_is_admin", return_value=False),
+            patch("utils.db.trial_tokens_used", return_value=0),
+            patch("utils.db.trial_quota_check_and_increment", return_value=False),
+        ):
+            assert self._orch()._trial_quota_exceeded() is True
+
+    def test_admin_check_failure_keeps_the_limit(self):
+        with (
+            patch("utils.db.user_is_admin", side_effect=RuntimeError("db down")),
+            patch("utils.db.trial_tokens_used", return_value=0),
+            patch("utils.db.trial_quota_check_and_increment", return_value=False),
+        ):
+            assert self._orch()._trial_quota_exceeded() is True
