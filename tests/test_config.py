@@ -150,3 +150,25 @@ def test_non_prod_refuses_the_production_database():
         )
         is None
     )
+
+
+def test_empty_optional_values_mean_unset():
+    # `REQUIRE_EMAIL_VERIFICATION=   # comment` in .env reaches pydantic as "".
+    s = config.Settings(
+        APP_ENV="dev",
+        RUN_JOBS_IN_APP="",
+        COOKIE_SECURE=" ",
+        REQUIRE_EMAIL_VERIFICATION="",
+        TURN_DEADLINE_SECONDS="",
+    )
+    assert (s.RUN_JOBS_IN_APP, s.COOKIE_SECURE, s.REQUIRE_EMAIL_VERIFICATION, s.TURN_DEADLINE_SECONDS) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    assert (
+        s.run_jobs_in_app is True
+        and s.require_email_verification is False
+        and s.turn_deadline_seconds == 90.0
+    )
