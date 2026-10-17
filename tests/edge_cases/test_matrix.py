@@ -119,7 +119,7 @@ def _confirmation(row: dict, exp: dict) -> None:
 
 
 def _report_id(row: dict, exp: dict) -> None:
-    from graph.nodes.communication_layer import _REPORT_ID_RE
+    from graph.nodes.report_management import _REPORT_ID_RE
 
     m = _REPORT_ID_RE.search(row["query"])
     assert (int(m.group(1)) if m else None) == exp["report_id"]

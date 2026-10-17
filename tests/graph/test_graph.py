@@ -456,7 +456,7 @@ class TestReportDomainEndToEnd:
             patch("graph.tool_catalogue.get_latest_quarterly_results", return_value="Revenue up 10% YoY."),
             patch("tools.data.evidence_cache.evidence_cache_get", return_value=None),
             patch("tools.data.evidence_cache.evidence_cache_put", return_value=None),
-            patch("graph.nodes.communication_layer.report_save", return_value=4) as mock_persist,
+            patch("graph.nodes.output_files.report_save", return_value=4) as mock_persist,
         ):
             graph = build_graph(
                 query_analyzer_client=qa,
@@ -600,7 +600,7 @@ class TestScreenerDomainEndToEnd:
             patch("graph.tool_catalogue.screener_parse_query", return_value={"max_pe": 25}),
             patch("graph.tool_catalogue.run_screener", return_value=[{"symbol": "TCS"}, {"symbol": "INFY"}]),
             patch("graph.tool_catalogue.screener_to_markdown", return_value="| TCS |\n| INFY |"),
-            patch("graph.nodes.communication_layer.download_put", return_value="S" * 32),
+            patch("graph.nodes.output_files.download_put", return_value="S" * 32),
             patch("tools.data.evidence_cache.evidence_cache_get", return_value=None),
             patch("tools.data.evidence_cache.evidence_cache_put", return_value=None),
         ):
@@ -642,12 +642,12 @@ class TestPlanningDomainEndToEnd:
         communication = _StubClient("unused")  # intake_turn call is separately mocked below
         with (
             patch("graph.nodes.query_analyzer.resolve_mentions", side_effect=lambda q: EntityResult()),
-            patch("graph.nodes.communication_layer.profile_get", return_value={}),
+            patch("graph.nodes.planning_node.profile_get", return_value={}),
             patch(
-                "graph.nodes.communication_layer._planning_intake_turn",
+                "graph.nodes.planning_node._planning_intake_turn",
                 return_value=({"age": 30}, False, "Tell me your capital and goal too"),
             ),
-            patch("graph.nodes.communication_layer.profile_upsert", return_value={"age": 30}),
+            patch("graph.nodes.planning_node.profile_upsert", return_value={"age": 30}),
         ):
             graph = build_graph(
                 query_analyzer_client=qa,
@@ -683,13 +683,13 @@ class TestPlanningDomainEndToEnd:
         }
         with (
             patch("graph.nodes.query_analyzer.resolve_mentions", side_effect=lambda q: EntityResult()),
-            patch("graph.nodes.communication_layer.profile_get", return_value={}),
+            patch("graph.nodes.planning_node.profile_get", return_value={}),
             patch(
-                "graph.nodes.communication_layer._planning_intake_turn",
+                "graph.nodes.planning_node._planning_intake_turn",
                 return_value=(complete_profile, True, "Building now"),
             ),
-            patch("graph.nodes.communication_layer.profile_upsert", return_value=complete_profile),
-            patch("graph.nodes.communication_layer._planning_build_strategy", return_value="Full strategy"),
+            patch("graph.nodes.planning_node.profile_upsert", return_value=complete_profile),
+            patch("graph.nodes.planning_node._planning_build_strategy", return_value="Full strategy"),
         ):
             graph = build_graph(
                 query_analyzer_client=qa,
@@ -729,7 +729,7 @@ class TestMultiIntentEndToEnd:
             patch("graph.tool_catalogue.get_latest_quarterly_results", return_value="Revenue up 10%."),
             patch("tools.data.evidence_cache.evidence_cache_get", return_value=None),
             patch("tools.data.evidence_cache.evidence_cache_put", return_value=None),
-            patch("graph.nodes.communication_layer.report_save", return_value=4),
+            patch("graph.nodes.output_files.report_save", return_value=4),
         ):
             graph = build_graph(
                 query_analyzer_client=qa,

@@ -127,7 +127,7 @@ def test_new_question_cancels_the_pending_step_and_runs_as_a_fresh_turn():
     ],
 )
 def test_only_explicit_report_ids(query, report_id):
-    from graph.nodes.communication_layer import _REPORT_ID_RE
+    from graph.nodes.report_management import _REPORT_ID_RE
 
     m = _REPORT_ID_RE.search(query)
     assert (m.group(1) if m else None) == report_id

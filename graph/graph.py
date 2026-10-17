@@ -3,12 +3,13 @@ Graph assembly (RFC_AGENTIC_RESEARCH_GRAPH.md Sec4). Full node set is now
 wired: QueryAnalyzer -> Planner -> ResearchConfirmation (HITL gate) ->
 [ResearchExecutor <-> execute_task_node loop] -> EvidenceSummarizer ->
 Reflection -> Verification -> VerificationGate (HITL gate) ->
-ConclusionBuilder -> CommunicationLayer. Single-ticker equity queries only
-for now (tool catalogue scope, graph/tool_catalogue.py) — report/mf/
-screener/alert/planning intents are added in Phase 7. `build_graph()` takes
-an optional `checkpointer` (graph/checkpointer.py's Postgres saver in
-production, an InMemorySaver in tests) — required for the HITL gates'
-interrupt()/resume to work at all, since a pause has to persist somewhere.
+ConclusionBuilder -> CommunicationLayer -> [OutputFiles, report and screener
+turns only]. ARCH-05: two intents skip research and end their own turn right
+after QueryAnalyzer: planning (PlanningNode) and "show/download my reports"
+(ReportManagementNode). `build_graph()` takes an optional `checkpointer`
+(graph/checkpointer.py's TurnCheckpointer in production: in memory, with a
+paused turn copied to Postgres; an InMemorySaver in tests) — required for the
+HITL gates' interrupt()/resume to work at all.
 
 Reflection's loop-back skips Planner and routes straight to
 ResearchExecutor: Reflection already builds and upserts new Tasks itself
@@ -32,14 +33,18 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from agents.llm_client import LLMClient
+from graph.entity_resolution import blocking_resolutions
 from graph.nodes.communication_layer import build_communication_layer_node
 from graph.nodes.conclusion_builder import conclusion_builder
 from graph.nodes.evidence_summarizer import evidence_summarizer
 from graph.nodes.execute_task import execute_task_node
 from graph.nodes.human_review import research_confirmation, verification_gate
+from graph.nodes.output_files import output_files, wants_files
 from graph.nodes.planner import build_planner_node
+from graph.nodes.planning_node import build_planning_node
 from graph.nodes.query_analyzer import build_query_analyzer_node
 from graph.nodes.reflection import build_reflection_node
+from graph.nodes.report_management import is_report_management, report_management
 from graph.nodes.research_executor import research_executor, route_after_research_executor
 from graph.nodes.verification import build_verification_node
 from graph.state import GraphState
@@ -75,9 +80,28 @@ def build_graph(
     _add("VerificationGate", verification_gate)
     _add("ConclusionBuilder", conclusion_builder)
     _add("CommunicationLayer", build_communication_layer_node(communication_client, provider_config))
+    _add("PlanningNode", build_planning_node(communication_client, provider_config))
+    _add("ReportManagementNode", report_management)
+    _add("OutputFiles", output_files)
 
     graph.add_edge(START, "QueryAnalyzer")
-    graph.add_edge("QueryAnalyzer", "Planner")
+
+    def _route_after_query_analyzer(state: GraphState) -> str:
+        # An unresolved company name is answered by CommunicationLayer's
+        # clarification, whatever the intent, so it never reaches these two.
+        if blocking_resolutions(state):
+            return "Planner"
+        if state.get("intent") == "planning":
+            return "PlanningNode"
+        if is_report_management(state):
+            return "ReportManagementNode"
+        return "Planner"
+
+    graph.add_conditional_edges(
+        "QueryAnalyzer", _route_after_query_analyzer, ["Planner", "PlanningNode", "ReportManagementNode"]
+    )
+    graph.add_edge("PlanningNode", END)
+    graph.add_edge("ReportManagementNode", END)
 
     def _route_after_planner(state: GraphState) -> str:
         return "ResearchConfirmation" if state.get("tasks") else "ConclusionBuilder"
@@ -135,6 +159,11 @@ def build_graph(
         "VerificationGate", _route_after_verification_gate, ["ConclusionBuilder", END]
     )
     graph.add_edge("ConclusionBuilder", "CommunicationLayer")
-    graph.add_edge("CommunicationLayer", END)
+
+    def _route_after_communication(state: GraphState) -> str:
+        return "OutputFiles" if wants_files(state) else END
+
+    graph.add_conditional_edges("CommunicationLayer", _route_after_communication, ["OutputFiles", END])
+    graph.add_edge("OutputFiles", END)
 
     return graph.compile(checkpointer=checkpointer)

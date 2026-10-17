@@ -29,7 +29,7 @@ def test_html_text_quotes_attributes():
 
 
 def test_saved_report_titles_are_escaped_in_the_list(app_module):
-    from graph.nodes import communication_layer as cl
+    from graph.nodes import report_management as cl
 
     evil = {
         "id": 7,
@@ -38,7 +38,7 @@ def test_saved_report_titles_are_escaped_in_the_list(app_module):
         "created_at": datetime(2026, 10, 15),
     }
     with patch.object(cl, "report_list", return_value=[evil]):
-        out = cl._handle_report_management({"query": "list my reports", "user_id": 1})
+        out = cl.report_management({"query": "list my reports", "user_id": 1})
     text = out["final_report"]
     assert "<img" not in text and "pwn" in text
     row = next(line for line in text.splitlines() if line.startswith("| 7 |"))
