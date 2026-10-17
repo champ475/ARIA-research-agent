@@ -139,3 +139,48 @@ class TestPlannerTaskGeneration:
         node = build_planner_node(stub)
         result = node({"objective": "x", "entities": ["RELIANCE"], "complexity": "moderate"})
         assert result["research_journal"][0]["node"] == "Planner"
+
+
+class TestSingleTaskTools:
+    def test_market_wide_tools_run_once_whatever_companies_are_named(self):
+        tasks = _build_tasks(["fetch_info", "fetch_market_overview", "fetch_top_movers"], ["TCS", "INFY"])
+        by_tool = {}
+        for t in tasks:
+            by_tool.setdefault(t["tool"], []).append(t["entity"])
+        assert sorted(by_tool["fetch_info"]) == ["INFY", "TCS"]
+        assert by_tool["fetch_market_overview"] == ["market"] and by_tool["fetch_top_movers"] == ["market"]
+
+    def test_the_portfolio_tool_still_runs_once(self):
+        tasks = _build_tasks(["portfolio_view"], ["TCS"])
+        assert [(t["tool"], t["entity"]) for t in tasks] == [("portfolio_view", "market")]
+
+
+class TestScreenerChain:
+    """Live smoke run 2026-10-18: the model picked screener_parse_query + screener_run but not
+    screener_to_markdown, so the answer was "I couldn't find enough data"."""
+
+    def _plan(self, tools):
+        stub = _StubClient(json.dumps({"tools": tools}))
+        result = build_planner_node(stub)(
+            {
+                "query": "IT stocks with PE under 25 and ROE above 15%",
+                "objective": "screen",
+                "entities": [],
+                "complexity": "moderate",
+                "intent": "screener",
+            }
+        )
+        return sorted({t["tool"] for t in result["tasks"]})
+
+    def test_two_of_three_become_all_three(self):
+        assert self._plan(["screener_parse_query", "screener_run"]) == [
+            "screener_parse_query",
+            "screener_run",
+            "screener_to_markdown",
+        ]
+
+    def test_one_tool_pulls_in_the_rest(self):
+        assert "screener_to_markdown" in self._plan(["screener_run"])
+
+    def test_other_questions_get_no_screener_tools(self):
+        assert self._plan(["fetch_top_movers"]) == ["fetch_top_movers"]

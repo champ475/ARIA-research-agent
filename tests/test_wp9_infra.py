@@ -156,3 +156,24 @@ class TestPolish:
         text = str(prompts.get("advice.reframe"))
         assert prompts.get("advice.reframe").id.endswith("@v2")
         assert "Do not open with a refusal" in text and "Do NOT tell them to buy, sell or hold" in text
+
+
+class TestWarmUp:
+    def test_warm_up_builds_the_trial_graph_in_the_background(self, monkeypatch):
+        import threading
+
+        import agents.graph_orchestrator as go
+
+        built = threading.Event()
+        monkeypatch.setattr(go, "shared_graph", lambda cfg: built.set())
+        monkeypatch.setattr("config.APP_ENV", "dev")
+        monkeypatch.setattr("config.ARIA_FAKE_LLM", False)
+        go.warm_up()
+        assert built.wait(2)
+
+    def test_warm_up_is_off_under_the_fake_llm(self, monkeypatch):
+        import agents.graph_orchestrator as go
+
+        monkeypatch.setattr(go, "shared_graph", lambda cfg: pytest.fail("must not build"))
+        monkeypatch.setattr("config.ARIA_FAKE_LLM", True)
+        go.warm_up()

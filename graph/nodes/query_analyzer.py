@@ -37,6 +37,7 @@ import prompts
 from agents.conversation_memory import strip_badge
 from agents.llm_client import LLMClient
 from config import MAX_ENTITIES_PER_TURN, TOKENS_FAST
+from graph.analysis_tools import TRIGGERS
 from graph.data_questions import min_complexity
 from graph.entity_resolution import (
     EntityResult,
@@ -118,6 +119,10 @@ _FUND_WORDS = re.compile(
     r"\b(?:funds?|mutual|nav|sips?|elss|etfs?|amc|schemes?|flexi\s*cap|multi\s*cap|index\s+fund)\b",
     re.IGNORECASE,
 )
+_PLANNING_WORDS = re.compile(
+    r"\b(?:goal|goals|retire\w*|years?|save|savings|sip|allocat\w*|plan|invest\s+(?:₹|rs|inr)|lakh|crore)\b",
+    re.IGNORECASE,
+)
 _REPORT_WORDS = re.compile(
     r"\b(?:report|reports|memo|note|coverage|initiat\w*|deep\s+dive|summary|results|analysis|research|pdf|ic)\b",
     re.IGNORECASE,
@@ -130,6 +135,12 @@ def _correct_intent(intent: str, query: str, entities: list[str]) -> str:
     - screener: filters the whole market by numbers; companies and no filter is equity;
     - mf: needs a fund word, else it is a company question;
     - report: needs a report word, else it is a company question (a quote, not a PDF)."""
+    if (
+        intent == "planning"
+        and TRIGGERS["portfolio_view"].search(query)
+        and not _PLANNING_WORDS.search(query)
+    ):
+        return "equity"  # "how is my portfolio doing?" reads the holdings; it does not plan goals
     if not entities:
         return intent
     if intent == "screener" and not screener_parse(query).filters:

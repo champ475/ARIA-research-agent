@@ -44,6 +44,10 @@ log = logging.getLogger(__name__)
 
 _SYSTEM = prompts.get("planner.system")
 
+# A screen is only an answer with all three: the filters, the run, and the table the writer reads.
+SCREENER_CHAIN = ("screener_parse_query", "screener_run", "screener_to_markdown")
+# Run once on the sentinel, whatever companies the turn names.
+SINGLE_TASK_TOOLS = ENTITYLESS | {"fetch_market_overview", "fetch_top_movers"}
 _ALL_TOOL_NAMES = {spec.name for spec in list_tools()}
 
 
@@ -90,8 +94,15 @@ def _build_tasks(tool_names: list[str], entities: list[str]) -> list[Task]:
     if not entities:
         tool_names = [t for t in tool_names if t not in COMPANY_BOUND_TOOLS]
     tasks: list[Task] = []
-    for entity in entities or [NO_ENTITY_SENTINEL]:
-        for tool_name in tool_names:
+    # Tools about the market or the user, not a company, run once however many companies are named
+    # (Reflection used to plan fetch_market_overview for INFY).
+    plan: list[tuple[str, list[str]]] = [
+        (entity, [t for t in tool_names if t not in SINGLE_TASK_TOOLS])
+        for entity in entities or [NO_ENTITY_SENTINEL]
+    ]
+    plan.append((NO_ENTITY_SENTINEL, [t for t in tool_names if t in SINGLE_TASK_TOOLS]))
+    for entity, names in plan:
+        for tool_name in names:
             spec = get_tool(tool_name)
             task: Task = {
                 "id": f"{tool_name}:{entity}",
@@ -109,11 +120,7 @@ def _build_tasks(tool_names: list[str], entities: list[str]) -> list[Task]:
 def _plan_tasks(tool_names: list[str], entities: list[str]) -> list[Task]:
     """Per-entity tasks, except entity-less tools (the user's portfolio),
     which run once on the no-entity sentinel."""
-    names = _with_transitive_deps(tool_names)
-    per_entity = [t for t in names if t not in ENTITYLESS]
-    once = [t for t in names if t in ENTITYLESS]
-    tasks = _build_tasks(per_entity, entities) if per_entity else []
-    return tasks + (_build_tasks(once, []) if once else [])
+    return _build_tasks(_with_transitive_deps(tool_names), entities)
 
 
 def build_planner_node(
@@ -185,6 +192,8 @@ def build_planner_node(
         )
         selected = _parse_tool_selection(raw, hidden)
         selected += [t for t in triggered if t not in selected]
+        if any(t in selected for t in SCREENER_CHAIN):
+            selected += [t for t in SCREENER_CHAIN if t not in selected]  # live: the model picked 2 of 3
         if (
             not entities
             and MARKET_LEVEL.search(state.get("query") or "")

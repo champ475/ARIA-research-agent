@@ -276,6 +276,24 @@ def shared_graph(provider_config: dict | None) -> Any:
         return graph
 
 
+def warm_up() -> None:
+    """Build the trial-path graph once, in the background, at start-up. The first
+    build imports the provider SDKs and compiles the graph (~8 s), which the first
+    user turn after every restart used to wait for (live smoke test 2026-10-18)."""
+    from config import APP_ENV, ARIA_FAKE_LLM
+
+    if ARIA_FAKE_LLM or APP_ENV == "test":
+        return
+
+    def _build() -> None:
+        try:
+            shared_graph(None)
+        except Exception:
+            log.warning("[orchestrator] warm-up failed (the first turn will build the graph)", exc_info=True)
+
+    threading.Thread(target=_build, name="aria-warm-up", daemon=True).start()
+
+
 def clear_graph_cache() -> None:
     with _graphs_lock:
         _graphs.clear()

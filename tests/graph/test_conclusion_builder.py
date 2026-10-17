@@ -285,3 +285,18 @@ def test_market_overview_claims_become_conclusions():
     }
     out = conclusion_builder({"evidence": [_plain_evidence("market_overview", payload)]})["conclusions"]
     assert out[0]["claim"].startswith("Nifty 50 is at 24,850.35")
+
+
+def test_screener_results_become_a_conclusion_naming_the_matches():
+    rows = [{"symbol": f"S{i}", "pe": 10 + i} for i in range(12)]
+    claims = [
+        c["claim"]
+        for c in conclusion_builder({"evidence": [_plain_evidence("screener_results", rows)]})["conclusions"]
+    ]
+    assert claims == [
+        "market: 12 stock(s) matched the screen: S0, S1, S2, S3, S4, S5, S6, S7, S8, S9 and 2 more"
+    ]
+    assert (
+        conclusion_builder({"evidence": [_plain_evidence("screener_results", [])]})["conclusions"][0]["value"]
+        == 0
+    )

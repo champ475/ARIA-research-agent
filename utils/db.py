@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import threading
+import time
 from datetime import UTC, date
 from typing import Any
 
@@ -79,6 +80,18 @@ def connection_kwargs() -> dict[str, Any]:
     return kwargs
 
 
+_CHECK_AFTER_IDLE_SECONDS = 20.0  # a connection used this recently is certainly alive
+_last_used: dict[int, float] = {}
+
+
+def _check_if_idle(conn: psycopg.Connection) -> None:
+    """Pool `check`: ping a connection on checkout only after it sat idle for a while.
+    Pinging every checkout doubled the round trips to a remote Neon (~250 ms each)."""
+    if time.monotonic() - _last_used.get(id(conn), 0.0) < _CHECK_AFTER_IDLE_SECONDS:
+        return
+    ConnectionPool.check_connection(conn)
+
+
 def _get_pool() -> ConnectionPool:
     global _pool
     if _pool is None:
@@ -94,7 +107,7 @@ def _get_pool() -> ConnectionPool:
                     kwargs=connection_kwargs(),
                     # Neon drops idle connections server-side; check each one
                     # as it is handed out instead of failing the caller's query.
-                    check=ConnectionPool.check_connection,
+                    check=_check_if_idle,
                     name="aria",
                     open=True,
                 )
@@ -139,6 +152,10 @@ def release_conn(conn: psycopg.Connection, discard: bool = False) -> None:
     `discard=True` closes the connection first; the pool then drops it and
     opens a replacement — for a connection Neon has already killed
     server-side (`server closed the connection unexpectedly`)."""
+    _last_used[id(conn)] = time.monotonic()
+    if len(_last_used) > 1024:  # ids of closed connections: forget the old half
+        for key in sorted(_last_used, key=_last_used.get)[:512]:
+            _last_used.pop(key, None)
     if discard:
         with contextlib.suppress(Exception):
             conn.close()
@@ -182,6 +199,78 @@ def _query(sql: str, params: tuple | dict = (), fetch: str | None = "all", commi
         except Exception:
             release_conn(conn)
             raise
+
+
+def _transaction(statements: list[tuple[str, tuple]]) -> None:
+    """Runs the statements on one connection and commits once: one checkout and one
+    commit round trip instead of one of each per statement (each is ~250 ms to Neon).
+    Same stale-connection retry as _query."""
+    for attempt in range(2):
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            for sql, params in statements:
+                cur.execute(sql, params)
+            conn.commit()
+            release_conn(conn)
+            return
+        except pg_errors.QueryCanceled:
+            release_conn(conn)
+            raise
+        except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+            release_conn(conn, discard=True)
+            if attempt == 1:
+                raise
+            log.warning("[db] stale pooled connection (%s); retrying once with a fresh one", type(e).__name__)
+        except Exception:
+            release_conn(conn)
+            raise
+
+
+_CHAT_INSERT = (
+    "INSERT INTO chat_history (user_id, session_id, tab, role, content, meta) "
+    "SELECT %s, %s, %s, %s, %s, %s "
+    "WHERE EXISTS (SELECT 1 FROM chat_sessions WHERE id=%s AND user_id=%s)"
+)
+
+
+def chat_save_exchange(
+    user_id: int,
+    session_id: int,
+    tab: str,
+    user_msg: str,
+    assistant_msg: str,
+    meta: dict | None = None,
+    title: str | None = None,
+) -> None:
+    """chat_save(user) + chat_save(assistant) + session_touch in one transaction.
+    Same ownership rule as the three it replaces: nothing is written unless
+    `user_id` owns the session (SEC-13)."""
+
+    def row(role: str, content: str, m: dict | None) -> tuple[str, tuple]:
+        params = (
+            user_id,
+            session_id,
+            tab,
+            role,
+            content,
+            None if m is None else json.dumps(m),
+            session_id,
+            user_id,
+        )
+        return _CHAT_INSERT, params
+
+    if title is not None:
+        touch = (
+            "UPDATE chat_sessions SET updated_at=now(), title=%s WHERE id=%s AND user_id=%s",
+            (title, session_id, user_id),
+        )
+    else:
+        touch = (
+            "UPDATE chat_sessions SET updated_at=now() WHERE id=%s AND user_id=%s",
+            (session_id, user_id),
+        )
+    _transaction([row("user", user_msg, None), row("assistant", assistant_msg, meta), touch])
 
 
 def ensure_schema() -> None:

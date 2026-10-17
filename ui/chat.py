@@ -88,7 +88,19 @@ CHAT_PLACEHOLDER = (
 
 # ── Core respond function (orchestrator-routed) ───────────────────────────────
 
-_INPUT_BUSY = gr.update(value="", interactive=False)  # locked while a turn is in flight
+# Gradio only pushes a textbox value to the browser when it differs from the last value the server
+# sent. "" after "" is dropped, so the text the user typed stayed in the box through the whole turn
+# (live smoke test 2026-10-18: "yes" and the previous question were still there, and the next
+# message went out glued to it). A single space while busy makes the final "" a real change.
+# Client-side step run before the event's function: it passes the inputs through unchanged and, a
+# moment later, empties the textbox the way typing would (native setter plus an input event, which
+# Gradio's bound value follows).
+CLEAR_BOX_JS = (
+    "(...args) => { setTimeout(() => { const t = document.querySelector('#__BOX__ textarea'); "
+    "if (t) { const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; "
+    "set.call(t, ''); t.dispatchEvent(new Event('input', {bubbles: true})); } }, 30); return args; }"
+)
+_INPUT_BUSY = gr.update(value=" ", interactive=False)  # locked while a turn is in flight
 _INPUT_READY = gr.update(value="", interactive=True)  # unlocked once the turn is done
 _SEND_BUSY = gr.update(interactive=False)
 _SEND_READY = gr.update(interactive=True)
@@ -754,12 +766,22 @@ def build_chat_tab(user_state: gr.State):
     onboarding_done.click(_onboarding_dismiss, [user_state], [onboarding_box])
 
     chat_kwargs = {"show_progress": "hidden", "concurrency_id": "chat", "concurrency_limit": CHAT_CONCURRENCY}
-    msg_box.submit(_respond, chat_inputs, outputs, **chat_kwargs).then(
-        _confirm_visible, [user_state, session_state], [confirm_row]
+    # The browser clears the box itself the moment the message is read (the server-side clear is
+    # dropped when Gradio sees no change, see _INPUT_BUSY). A turn the server refuses puts the text back.
+    send_kwargs = {**chat_kwargs, "js": CLEAR_BOX_JS.replace("__BOX__", f"msg-{tab_id}")}
+    # The box is disabled while a turn runs, which drops the cursor; put it back for the next message.
+    # After the turn: make sure the box is empty (a second, deterministic clear) and give it the cursor.
+    refocus = (
+        "() => { setTimeout(() => { const t = document.querySelector('#msg-" + tab_id + " textarea'); "
+        "if (!t) return; if (t.value) { const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; "
+        "set.call(t, ''); t.dispatchEvent(new Event('input', {bubbles: true})); } t.focus(); }, 250); }"
     )
-    send_btn.click(_respond, chat_inputs, outputs, **chat_kwargs).then(
+    msg_box.submit(_respond, chat_inputs, outputs, **send_kwargs).then(
         _confirm_visible, [user_state, session_state], [confirm_row]
-    )
+    ).then(None, None, None, js=refocus)
+    send_btn.click(_respond, chat_inputs, outputs, **send_kwargs).then(
+        _confirm_visible, [user_state, session_state], [confirm_row]
+    ).then(None, None, None, js=refocus)
     for btn, answer in ((yes_btn, "yes"), (no_btn, "no")):
         # A click is the typed answer: fill the box, run the same turn path.
         btn.click(lambda a=answer: a, None, [msg_box]).then(

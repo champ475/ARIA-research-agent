@@ -104,3 +104,16 @@ def test_market_wide_evidence_keeps_the_fetch_time_while_open(monkeypatch):
     monkeypatch.setattr("utils.market_clock.last_close", lambda now=None: None)
     fetched = datetime(2026, 10, 15, 6, 0, tzinfo=UTC)
     assert et._as_of(None, fetched, "top_movers") == fetched
+
+
+def test_index_levels_are_dated_and_marked_as_the_last_session_when_closed():
+    from datetime import UTC, datetime
+
+    from graph.freshness import closed_today_header, freshness_note
+
+    sat = datetime(2026, 10, 17, 14, 0, tzinfo=UTC)  # Saturday
+    state = {
+        "evidence": [{"evidence_type": "market_overview", "as_of": datetime(2026, 10, 16, 10, 0, tzinfo=UTC)}]
+    }
+    assert "Markets are closed today" in closed_today_header(state, now=sat)
+    assert "Data as of 16 Oct 2026" in freshness_note(state, now=sat)

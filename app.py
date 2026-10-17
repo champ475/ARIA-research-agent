@@ -54,10 +54,12 @@ def startup() -> None:
         import worker
 
         worker.start(threading.Event())
-    # LLM-08: probe every routed model once, in the background.
+    # LLM-08: probe every routed model once, and build the trial graph, in the background.
+    from agents.graph_orchestrator import warm_up
     from agents.model_health import start_model_health_check
 
     start_model_health_check()
+    warm_up()
 
 
 def build_ui() -> gr.Blocks:

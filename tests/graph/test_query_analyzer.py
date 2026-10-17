@@ -317,3 +317,29 @@ class TestIntentCorrectionByWords:
     )
     def test_report_requests_stay_report(self, query):
         assert self._run(query, "report") == "report"
+
+
+class TestPortfolioIsNotPlanning:
+    """Live run 2026-10-18: "How is my portfolio doing?" was labelled planning (analyzer v2)."""
+
+    @staticmethod
+    def _intent(query, llm_intent="planning"):
+        stub = _StubClient(json.dumps({"intent": llm_intent, "objective": "o", "complexity": "moderate"}))
+        return build_query_analyzer_node(stub)({"query": query, "history": []})["intent"]
+
+    @pytest.mark.parametrize(
+        "query", ["How is my portfolio doing?", "what is my portfolio worth", "my holdings P&L"]
+    )
+    def test_reading_the_holdings_is_not_planning(self, query):
+        assert self._intent(query) == "equity"
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "Plan my retirement",
+            "how should I allocate my portfolio for 15 years",
+            "build my plan: 50 lakh in my portfolio",
+        ],
+    )
+    def test_real_planning_stays_planning(self, query):
+        assert self._intent(query) == "planning"

@@ -305,6 +305,20 @@ def _conclusions_from_evidence(ev: Evidence, quote_fields: set[str] | None = Non
                     }
                 )
 
+    elif ev["evidence_type"] == "screener_results" and isinstance(ev["payload"], list):
+        symbols = [str(r.get("symbol")) for r in ev["payload"] if isinstance(r, dict) and r.get("symbol")]
+        shown = ", ".join(symbols[:10]) + (f" and {len(symbols) - 10} more" if len(symbols) > 10 else "")
+        conclusions.append(
+            {
+                "claim": f"{ev['entity']}: {len(symbols)} stock(s) matched the screen"
+                + (f": {shown}" if symbols else ""),
+                "value": len(symbols),
+                "confidence": ev["confidence"],
+                "evidence_ids": [ev["id"]],
+                "citation_key": f"{ev['entity']}.screener_results",
+            }
+        )
+
     elif ev["evidence_type"] == "screener_saved" and isinstance(ev["payload"], dict):
         p = ev["payload"]
         claim = (
