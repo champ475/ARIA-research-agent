@@ -155,9 +155,9 @@ def swing_levels(df: pd.DataFrame, order: int = 5, n_levels: int = 3) -> dict:
     raw_highs, raw_lows = [], []
     for i in range(order, len(hi) - order):
         if hi[i] == hi[i - order : i + order + 1].max():
-            raw_highs.append(round(hi[i], 2))
+            raw_highs.append(round(float(hi[i]), 2))  # Python floats: NumPy 2 reprs np.float64(...)
         if lo[i] == lo[i - order : i + order + 1].min():
-            raw_lows.append(round(lo[i], 2))
+            raw_lows.append(round(float(lo[i]), 2))
 
     def _dedup(levels, pct=0.005):
         if not levels:
