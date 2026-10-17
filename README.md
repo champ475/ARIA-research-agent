@@ -52,6 +52,8 @@ The app checks its configuration and the schema version at startup and refuses t
 
 **Background jobs** (alert checks in market hours, housekeeping, the Telegram link listener, the nightly fundamentals snapshot and fund metrics) live in `worker.py`. In dev (`APP_ENV=dev`, the default) the app runs them in-process. Anywhere else, run `python worker.py` next to the app. Each job holds a Postgres advisory lock, so extra workers or app replicas never double-run anything. If `DATABASE_URL` points at a connection pooler (Neon's `-pooler` host), set `JOBS_DATABASE_URL` to the direct host: advisory locks need a real session.
 
+To make yourself an operator (the **🛠 Admin** tab: look up users, see turns and alerts, disable accounts, feature flags), run `python scripts/make_admin.py you@example.com`.
+
 Open **http://localhost:7860**, sign up with an email and password, and start chatting. (In dev, the email-confirmation link is printed to the app log instead of mailed; set `MAIL_BACKEND=smtp` and `SMTP_*` to send real mail, e.g. with a Gmail app password.)
 
 ### Or run it with Docker

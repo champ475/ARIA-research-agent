@@ -1140,6 +1140,34 @@ Each gate is a hard stop: the next phase's users aren't invited until every box 
 
 ### Phase 3 · Scale and polish (from Jan 2027)
 
+> **Status, 17 Oct 2026:** all 20 items are implemented on branch `phase3-scale-polish`, one commit each. About 2,340 tests pass (real-Postgres integration included), the e2e suite has 25 journeys and axe checks, and the eval and lock checks are green. Migrations 0022 to 0027 are added (one is a declared `CONTRACT:` type change, the rest expand-only). The boxes below stay unticked for a reviewer, per Definition of done #5. This note is not yet in the Claude Doc; paste it there.
+>
+> **Measured against "Done when":**
+>
+> - **LLM-13:** judge precision 0.96, recall 0.92, gate rate 4% on the 100 labelled pairs (the first prompt scored 0.73 / 0.98 / 36%).
+> - **UX-09:** search across 500 chats in under 300 ms (integration test).
+> - **ARCH-02:** `app.py` is 138 lines; an import-linter contract keeps `ui/` off `utils.db` and `tools`.
+> - **ARCH-04:** p50 of a stubbed turn 1,788 ms with the Postgres checkpointer, 367 ms with the in-memory one (local Postgres); a paused turn resumes in a fresh process.
+> - **DATA-10:** checkpoint growth per turn went from about 350 KiB to zero; the bhavcopy history survives a restart (tested with an empty disk).
+> - **TEST-06:** `docs/load/2026-10-17-local.md`: all latency targets met except the 1.5x concurrency ratio (1.88x on a one-process laptop run); every injected fault recovered within a second.
+> - **OPS-05:** `docs/CAPACITY.md` names the first three limits: database size at about 85 users for six months, trial LLM requests at about 640, one app process at about 6,900.
+>
+> **Deviations from the requirements above:**
+>
+> - **SEC-07:** the breached-password check uses a bundled list of 268 common passwords, not the HIBP range API or a top-100k list.
+> - **DATA-07:** adjustment is applied when the stored bhavcopy history is read; yfinance data is already adjusted. The "3 stocks with recent splits" check uses constructed series in the NSE subject wording, not live exchange data.
+> - **DATA-10:** the growth figure is from a fake-LLM simulation (`scripts/growth_sim.py`); chat history, not caches or checkpoints, is now the main growth (about 40 MB a week at 100 daily users).
+> - **COMP-06:** `turns` are kept 30 days, which is exactly the SLO report's 30-day window. The 24-month chat period awaits counsel (COMP-03).
+> - **REL-07:** no batch quote call (`yf.download`): the table needs each company's name and 52-week range too, so rows are fetched in parallel and cached for 60 s instead.
+> - **TEST-06:** the 2-hour soak was not run (tooling and the report's verdict exist). The profile runs the fakes, so absolute latencies are the fake's.
+> - **ARCH-04:** only the newest checkpoint of a paused turn is persisted, which resume needs but time-travel would not have.
+> - **OBS-05:** a trace link is the turn's error ID and the `find_turn.py` command, not a URL, because LangSmith's project URL is not known to the app.
+> - **UX-08:** the history drawer is a bar above the chat on narrow screens, not an overlay.
+> - **LLM-10:** the 25 multi-turn cases are deterministic tests of the carry-over logic (`tests/graph/test_history_carryover.py`), not recorded golden cases, because those need a live model to record.
+> - **Found along the way:** the first load run showed plotly building the chart was two thirds of a turn's CPU (now cached); `/readyz` failed for a server using the fake LLM; `scripts/load_test.py` read the wrong output index after the chatbot output moved.
+> - **Before deploying:** run `python scripts/migrate.py` on production (to 0027), then `python scripts/make_admin.py <your email>`. Steps are in TODO\_ARIA.md.
+
+
 - [ ] SEC-07 Password policy and argon2id
 - [ ] SEC-15 Security headers
 - [ ] LLM-10 Memory quality and pronoun ambiguity

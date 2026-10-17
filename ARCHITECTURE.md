@@ -16,6 +16,57 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-17 — UI over services; CommunicationLayer only renders (ARCH-02, ARCH-05)
+**Problem.** `app.py` was 2,078 lines: the page layout, 400 lines of CSS, every tab's handlers, the auth identity helper, watchlist data fetching and direct SQL (`_settings_status_md` used the private `_query`). Handlers could not be imported without building Gradio, so most of their logic had no unit test. Separately, `CommunicationLayer`, the node meant to turn conclusions into text, also ran the planning intake, listed and re-served saved reports, and wrote reports and CSVs to the database, which made it the hardest node to test and broke its own contract in the RFC.
+
+**Alternatives considered.**
+- Leave the UI in one file and only add tests: the file would keep growing with every Phase 3 screen (Alerts, Admin, chat search).
+- Move logic into methods on a UI class: still needs Gradio to test.
+- Put the planning, report and file work behind tools in the tool catalogue: they are not research (no evidence to gather, nothing for Reflection or Verification to check), and the planner would spend an LLM call to route them.
+
+**Final decision.**
+- `app.py` is 138 lines and composes the page. `ui/` has one module per tab plus `theme.css`; `services/` holds the logic and every database and data call the UI makes; services import no Gradio. The rule is enforced by import-linter contracts in CI (`ui` may not import `utils.db` or `tools`; `services` may not import `gradio` or `ui`), and the guard tests that scan the source tree (no `print`, no `str(e)` in user text, no `os.getenv`, audited actions) now include both packages.
+- Three graph nodes take over what CommunicationLayer did: `PlanningNode` and `ReportManagementNode` (routed to right after QueryAnalyzer, and they end the turn), and `OutputFiles` (after CommunicationLayer, only for report and screener turns that have conclusions). CommunicationLayer has no database import. A turn with an unresolved company name still reaches CommunicationLayer's clarification first.
+
+**Trade-offs.** Gradio handlers are closures inside `build_*_tab`, so they are tested through the services and through Playwright rather than by import. Tests that patched `app.X` or `graph.nodes.communication_layer.<db function>` now patch `services.chat.X` or the new node's module; the assertions are the same. `ui/*` is on the mypy legacy list because event handlers are typed by Gradio, not by us.
+
+**Future improvements.** Type the `ui/` modules and remove them from the legacy list. Move `web/` account routes behind services the same way.
+
+## 2026-10-17 — Admin console: server-side 403, audited, runtime flags (OBS-05)
+**Problem.** Support ("my alert didn't fire", "why did my quota run out", "I can't log in") meant raw SQL on the production database, with no record of who looked at what.
+
+**Alternatives considered.** A separate admin web app (a second deployable and login for a one-person project); a CLI only (no view of turns and alerts side by side, and it cannot be handed to a helper); environment flags edited and redeployed (a deploy to turn chat off during an incident).
+
+**Final decision.** `users.is_admin` and `users.disabled_at`; a `feature_flags` table behind `utils/flags.py` (`signups_open`, `chat_enabled`, read through a 15-second cache that falls back to defaults if the database cannot be read). `services/admin.py` starts every function with `require_admin` and raises `Forbidden` (403) otherwise; the Admin tab hides itself from non-admins as a courtesy, not as the control. Every lookup and change writes an `admin.*` row to `audit_log`. Disabling an account ends its sessions and blocks login (and a wrong password on a disabled account reveals nothing). Admin rights are granted from the command line (`scripts/make_admin.py`), never through the UI. A test enumerates `services.admin.__all__` so a new admin function cannot ship without a 403 case.
+
+**Trade-offs.** An admin sees user emails and turn metadata (not message text, keys or hashes), so access is a privacy decision for the operator; it is audited, not prevented. The flag cache means a switch takes up to 15 seconds to reach every replica.
+
+**Future improvements.** Per-admin read scopes. An admin view of the audit log itself.
+
+## 2026-10-17 — The verification judge is measured, and its prompt changed (LLM-13)
+**Problem.** An LLM decides whether evidence supports the objective, and a "no" opens the "show anyway?" gate. Nobody knew how often it was wrong.
+
+**Alternatives considered.** Tuning thresholds by eye; replacing it with a rules-only check (it cannot judge "is this the right evidence for this question"); routing everything through the stronger model (several times the cost for every turn).
+
+**Final decision.** 100 labelled evidence/objective pairs (`evals/cases/judge_labels.jsonl`, 50 sufficient and 50 insufficient in five families), a scorer (`evals/judge_calibration.py`) that records and replays the judge's replies, and a unit test that fails if the recorded replies stop meeting precision 0.80, recall 0.70 and a false-gate rate under 5%. First measurement on the fast model: precision 0.73, recall 0.98, gate rate 36%. The judge was flagging the evidence summary's own compression (a headline count, a row count) as a missing citation. Prompt v2 says what the summary is and lists the five reasons to flag; it scores precision 0.96, recall 0.92, gate rate 4%. `VERIFICATION_STRONG_JUDGE` can send complex turns to the synthesis-class model; it is off because the fast model already meets the targets. A `aria_gates_total` counter tracks how often a gate actually opens.
+
+**Trade-offs.** The labelled set is synthetic (shaped like real summaries), so the live gate rate still has to be watched. A new judge prompt means re-recording its fixtures.
+
+**Future improvements.** Add labelled pairs from real thumbs-down turns once there are users.
+
+## 2026-10-17 — Load tooling, and what its first run found (TEST-06)
+**Problem.** Capacity was unknown, and `scripts/load_test.py` only measured first-token time for a burst.
+
+**Alternatives considered.** Locust with `gradio_client` (what the PRD names): the client never returns a result inside Locust's gevent, so it was dropped for a small client of Gradio's own queue protocol (`loadtests/gradio_http.py`). A fault proxy in front of the app: more moving parts than a JSON file the fakes read.
+
+**Final decision.** `loadtests/run.py` starts the app with the fake LLM and fake data at realistic latency, runs a warm-up and a one-user baseline, then N users under a Locust profile (60/15/10/10/5), samples memory and CPU, optionally runs a chaos timeline (`slow_llm`, `flaky_llm`, `upstream_500`, `db_restart`) that edits the faults file the fakes read (`utils/faults.py`), and writes a report that judges the PRD targets. The `loadtest` workflow does this per release and for a 2-hour soak on request.
+
+**What the first runs showed** (`docs/load/`): one process ran out of CPU at about 2.4 turns a second, and building the candlestick figure with plotly was about two thirds of a turn's CPU. Caching the chart per price history raised throughput from about 1.5 to 2.4 turns a second and cut equity p95 from 9.8 s to 6.2 s. The 1.5x concurrency ratio is still missed on that laptop (1.88x). Under injected faults the server recovered within a second of each (including a Postgres restart), and 3% of turns failed while 30% of LLM calls did.
+
+**Trade-offs.** The numbers come from one laptop with the load generator on the same CPU, and a fake LLM whose latency is chosen, so ratios mean more than absolutes. The 2-hour soak has its tooling but has not been run.
+
+**Future improvements.** Run it on the real host. Close the 1.5x gap with a second replica or more CPU savings.
+
 ## 2026-10-17 — Checkpoints live in memory; Postgres only holds a paused turn (ARCH-04)
 **Problem.** Every chat turn mints a new LangGraph `thread_id` and the graph wrote its checkpoints (several rows per superstep) to Postgres. `scripts/growth_sim.py` measured about 350 KiB of checkpoint data per turn, so at 100 daily active users and ten turns a day a seven-day retention window alone would hold about 2.4 GB, against a 0.5 GB Neon free tier. The same writes sat on the critical path of every turn. The only feature that needs them is resuming a turn that paused for a yes/no (research confirmation, verification gate), which is a small share of turns.
 
