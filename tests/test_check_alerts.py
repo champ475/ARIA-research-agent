@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 from scripts.check_alerts import in_cooldown
+from ui.settings import inbox_md
 
 
 def test_one_shot_alert_never_in_cooldown():
@@ -276,11 +277,11 @@ def test_inbox_markdown_escapes_and_marks_unread(app_module):
             "read_at": datetime.now(UTC),
         },
     ]
-    md = app_module._inbox_md(rows)
+    md = inbox_md(rows)
     assert "&lt;b&gt;TCS" in md and "<b>" not in md
     assert md.splitlines()[0].startswith("- 🔵") and not md.splitlines()[1].startswith("- 🔵")
     assert "10:30 IST" in md
-    assert app_module._inbox_md([]) == "*No alert notifications.*"
+    assert inbox_md([]) == "*No alert notifications.*"
 
 
 # ── VAL-04: percent alerts honour their direction ─────────────────────────────

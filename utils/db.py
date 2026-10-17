@@ -1061,7 +1061,7 @@ def telegram_link_code_resolve(code: str):
     return row["user_id"]
 
 
-def telegram_chat_id_set(user_id: int, chat_id: str) -> None:
+def telegram_chat_id_set(user_id: int, chat_id: str | None) -> None:
     _query("UPDATE users SET telegram_chat_id=%s WHERE id=%s", (chat_id, user_id), fetch=None, commit=True)
 
 

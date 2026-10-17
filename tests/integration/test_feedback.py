@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
+from services import chat as chat_svc
+
 pytestmark = pytest.mark.integration
 
 TURN = "3f9a1c2b-0000-4000-8000-000000000001"
@@ -34,9 +36,7 @@ def test_persisted_answers_carry_their_turn_id_without_the_badge(db, two_users, 
     sid = db.session_create(a, "chat", title="t")
     with patch("utils.logging_setup.turn_id_var") as tv:
         tv.get.return_value = TURN
-        app_module._persist_turn(
-            a, sid, "q", "*🔀 Routed to: 📈 Equity*\n\nanswer text", True, route="equity"
-        )
+        chat_svc.persist_turn(a, sid, "q", "*🔀 Routed to: 📈 Equity*\n\nanswer text", True, route="equity")
     rows = db.chat_load(a, sid)
     assert rows[1]["content"] == "answer text"
     assert rows[1]["meta"] == {"turn_id": TURN, "route": "equity"}

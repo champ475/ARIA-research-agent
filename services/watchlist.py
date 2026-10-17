@@ -20,6 +20,8 @@ import threading
 from cachetools import TTLCache
 
 from config import WATCHLIST_BUDGET_SECONDS, WATCHLIST_ROW_TTL_SECONDS, WATCHLIST_WORKERS
+from utils.db import WatchlistFull  # re-exported: the UI catches it
+from utils.forms import WATCHLIST_MAX
 from utils.parallel import parallel_map
 
 log = logging.getLogger(__name__)
@@ -95,3 +97,48 @@ def watchlist_rows(symbols: list[str]) -> list[list]:
             log.info("[watchlist] %s skipped: %s", sym, type(value).__name__)
             rows.append([sym, *_BLANK])
     return rows
+
+
+# ── The user's list (the UI calls these; it never touches the database) ──────
+
+__all__ = [
+    "WATCHLIST_MAX",
+    "WatchlistFull",
+    "add_symbol",
+    "clear_cache",
+    "remove_symbol",
+    "table_rows",
+    "watchlist_rows",
+]
+
+
+def table_rows(user_id: int) -> list[list]:
+    """Rows for the watchlist table: Symbol, Name, Price, Change%, RSI, 52W High, 52W Low
+    (fetched in parallel and cached per row)."""
+    from utils.db import watchlist_all
+
+    symbols = watchlist_all(user_id)
+    return watchlist_rows(symbols) if symbols else []
+
+
+def add_symbol(user_id: int, raw: str) -> tuple[bool, str]:
+    """(added, symbol). VAL-07: only listed NSE symbols, resolved like a chat
+    mention, at most WATCHLIST_MAX. Raises UserInputError for a bad name and
+    WatchlistFull at the cap; `added` is False when it was already there."""
+    from utils.db import watchlist_add
+    from utils.forms import watchlist_symbol
+
+    sym = watchlist_symbol(raw)
+    return watchlist_add(user_id, sym, max_symbols=WATCHLIST_MAX), sym
+
+
+def remove_symbol(user_id: int, raw: str) -> str | None:
+    """The cleaned symbol that was removed, or None for an empty entry."""
+    from utils.db import watchlist_remove
+    from utils.helpers import clean_ticker
+
+    sym = clean_ticker((raw or "").strip().upper())
+    if not sym:
+        return None
+    watchlist_remove(user_id, sym)
+    return sym

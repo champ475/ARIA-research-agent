@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ui import chat as chat_ui
+
 pytestmark = pytest.mark.integration
 
 
@@ -61,10 +63,10 @@ def test_eleventh_turn_in_a_minute_gets_a_clear_refusal(db, two_users, app_modul
     )
     orch.generate_suggestions.return_value = []
     with (
-        patch.object(app_module, "get_orchestrator", return_value=orch),
-        patch.object(app_module, "_persist_turn"),
+        patch("services.chat.get_orchestrator", return_value=orch),
+        patch("services.chat.persist_turn"),
     ):
-        replies = [list(app_module.respond_exclusive(a, f"q{i}", [], [], 1, "1M"))[-1] for i in range(11)]
+        replies = [list(chat_ui.respond_exclusive(a, f"q{i}", [], [], 1, "1M"))[-1] for i in range(11)]
     assert all("answer" in r[2][-1]["content"] for r in replies[:10])
     assert "faster than ARIA can answer" in replies[10][2][-1]["content"]
     assert orch.process_stream.call_count == 10

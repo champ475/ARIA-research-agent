@@ -113,7 +113,7 @@ def test_every_audit_action_has_a_call_site():
     pending: set[str] = set()
     code = "\n".join(
         p.read_text(encoding="utf-8")
-        for d in ("app.py", "web", "graph", "utils", "agents")
+        for d in ("app.py", "web", "graph", "utils", "agents", "services", "ui")
         for p in ([ROOT / d] if d.endswith(".py") else (ROOT / d).rglob("*.py"))
         if p.name != "audit.py"
     )

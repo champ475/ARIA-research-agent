@@ -85,6 +85,7 @@ follow_imports = "silent"
 [[tool.mypy.overrides]]
 module = [
     "app",
+    "ui.*",  # Gradio event handlers: closures typed by the framework, not by us
     "agents.conversation_memory",
     "agents.graph_orchestrator",
     "agents.llm_client",
@@ -108,7 +109,7 @@ module = [
 ignore_errors = true
 
 [tool.coverage.run]
-source = ["agents", "graph", "tools", "utils"]
+source = ["agents", "graph", "tools", "utils", "services"]
 branch = true
 
 [tool.coverage.report]
@@ -127,3 +128,23 @@ skips = ["B101", "B110", "B112"]
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+# ARCH-02: the UI renders and wires events; everything it needs from the database or
+# the data tools goes through services/. CI runs `lint-imports`.
+[tool.importlinter]
+root_packages = ["ui", "services", "utils", "tools"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "ui calls services, never the database or the data tools"
+type = "forbidden"
+source_modules = ["ui"]
+forbidden_modules = ["utils.db", "tools"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "services know nothing about Gradio or the ui package"
+type = "forbidden"
+source_modules = ["services"]
+forbidden_modules = ["gradio", "ui"]
+allow_indirect_imports = true

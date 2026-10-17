@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ui.watchlist import watchlist_table_html
 from utils.escaping import html_text, md_cell
 
 PAYLOADS = ["<script>alert(1)</script>", '"><img src=x onerror=alert(1)>', "<iframe src=//evil>"]
@@ -14,7 +15,7 @@ PAYLOADS = ["<script>alert(1)</script>", '"><img src=x onerror=alert(1)>', "<ifr
 
 @pytest.mark.parametrize("payload", PAYLOADS)
 def test_watchlist_cells_render_as_text(app_module, payload):
-    html = app_module._watchlist_table_html([[payload, payload, "1", "2", "3", "4", "5"]])
+    html = watchlist_table_html([[payload, payload, "1", "2", "3", "4", "5"]])
     assert "<script" not in html and "<img" not in html and "<iframe" not in html
     assert "&lt;" in html
 

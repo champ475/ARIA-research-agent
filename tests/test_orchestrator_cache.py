@@ -15,10 +15,12 @@ class _FakeOrch:
 
 
 @pytest.fixture
-def fresh_cache(app_module, monkeypatch):
-    monkeypatch.setattr(app_module, "_orchestrators", TTLCache(maxsize=3, ttl=1800))
+def fresh_cache(monkeypatch):
+    from services import chat as chat_svc
+
+    monkeypatch.setattr(chat_svc, "_orchestrators", TTLCache(maxsize=3, ttl=1800))
     with patch("agents.graph_orchestrator.GraphOrchestrator", _FakeOrch):
-        yield app_module
+        yield chat_svc
 
 
 def test_one_instance_per_conversation(fresh_cache):

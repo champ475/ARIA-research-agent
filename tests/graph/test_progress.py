@@ -6,7 +6,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from graph.progress import ProgressUpdate, labels_for, run_with_progress, task_label
+from services import chat as chat_svc
 from tests.graph.test_graph import _build
+from ui import chat as chat_ui
 
 
 def test_labels_for_nodes_and_tasks():
@@ -88,13 +90,10 @@ def test_orchestrator_yields_progress_before_the_answer_and_ttft_ignores_it():
 
 
 def test_routing_badge_is_off_by_default_and_progress_is_escaped():
-    from tests.conftest import import_app_without_side_effects
-
-    app = import_app_without_side_effects()
-    assert app._routing_badge("equity") == ""
+    assert chat_svc.routing_badge("equity") == ""
     with patch("config.SHOW_ROUTING_BADGE", True):
-        assert app._routing_badge("equity").startswith("*🔀 Routed to:")
-    html = app._progress_html(["Understanding the question", "<b>x</b>"])
+        assert chat_svc.routing_badge("equity").startswith("*🔀 Routed to:")
+    html = chat_ui.progress_html(["Understanding the question", "<b>x</b>"])
     assert "&lt;b&gt;x&lt;/b&gt;…" in html and "Understanding the question →" in html
     assert 'role="status"' in html.replace("'", '"')
 

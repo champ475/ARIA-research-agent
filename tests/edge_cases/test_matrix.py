@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from services import chat as chat_svc
 from utils.helpers import IST
 
 HERE = Path(__file__).parent
@@ -126,15 +127,12 @@ def _report_id(row: dict, exp: dict) -> None:
 
 
 def _per_session(row: dict, exp: dict) -> None:
-    from tests.conftest import import_app_without_side_effects
-
-    app = import_app_without_side_effects()
     with (
         patch("agents.graph_orchestrator.GraphOrchestrator", side_effect=lambda *a, **k: object()),
-        patch.object(app, "_orchestrators", app._orchestrators.__class__(maxsize=10, ttl=60)),
+        patch("services.chat._orchestrators", chat_svc._orchestrators.__class__(maxsize=10, ttl=60)),
     ):
-        a, b = app.get_orchestrator(7, 1), app.get_orchestrator(7, 2)
-        assert (a is not b) is exp["distinct"] and app.get_orchestrator(7, 1) is a
+        a, b = chat_svc.get_orchestrator(7, 1), chat_svc.get_orchestrator(7, 2)
+        assert (a is not b) is exp["distinct"] and chat_svc.get_orchestrator(7, 1) is a
 
 
 def _watchlist(row: dict, exp: dict) -> None:

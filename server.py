@@ -97,7 +97,8 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(demo: gr.Blocks | None = None) -> FastAPI:
     """The production ASGI app. `demo` defaults to app.build_ui()."""
-    from app import APP_CSS, APP_JS, build_ui
+    from app import build_ui
+    from ui.theme import APP_CSS, APP_JS
 
     api = FastAPI(title="ARIA", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
     api.include_router(ops_routes.router)

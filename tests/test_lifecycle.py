@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ui import chat as chat_ui
 from utils import lifecycle
 
 
@@ -74,8 +75,8 @@ def _fake_orch(delay: float = 0.0):
 def test_draining_server_refuses_new_turns_politely(app_module):
     lifecycle.begin_drain()
     orch = _fake_orch()
-    with patch.object(app_module, "get_orchestrator", return_value=orch):
-        (only,) = list(app_module.respond_exclusive(501, "TCS price", [], [], 1, "1M"))
+    with patch("services.chat.get_orchestrator", return_value=orch):
+        (only,) = list(chat_ui.respond_exclusive(501, "TCS price", [], [], 1, "1M"))
     assert "restarting" in only[2][-1]["content"]
     assert orch.process_stream.call_count == 0
 
@@ -86,11 +87,11 @@ def test_a_running_turn_finishes_during_drain(app_module):
     orch = _fake_orch(delay=0.3)
     frames: list = []
     with (
-        patch.object(app_module, "get_orchestrator", return_value=orch),
-        patch.object(app_module, "_persist_turn"),
+        patch("services.chat.get_orchestrator", return_value=orch),
+        patch("services.chat.persist_turn"),
     ):
         t = threading.Thread(
-            target=lambda: frames.extend(app_module.respond_exclusive(502, "q", [], [], 1, "1M"))
+            target=lambda: frames.extend(chat_ui.respond_exclusive(502, "q", [], [], 1, "1M"))
         )
         t.start()
         while lifecycle.in_flight() == 0:

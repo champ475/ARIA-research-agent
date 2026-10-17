@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import psycopg
 import pytest
 
+from ui import chat as chat_ui
 from utils.errors import (
     ConfigurationError,
     DataUnavailableError,
@@ -63,10 +64,10 @@ def _orch_raising(exc: BaseException):
 
 def _final_reply(app_module, exc: BaseException) -> str:
     with (
-        patch.object(app_module, "get_orchestrator", return_value=_orch_raising(exc)),
-        patch.object(app_module, "_persist_turn"),
+        patch("services.chat.get_orchestrator", return_value=_orch_raising(exc)),
+        patch("services.chat.persist_turn"),
     ):
-        frames = list(app_module.respond(7, "what is TCS trading at", [], [], 1, "1M"))
+        frames = list(chat_ui.respond(7, "what is TCS trading at", [], [], 1, "1M"))
     return frames[-1][2][-1]["content"]
 
 
@@ -102,7 +103,7 @@ def test_configuration_error_shows_its_fix(app_module):
 
 # ── static guard: exception text never formatted into user-facing strings ────
 
-SCAN = ["app.py", "agents", "graph", "utils", "tools"]
+SCAN = ["app.py", "agents", "graph", "utils", "tools", "services", "ui", "web"]
 # Internal (never shown) uses of exception text, reviewed:
 ALLOWED = {
     ("agents/llm_client.py", "_classify_error"),  # str(e).lower() to classify, not displayed
