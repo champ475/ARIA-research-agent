@@ -370,6 +370,7 @@ def run_once(conn) -> dict[str, int]:
     log.info(f"Evaluating {len(alerts)} active alert(s).")
     cache = RunCache()
     counts = {"fired": 0, "telegram": 0, "in_app": 0, "retry": 0, "errors": 0}
+    checked: list[int] = []
     for alert in alerts:
         alert = dict(alert)
         if in_cooldown(alert):
@@ -380,6 +381,7 @@ def run_once(conn) -> dict[str, int]:
             counts["errors"] += 1
             log.exception(f"Error evaluating alert {alert['id']} ({alert['symbol']}): {e}")
             continue
+        checked.append(alert["id"])
         if not msg:
             continue
         counts["fired"] += 1
@@ -393,6 +395,13 @@ def run_once(conn) -> dict[str, int]:
             continue
         counts[outcome] += 1
         log.info(f"Fired alert {alert['id']} via {outcome}: {msg}")
+    if checked:  # UX-06: one UPDATE per run says "last checked" for every alert it evaluated
+        try:
+            cur.execute("UPDATE alerts SET last_checked_at=now() WHERE id = ANY(%s)", (checked,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            log.warning("could not stamp last_checked_at", exc_info=True)
     log.info(f"Run summary: {counts}")
     return counts
 

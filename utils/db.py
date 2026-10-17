@@ -625,6 +625,38 @@ def alert_list(user_id: int, active_only: bool = False) -> list[dict]:
     return rows
 
 
+def alert_get(user_id: int, alert_id: int) -> dict | None:
+    """One of the user's own alerts (tenant isolation), or None."""
+    row = _query("SELECT * FROM alerts WHERE id=%s AND user_id=%s", (alert_id, user_id), fetch="one")
+    if row:
+        row["threshold"] = tidy(row.get("threshold"))
+    return row
+
+
+def alert_update(
+    user_id: int,
+    alert_id: int,
+    condition: str,
+    threshold: float | None,
+    direction: str | None,
+    recurring: bool,
+    cooldown_hours: int,
+) -> bool:
+    """Change the condition of one of the user's own alerts. Raises DuplicateAlert
+    if it would equal another active alert; False if the alert isn't theirs."""
+    try:
+        row = _query(
+            "UPDATE alerts SET condition=%s, threshold=%s, direction=%s, recurring=%s, cooldown_hours=%s "
+            "WHERE id=%s AND user_id=%s RETURNING id",
+            (condition, to_db(threshold), direction, recurring, cooldown_hours, alert_id, user_id),
+            fetch="one",
+            commit=True,
+        )
+    except pg_errors.UniqueViolation as e:
+        raise DuplicateAlert(None) from e
+    return row is not None
+
+
 def alert_remove(user_id: int, alert_id: int) -> bool:
     """Deletes only if owned by user_id (tenant isolation, mirrors session_delete)."""
     conn = get_conn()

@@ -114,6 +114,9 @@ def test_alerts(db, two_users):
     db.alert_resume(b, aid)
     assert db.alert_list(a)[0]["active"] is False
     assert len(db.alert_list(a)) == 1
+    assert db.alert_get(b, aid) is None and db.alert_get(a, aid)["id"] == aid
+    assert db.alert_update(b, aid, "x", 1.0, None, False, 24) is False
+    assert db.alert_get(a, aid)["threshold"] == 4000
 
 
 def test_notifications(db, two_users):
@@ -303,6 +306,8 @@ COVERED = {
     "alert_list": test_alerts,
     "alert_remove": test_alerts,
     "alert_pause": test_alerts,
+    "alert_get": test_alerts,
+    "alert_update": test_alerts,
     "alert_resume": test_alerts,
     "notification_add": test_notifications,
     "notifications_list": test_notifications,

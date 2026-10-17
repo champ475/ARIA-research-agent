@@ -51,7 +51,7 @@ def test_app_tabs(page: Page, base_url, email, scheme):
     page.wait_for_function("() => window.ariaToggleTheme !== undefined")
     assert page.evaluate("document.body.classList.contains('dark')") == (scheme == "dark")
     problems = {"Chat": _violations(page)}
-    for tab in ("📌 Watchlist", "📊 Portfolio", "⚙️ Settings"):
+    for tab in ("📌 Watchlist", "📊 Portfolio", "🔔 Alerts", "⚙️ Settings"):
         open_tab(page, tab)
         problems[tab] = _violations(page)
     assert all(not v for v in problems.values()), problems

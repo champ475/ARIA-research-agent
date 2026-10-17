@@ -18,6 +18,7 @@ from utils.logging_setup import configure_logging
 configure_logging()
 
 from config import check_boot  # noqa: E402
+from ui.alerts import build_alerts_tab  # noqa: E402
 from ui.auth import identify_user  # noqa: E402
 from ui.chat import CHAT_DEFAULTS, build_chat_tab, queue_kwargs  # noqa: E402
 from ui.portfolio import build_portfolio_tab  # noqa: E402
@@ -81,6 +82,8 @@ def build_ui() -> gr.Blocks:
                     build_watchlist_tab(user_state)
                 with gr.Tab("📊 Portfolio"):
                     build_portfolio_tab(user_state)
+                with gr.Tab("🔔 Alerts") as alerts_tab:
+                    build_alerts_tab(user_state, alerts_tab)
                 with gr.Tab("⚙️ Settings"):
                     build_settings_tab(user_state)
 

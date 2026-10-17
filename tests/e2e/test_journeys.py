@@ -133,6 +133,43 @@ def test_create_list_and_cancel_an_alert(page: Page, base_url, email, db):
     assert db.execute("SELECT count(*) AS n FROM alerts WHERE user_id=%s", (uid,)).fetchone()["n"] == 0
 
 
+# 9b ────────────────────────────────────────────────────────────────────────────
+def test_alerts_tab_create_in_chat_then_edit_and_delete(page: Page, base_url, email, db):
+    """UX-06: an alert made in chat shows in the Alerts tab, can be paused, edited and deleted."""
+    new_user(page, base_url, email)
+    ask(page, "Alert me if TCS goes above 99999")
+    assert ERROR not in wait_answer(page)
+    uid = _user_id(db, email)
+    aid = db.execute("SELECT id FROM alerts WHERE user_id=%s", (uid,)).fetchone()["id"]
+
+    open_tab(page, "🔔 Alerts")
+    table = page.locator("#alerts-table")
+    expect(table).to_contain_text("TCS", timeout=ANSWER_TIMEOUT)
+    expect(table).to_contain_text("Active")
+
+    page.locator("#alert-id input").fill(str(aid))
+    page.locator("#alert-pause").click()
+    expect(page.locator("#alerts-status")).to_contain_text("paused", timeout=ANSWER_TIMEOUT)
+    expect(table).to_contain_text("Paused", timeout=ANSWER_TIMEOUT)
+    page.locator("#alert-resume").click()
+    expect(table).to_contain_text("Active", timeout=ANSWER_TIMEOUT)
+
+    page.get_by_text("Change the number").click()
+    page.locator("#alert-value input, #alert-value textarea").first.fill("88888")
+    page.locator("#alert-save").click()
+    expect(page.locator("#alerts-status")).to_contain_text("Saved", timeout=ANSWER_TIMEOUT)
+    assert db.execute("SELECT threshold FROM alerts WHERE id=%s", (aid,)).fetchone()["threshold"] == 88888
+
+    page.locator("#alert-value input, #alert-value textarea").first.fill("-5")
+    page.locator("#alert-save").click()
+    expect(page.locator("#alerts-status")).to_contain_text("isn't allowed", timeout=ANSWER_TIMEOUT)
+    assert db.execute("SELECT threshold FROM alerts WHERE id=%s", (aid,)).fetchone()["threshold"] == 88888
+
+    page.locator("#alert-delete").click()
+    expect(page.locator("#alerts-status")).to_contain_text("deleted", timeout=ANSWER_TIMEOUT)
+    assert db.execute("SELECT count(*) AS n FROM alerts WHERE user_id=%s", (uid,)).fetchone()["n"] == 0
+
+
 # 10 ────────────────────────────────────────────────────────────────────────────
 def test_planning_intake_to_strategy(page: Page, base_url, email, db):
     new_user(page, base_url, email)
