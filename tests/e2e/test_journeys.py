@@ -52,19 +52,22 @@ def test_login_refresh_and_logout(page: Page, base_url, email):
 # 3 + 5 ─────────────────────────────────────────────────────────────────────────
 def test_equity_question_streams_progress_answer_and_chart(page: Page, base_url, email):
     new_user(page, base_url, email)
+    # A MutationObserver records every progress text as it is rendered, so a
+    # fast turn on a slow runner cannot slip between two polls.
+    page.evaluate(
+        """() => {
+            window.__aria_seen = new Set();
+            const grab = () => document.querySelectorAll('#chatbot-chat .aria-progress')
+                .forEach(e => window.__aria_seen.add(e.innerText));
+            new MutationObserver(grab).observe(document.body, {subtree: true, childList: true, characterData: true});
+        }"""
+    )
     ask(page, "Analyse TCS")
     expect(page.locator("#msg-chat textarea")).to_be_disabled(timeout=10_000)  # the turn has started
-    seen: set[str] = set()
     deadline = datetime.now().timestamp() + ANSWER_TIMEOUT / 1000
     while datetime.now().timestamp() < deadline and not page.locator("#msg-chat textarea").is_enabled():
-        # One atomic read: the progress line can vanish between a count() and
-        # an inner_text(), which then waits out its 30 s timeout.
-        seen.update(
-            page.evaluate(
-                "() => [...document.querySelectorAll('#chatbot-chat .aria-progress')].map(e => e.innerText)"
-            )
-        )
         page.wait_for_timeout(150)
+    seen = set(page.evaluate("() => [...window.__aria_seen]"))
     assert len(seen) >= 2, f"expected at least two progress states, saw {seen}"
     text = wait_answer(page, "Here is what the research shows")
     assert ERROR not in text and "Data as of" in text and "Routed to" not in text
