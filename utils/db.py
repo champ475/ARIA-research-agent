@@ -1097,6 +1097,16 @@ def user_password_hash(user_id: int) -> str | None:
     return row["password_hash"] if row else None
 
 
+def user_rehash_password(user_id: int, password_hash: str) -> None:
+    """Swap in a stronger hash of the same password (SEC-07). Sessions stay."""
+    _query(
+        "UPDATE users SET password_hash=%s WHERE id=%s",
+        (password_hash, user_id),
+        fetch=None,
+        commit=True,
+    )
+
+
 def user_mark_verified(user_id: int) -> None:
     _query(
         "UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()) WHERE id=%s",

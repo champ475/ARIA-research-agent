@@ -175,6 +175,7 @@ def test_account_lifecycle_functions(db, two_users):
     assert db.auth_token_consume("reset", "tok-a") == a
     a_hash = db.user_password_hash(a)
     db.user_set_password(b, "new-hash-b")
+    db.user_rehash_password(b, "new-hash-b")
     assert db.user_password_hash(a) == a_hash and db.user_password_hash(b) == "new-hash-b"
     db._query("UPDATE users SET email_verified_at=NULL", fetch=None, commit=True)
     db.user_mark_verified(b)
@@ -322,6 +323,7 @@ COVERED = {
     "user_password_hash": test_account_lifecycle_functions,
     "user_mark_verified": test_account_lifecycle_functions,
     "user_set_password": test_account_lifecycle_functions,
+    "user_rehash_password": test_account_lifecycle_functions,
     "user_delete": test_account_lifecycle_functions,
     "user_rows": test_data_export_rows,
     "user_account_row": test_data_export_rows,

@@ -5,6 +5,7 @@ openai>=1.0.0
 
 # ── Crypto (encrypting user-supplied LLM API keys, utils/crypto.py) ──────────
 cryptography>=50.0.2
+argon2-cffi>=23.1.0              # password hashing, argon2id (SEC-07)
 
 # ── Agentic research graph ────────────────────────────────────────────────────
 langgraph>=0.2.0

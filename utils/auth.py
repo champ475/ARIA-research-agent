@@ -1,7 +1,7 @@
 """
 utils/auth.py — signup, login and cookie sessions.
 
-Password hashing: PBKDF2-HMAC-SHA256, stdlib only.
+Password hashing: argon2id (SEC-07); legacy PBKDF2-HMAC-SHA256 hashes still verify and are upgraded on the next login.
 
 Sessions (SEC-04): a random token lives only in the user's HttpOnly cookie;
 Postgres `sessions` stores sha256(token), its expiry, last use and client.
@@ -13,19 +13,24 @@ on the next request (within SESSION_CACHE_SECONDS on other replicas).
 from __future__ import annotations
 
 import hashlib
-import os
+import logging
 import re
 import secrets
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import NamedTuple
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError
 from cachetools import TTLCache
 
 from utils import db
 from utils.db import auth_attempt_clear, auth_attempt_count, auth_attempt_record, get_conn, release_conn
 from utils.errors import UserInputError
+
+logger = logging.getLogger(__name__)
 
 SESSION_TTL_HOURS = 24 * 14  # 14 days
 # A resolved session is trusted for this long without a DB round trip. Logout
@@ -128,19 +133,38 @@ class AuthError(UserInputError):
     """Raised for signup/login failures with a user-facing message."""
 
 
-def _hash_password(password: str, salt: bytes | None = None) -> str:
-    salt = salt or os.urandom(16)
+_ARGON2 = PasswordHasher()  # library defaults: argon2id, RFC 9106 low-memory profile
+
+
+def _hash_password(password: str) -> str:
+    return _ARGON2.hash(password)
+
+
+def _hash_pbkdf2(password: str, salt: bytes) -> str:
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
     return f"{salt.hex()}${digest.hex()}"
 
 
+def _is_legacy_hash(stored: str) -> bool:
+    return not stored.startswith("$argon2")
+
+
 def _verify_password(password: str, stored: str) -> bool:
+    if not _is_legacy_hash(stored):
+        try:
+            return _ARGON2.verify(stored, password)
+        except (VerificationError, InvalidHashError):
+            return False
     try:
         salt_hex, _ = stored.split("$", 1)
+        salt = bytes.fromhex(salt_hex)
     except ValueError:
         return False
-    salt = bytes.fromhex(salt_hex)
-    return secrets.compare_digest(_hash_password(password, salt), stored)
+    return secrets.compare_digest(_hash_pbkdf2(password, salt), stored)
+
+
+def _needs_rehash(stored: str) -> bool:
+    return _is_legacy_hash(stored) or _ARGON2.check_needs_rehash(stored)
 
 
 def hash_token(token: str) -> str:
@@ -156,7 +180,7 @@ def signup(email: str, password: str, ip: str | None = None) -> int | None:
     email = email.strip().lower()
     if not _EMAIL_RE.match(email):
         raise AuthError("Enter a valid email address.")
-    check_new_password(password)
+    check_new_password(password, email)
     _check_ip_limit(ip)
     _check_rate_limit(f"signup:{email}")
 
@@ -207,6 +231,11 @@ def authenticate(email: str, password: str, ip: str | None = None) -> int:
             auth_attempt_record(f"ipfail:{ip}")
         raise AuthError("Invalid email or password.")
     _clear_rate_limit(key)
+    if _needs_rehash(row["password_hash"]):
+        try:
+            db.user_rehash_password(row["id"], _hash_password(password))
+        except Exception:  # an upgrade failure must never block a valid login
+            logger.warning("password rehash failed", exc_info=True)
     return row["id"]
 
 
@@ -305,6 +334,8 @@ VERIFY_TOKEN_TTL = timedelta(hours=24)
 RESET_TOKEN_TTL = timedelta(minutes=30)
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
+_COMMON_FILE = Path(__file__).resolve().parent.parent / "data" / "auth" / "common_passwords.txt"
+_COMMON: frozenset[str] | None = None
 
 
 def _issue_token(user_id: int, purpose: str, ttl: timedelta) -> str:
@@ -342,11 +373,32 @@ def request_password_reset(email: str) -> None:
     mailer.send_password_reset(user["email"], _issue_token(user["id"], "reset", RESET_TOKEN_TTL))
 
 
-def check_new_password(password: str) -> None:
+def _common_passwords() -> frozenset[str]:
+    global _COMMON
+    if _COMMON is None:
+        try:
+            _COMMON = frozenset(_COMMON_FILE.read_text(encoding="utf-8").split())
+        except OSError:
+            logger.warning("common-password list missing: %s", _COMMON_FILE)
+            _COMMON = frozenset()
+    return _COMMON
+
+
+def check_new_password(password: str, email: str | None = None) -> None:
+    """Length first (so a huge password is never hashed), then weak-password rules."""
     if len(password) < PASSWORD_MIN_LENGTH:
         raise AuthError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters.")
     if len(password) > PASSWORD_MAX_LENGTH:
         raise AuthError(f"Password must be at most {PASSWORD_MAX_LENGTH} characters.")
+    low = password.lower()
+    weak = (
+        low in _common_passwords()
+        or len(set(low)) <= 2
+        or password.isdigit()
+        or (email and len(email.split("@")[0]) >= 4 and low == email.split("@")[0].lower())
+    )
+    if weak:
+        raise AuthError("That password is too easy to guess. Pick something less common.")
 
 
 def reset_password(token: str, new_password: str) -> int:

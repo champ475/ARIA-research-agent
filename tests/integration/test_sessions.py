@@ -146,3 +146,19 @@ def test_signup_requires_consent(client):
 def test_terms_page_renders_sanitised_legal_text(client):
     r = client.get("/terms")
     assert r.status_code == 200 and "<script" not in r.text.lower()
+
+
+def test_legacy_pbkdf2_user_is_upgraded_on_login(db):
+    """SEC-07: an old PBKDF2 hash still logs in and is replaced by argon2id."""
+    from utils import auth
+
+    legacy = auth._hash_pbkdf2("old-password-1", b"\x02" * 16)
+    uid = db._query(
+        "INSERT INTO users (email, password_hash) VALUES ('legacy@example.com', %s) RETURNING id",
+        (legacy,),
+        fetch="one",
+        commit=True,
+    )["id"]
+    assert auth.authenticate("legacy@example.com", "old-password-1") == uid
+    assert db.user_password_hash(uid).startswith("$argon2id$")
+    assert auth.authenticate("legacy@example.com", "old-password-1") == uid
