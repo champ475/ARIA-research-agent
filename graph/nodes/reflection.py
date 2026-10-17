@@ -117,7 +117,9 @@ def build_reflection_node(
                 ReflectionResult,
                 "reflection",
                 _build_prompt(
-                    state.get("query", ""), state.get("objective", ""), state.get("evidence_summary", {})
+                    state.get("query", ""),
+                    state.get("objective") or state.get("query", ""),
+                    state.get("evidence_summary", {}),
                 ),
                 max_tokens=TOKENS_AGENT,
                 temperature=0.0,

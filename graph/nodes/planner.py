@@ -120,7 +120,7 @@ def build_planner_node(
     client = client or LLMClient(_SYSTEM, provider_config, node="planner")
 
     def planner(state: GraphState) -> dict:
-        objective = state.get("objective", "")
+        objective = state.get("objective") or state.get("query", "")
         entities = state.get("entities", [])
         complexity = state.get("complexity", "simple")
 

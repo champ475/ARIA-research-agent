@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agents.llm_client import (
+    EmptyReply,
     LLMClient,
     LLMProvidersExhausted,
     _classify_error,
@@ -261,3 +262,77 @@ class TestFormatExhaustedMessage:
         assert "Settings" in msg
         assert "API key" in msg
         assert "wait ~30 min" not in msg  # trial-only guidance would mislead a BYO user
+
+
+def _completion(text, finish="stop"):
+    completion = MagicMock()
+    completion.choices = [MagicMock(message=MagicMock(content=text), finish_reason=finish)]
+    return completion
+
+
+class TestReasoningHeadroom:
+    """gpt-oss spends max_tokens on hidden reasoning first (smoke test 2026-10-17)."""
+
+    def test_gpt_oss_gets_low_effort_and_headroom(self, groq_provider):
+        from config import LLM_REASONING_HEADROOM
+
+        provider, fake_client = groq_provider
+        provider.ask("hi", max_tokens=200, model="openai/gpt-oss-20b")
+        _, kwargs = fake_client.chat.completions.create.call_args
+        assert kwargs["reasoning_effort"] == "low"
+        assert kwargs["max_tokens"] == 200 + LLM_REASONING_HEADROOM
+
+    def test_other_models_are_unchanged(self, groq_provider):
+        provider, fake_client = groq_provider
+        provider.ask("hi", max_tokens=200, model="some-other-model")
+        _, kwargs = fake_client.chat.completions.create.call_args
+        assert "reasoning_effort" not in kwargs
+        assert kwargs["max_tokens"] == 200
+
+
+class TestEmptyReply:
+    def test_empty_with_length_is_retried_with_a_bigger_budget(self, groq_provider):
+        provider, fake_client = groq_provider
+        fake_client.chat.completions.create.side_effect = [_completion("", "length"), _completion("answer")]
+        assert provider.ask("hi", max_tokens=100, model="plain-model") == "answer"
+        budgets = [c.kwargs["max_tokens"] for c in fake_client.chat.completions.create.call_args_list]
+        assert budgets == [100, 200]
+
+    def test_still_empty_raises_empty_reply_and_is_counted(self, groq_provider):
+        from utils import metrics
+
+        provider, fake_client = groq_provider
+        fake_client.chat.completions.create.return_value = _completion("", "length")
+        before = metrics.LLM_EMPTY_REPLIES.labels("Groq", "length")._value.get()
+        with pytest.raises(EmptyReply):
+            provider.ask("hi", max_tokens=100, model="plain-model")
+        assert metrics.LLM_EMPTY_REPLIES.labels("Groq", "length")._value.get() == before + 2
+
+    def test_empty_with_a_normal_stop_is_not_retried(self, groq_provider):
+        provider, fake_client = groq_provider
+        fake_client.chat.completions.create.return_value = _completion("", "stop")
+        with pytest.raises(EmptyReply):
+            provider.ask("hi", max_tokens=100, model="plain-model")
+        assert fake_client.chat.completions.create.call_count == 1
+
+    def test_none_content_counts_as_empty(self, groq_provider):
+        provider, fake_client = groq_provider
+        fake_client.chat.completions.create.return_value = _completion(None, "stop")
+        with pytest.raises(EmptyReply):
+            provider.ask("hi", model="plain-model")
+
+
+class TestCallHandlesEmptyReply:
+    def test_empty_primary_falls_to_secondary_without_retrying_itself(self):
+        client = _stub_client(
+            primary_side_effect=EmptyReply("no text"), secondary_side_effect=["from gemini"]
+        )
+        assert client.ask("hello") == "from gemini"
+        assert client._primary.ask.call_count == 1
+
+    def test_all_providers_empty_raises_exhausted_quickly(self):
+        client = _stub_client(primary_side_effect=EmptyReply("a"), secondary_side_effect=EmptyReply("b"))
+        with pytest.raises(LLMProvidersExhausted):
+            client.ask("hello")
+        assert client._primary.ask.call_count == 1
+        assert client._secondary.ask.call_count == 1

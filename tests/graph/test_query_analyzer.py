@@ -41,6 +41,13 @@ class TestQueryAnalyzer:
         assert result["intent"] == "chat"
         assert result["complexity"] == "simple"
 
+    def test_empty_llm_reply_keeps_the_users_words_as_objective(self):
+        # Smoke test 2026-10-17: a reasoning model returned "" and the empty
+        # objective made the judge flag every turn.
+        node = build_query_analyzer_node(_StubClient(""))
+        result = node({"query": "what about its debt?"})
+        assert result["objective"] == "what about its debt?"
+
     def test_handles_markdown_fenced_json(self):
         stub = _StubClient(
             "```json\n"

@@ -17,6 +17,8 @@ from config import (
     GROQ_API_KEYS,
     GROQ_MODEL,
     GROQ_MODEL_FAST,
+    GROQ_REASONING_EFFORT,
+    LLM_REASONING_HEADROOM,
     LLM_STREAM_TIMEOUT_SECONDS,
     LLM_TEMPERATURE,
     LLM_TIMEOUT_SECONDS,
@@ -255,6 +257,37 @@ def format_exhausted_message(exc: LLMProvidersExhausted) -> str:
     )
 
 
+class EmptyReply(Exception):
+    """A provider answered with no text (typically finish_reason="length": the
+    whole token cap went on hidden reasoning). Raised so LLMClient._call falls
+    to the next provider instead of passing "" to a node as if it were a reply."""
+
+
+def _gemini_text(r) -> str:
+    """The reply text; an empty one (thinking spent the cap, or a blocked
+    response) raises EmptyReply so the client tries the next provider."""
+    text = (getattr(r, "text", None) or "").strip()
+    if not text:
+        from utils import metrics
+
+        metrics.observe_empty_reply("Gemini", None)
+        raise EmptyReply("empty reply from Gemini")
+    return text
+
+
+def _is_reasoning_model(model: str) -> bool:
+    return model.startswith("openai/gpt-oss")
+
+
+def _groq_params(model: str, max_tokens: int) -> dict:
+    """Completion limits for one Groq call. gpt-oss models count reasoning
+    tokens against max_tokens, so they get low reasoning effort and headroom on
+    top of the caller's cap (the caller's number is the answer budget)."""
+    if _is_reasoning_model(model):
+        return {"max_tokens": max_tokens + LLM_REASONING_HEADROOM, "reasoning_effort": GROQ_REASONING_EFFORT}
+    return {"max_tokens": max_tokens}
+
+
 # ── Provider wrappers ─────────────────────────────────────────────────────────
 
 
@@ -291,10 +324,10 @@ class _GroqProvider(ThreadLocalUsage):
             model=GROQ_MODEL_FAST,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=TOKENS_FAST,
+            **_groq_params(GROQ_MODEL_FAST, TOKENS_FAST),
         )
         self.last_usage = usage_from_response(r)
-        return r.choices[0].message.content.strip()
+        return (r.choices[0].message.content or "").strip()
 
     def ask(
         self,
@@ -304,14 +337,34 @@ class _GroqProvider(ThreadLocalUsage):
         model: str | None = None,
     ) -> str:
         msgs = [{"role": "system", "content": self._system}, {"role": "user", "content": prompt}]
-        r = self._client().chat.completions.create(
-            model=model or self.model,
-            messages=msgs,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        self.last_usage = usage_from_response(r)
-        return r.choices[0].message.content.strip()
+        return self._complete(msgs, temperature, max_tokens, model or self.model)
+
+    def _complete(self, msgs: list, temperature: float, max_tokens: int, model: str) -> str:
+        """One completion. An empty reply with finish_reason "length" means the
+        cap was spent before any text: retry once with double the budget, then
+        raise EmptyReply so the client falls back to the next provider."""
+        finish = None
+        for budget in (max_tokens, max_tokens * 2):
+            r = self._client().chat.completions.create(
+                model=model, messages=msgs, temperature=temperature, **_groq_params(model, budget)
+            )
+            self.last_usage = usage_from_response(r)
+            text = (r.choices[0].message.content or "").strip()
+            if text:
+                return text
+            finish = r.choices[0].finish_reason
+            from utils import metrics
+
+            metrics.observe_empty_reply(self.name, finish)
+            log.warning(
+                "[LLMClient] Groq %s returned an empty reply (finish_reason=%s, max_tokens=%s)",
+                model,
+                finish,
+                budget,
+            )
+            if finish != "length":
+                break
+        raise EmptyReply(f"empty reply from {model} (finish_reason={finish})")
 
     def chat(
         self,
@@ -322,14 +375,11 @@ class _GroqProvider(ThreadLocalUsage):
     ) -> str:
         self._memory.add_user(msg)
         msgs = [{"role": "system", "content": self._system}] + self._memory.context()
-        r = self._client().chat.completions.create(
-            model=model or self.model,
-            messages=msgs,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        self.last_usage = usage_from_response(r)
-        reply = r.choices[0].message.content.strip()
+        try:
+            reply = self._complete(msgs, temperature, max_tokens, model or self.model)
+        except EmptyReply:
+            self._memory.pop_last()  # don't leave an orphan user turn behind
+            raise
         self._memory.add_assistant(reply)
         return reply
 
@@ -348,7 +398,7 @@ class _GroqProvider(ThreadLocalUsage):
                 model=model or self.model,
                 messages=msgs,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                **_groq_params(model or self.model, max_tokens),
                 stream=True,
                 # Longest gap between chunks, so also the time-to-first-token cap.
                 timeout=LLM_STREAM_TIMEOUT_SECONDS,
@@ -406,7 +456,7 @@ class _GeminiProvider(ThreadLocalUsage):
         cfg = self._types.GenerateContentConfig(temperature=0.2, max_output_tokens=TOKENS_FAST)
         r = self._client.models.generate_content(model=self.model, contents=prompt, config=cfg)
         self.last_usage = usage_from_response(r)
-        return r.text.strip()
+        return (getattr(r, "text", None) or "").strip()
 
     def ask(
         self,
@@ -428,7 +478,7 @@ class _GeminiProvider(ThreadLocalUsage):
             config=cfg,
         )
         self.last_usage = usage_from_response(r)
-        return r.text.strip()
+        return _gemini_text(r)
 
     def _system_and_contents(self):
         """Gemini's Content only accepts user/model roles — a summary system
@@ -469,7 +519,11 @@ class _GeminiProvider(ThreadLocalUsage):
             config=cfg,
         )
         self.last_usage = usage_from_response(r)
-        reply = r.text.strip()
+        try:
+            reply = _gemini_text(r)
+        except EmptyReply:
+            self._memory.pop_last()
+            raise
         self._memory.add_assistant(reply)
         return reply
 
@@ -769,11 +823,12 @@ class LLMClient:
     ) -> str:
         last_err = None
         too_large_providers: set[str] = set()
+        empty_providers: set[str] = set()  # answered with no text: asking again won't differ
         local_tried = False
         providers = self._chain()
         for attempt in range(MAX_RETRIES + 1):
             for provider in providers:
-                if provider.name in too_large_providers:
+                if provider.name in too_large_providers or provider.name in empty_providers:
                     continue
                 if provider is self._local:
                     # At most once per call: it is down (refused), hung (timeout)
@@ -800,7 +855,9 @@ class LLMClient:
                     last_err = e
                     kind = _classify_error(e)
                     log.warning(f"[LLMClient] {provider.name} failed (attempt {attempt + 1}, {kind}): {e}")
-                    if kind == "rate_limited":
+                    if isinstance(e, EmptyReply):
+                        empty_providers.add(provider.name)
+                    elif kind == "rate_limited":
                         wait = min(4**attempt, 16)
                         log.info(f"[LLMClient] Rate-limited, waiting {wait}s before fallback")
                         time.sleep(wait)
@@ -815,6 +872,6 @@ class LLMClient:
                         # LLM-08: a retired model or a never-provisioned quota
                         # won't recover within this call — skip it from now on.
                         _provider_health.mark_unavailable(_hkey(provider))
-            if providers and too_large_providers >= {p.name for p in providers}:
+            if providers and (too_large_providers | empty_providers) >= {p.name for p in providers}:
                 break  # every provider already rejected this exact prompt — stop burning the retry budget
         raise LLMProvidersExhausted(last_err, is_byo=self._is_byo, too_large=bool(too_large_providers))

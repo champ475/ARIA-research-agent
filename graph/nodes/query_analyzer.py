@@ -151,7 +151,9 @@ def build_query_analyzer_node(
             "entity_notes": resolved.notes,
             "intent": classification["intent"],
             "secondary_intents": classification["secondary_intents"],
-            "objective": classification["objective"],
+            # Never empty: a failed analysis falls back to the user's own words, so the
+            # planner and the judge always have something to work from.
+            "objective": classification["objective"] or query,
             "complexity": complexity,
             **log_decision(
                 "QueryAnalyzer",

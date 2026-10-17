@@ -284,7 +284,9 @@ def build_verification_node(
         max_loops = state.get("max_loops", 2)
         try:
             stage3_issues = run_judge(
-                _judge_client(state), state.get("objective", ""), state.get("evidence_summary", {})
+                _judge_client(state),
+                state.get("objective") or state.get("query", ""),
+                state.get("evidence_summary", {}),
             )
         except LLMProvidersExhausted as e:
             # Honest terminal state instead of silently looking clean — an
