@@ -60,13 +60,22 @@ def record_row(symbol: str, row: dict):
         pass  # best-effort — a failed write just means no history gained today
 
 
-def read_history(symbol: str) -> pd.DataFrame:
+def read_history(symbol: str, adjust: bool = True) -> pd.DataFrame:
     """Whatever rolling window has accumulated for `symbol` so far. Empty
-    DataFrame if none has been recorded yet."""
+    DataFrame if none has been recorded yet.
+
+    Rows are stored as traded; with `adjust` (the default) bars before a split
+    or bonus ex-date are rescaled from NSE's corporate-actions feed so the
+    series is continuous (DATA-07)."""
     p = _path(symbol)
     if not os.path.exists(p):
         return pd.DataFrame()
     try:
-        return pd.read_parquet(p)
+        df = pd.read_parquet(p)
     except Exception:
         return pd.DataFrame()
+    if adjust and not df.empty:
+        from tools.data.adjustments import adjust_ohlcv, corporate_factors
+
+        df = adjust_ohlcv(df, corporate_factors(symbol))
+    return df

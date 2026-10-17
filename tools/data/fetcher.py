@@ -246,6 +246,12 @@ def get_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
 
     if not degraded:
         cache_write(symbol, period, interval, df)
+    if len(df) > 1:
+        from tools.data.adjustments import unadjusted_jumps
+
+        jumps = unadjusted_jumps(df)
+        if jumps:  # DATA-07: a real >40% day is rare; usually a missed split or bonus
+            log.warning("%s: close moved >40%% in one day on %s — check split/bonus adjustment", symbol, jumps[:3])
     return df
 
 
