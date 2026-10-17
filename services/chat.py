@@ -218,10 +218,79 @@ def create_session(user_id: int, tab: str, first_message: str) -> int:
     return session_create(user_id, tab, title=session_title(first_message))
 
 
-def list_sessions(user_id: int, tab: str) -> list[dict]:
+SESSION_PAGE = 20
+_SEARCH_WORD = re.compile(r"[^\W_]+")
+MAX_TITLE = 80
+
+
+def list_sessions(user_id: int, tab: str, limit: int = SESSION_PAGE, offset: int = 0) -> list[dict]:
+    """The user's chats, newest first, one page at a time (UX-09)."""
     from utils.db import session_list
 
-    return session_list(user_id, tab)
+    return session_list(user_id, tab, limit=limit, offset=offset)
+
+
+def search_sessions(
+    user_id: int, tab: str, text: str, limit: int = SESSION_PAGE, offset: int = 0
+) -> list[dict]:
+    """Chats whose title or messages match `text` (UX-09). Only words and numbers
+    count; up to six of them, every one of which must appear in the same message."""
+    from utils.db import session_search
+
+    terms = _SEARCH_WORD.findall((text or "").lower())[:6]
+    if not terms:
+        return list_sessions(user_id, tab, limit, offset)
+    return session_search(user_id, tab, terms, limit=limit, offset=offset)
+
+
+def rename_session(user_id: int, session_id: int, title: str) -> str:
+    """Retitle a chat; returns the stored title. UserInputError for an empty or
+    over-long title, LookupError if it isn't the user's chat."""
+    from utils.db import session_rename
+    from utils.errors import UserInputError
+
+    clean = " ".join((title or "").split())
+    if not clean:
+        raise UserInputError("Give the chat a name.")
+    if len(clean) > MAX_TITLE:
+        raise UserInputError(f"Chat names are at most {MAX_TITLE} characters.")
+    if not session_rename(user_id, session_id, clean):
+        raise LookupError("no such chat")
+    return clean
+
+
+def chat_markdown(title: str, messages: list[dict], when: datetime | None = None) -> str:
+    """A chat as a Markdown document: its title, when it was exported, then the turns."""
+    from utils.helpers import IST
+
+    stamp = (when or datetime.now(IST)).astimezone(IST).strftime("%d %b %Y, %H:%M IST")
+    lines = [
+        f"# {title or 'Chat'}",
+        "",
+        f"*Exported from ARIA on {stamp}. Educational research, not investment advice.*",
+        "",
+    ]
+    for m in messages:
+        who = "You" if m["role"] == "user" else "ARIA"
+        lines += [f"**{who}**", "", str(m["content"]).strip(), ""]
+    return "\n".join(lines)
+
+
+def export_chat(user_id: int, session_id: int) -> str | None:
+    """Store the chat as a Markdown file for a day and return its download link
+    (the same /download/file route as other generated files); None if it isn't
+    the user's chat or has no messages."""
+    from utils.db import chat_load, download_put, session_get_title
+
+    messages = chat_load(user_id, session_id)
+    title = session_get_title(user_id, session_id)
+    if not messages or title is None:
+        return None
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-").lower()[:40] or "chat"
+    token = download_put(
+        user_id, f"aria-{slug}.md", "text/markdown", chat_markdown(title, messages).encode("utf-8")
+    )
+    return f"/download/file/{token}"
 
 
 def load_session(user_id: int, session_id: int) -> list[dict]:

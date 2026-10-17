@@ -340,6 +340,8 @@ def _build_chat_sidebar(
     extra_reset = extra_reset or []
     load_outputs = [session_state, chatbot, chart_panel, suggestions_state] + sug_btns + extra_reset
     sidebar_open = gr.State(True)
+    search_state = gr.State("")
+    shown_state = gr.State(chat_svc.SESSION_PAGE)  # how many chats the list shows (paging)
 
     def _blank_update():
         core = [None, [], gr.update(value=None, visible=False), CHAT_DEFAULTS] + list(
@@ -381,17 +383,34 @@ def _build_chat_sidebar(
         # Expanded content — full "New chat" button + session list.
         with gr.Column(visible=True, elem_classes=["sidebar-expanded-panel"]) as expanded_panel:
             new_chat_btn = gr.Button("＋ New chat", size="sm", elem_classes=["new-chat-btn"])
+            search_box = gr.Textbox(
+                placeholder="Search chats (Enter)",
+                show_label=False,
+                label="Search chats",
+                max_lines=1,
+                max_length=80,
+                elem_id="chat-search",
+            )
             gr.Markdown("**Chats**", elem_classes=["sidebar-title"])
 
             # session_state is in the render inputs so the active chat gets a
             # highlighted row and the list re-renders the moment it changes.
-            @gr.render(inputs=[user_state, refresh_state, session_state])
-            def _render_sessions(user_id, _refresh, active_sid):
+            @gr.render(inputs=[user_state, refresh_state, session_state, search_state, shown_state])
+            def _render_sessions(user_id, _refresh, active_sid, query, shown):
                 if not user_id:
                     return
-                sessions = chat_svc.list_sessions(user_id, tab_id)
+                # one extra row says whether there is another page
+                found = (
+                    chat_svc.search_sessions(user_id, tab_id, query, limit=shown + 1)
+                    if query
+                    else chat_svc.list_sessions(user_id, tab_id, limit=shown + 1)
+                )
+                sessions, more = found[:shown], len(found) > shown
                 if not sessions:
-                    gr.Markdown("*No past chats yet*", elem_classes=["sidebar-empty"])
+                    gr.Markdown(
+                        "*No chats match that*" if query else "*No past chats yet*",
+                        elem_classes=["sidebar-empty"],
+                    )
                     return
                 for s in sessions:
                     sid = s["id"]
@@ -414,6 +433,51 @@ def _build_chat_sidebar(
                         outputs=load_outputs + [refresh_state],
                         show_progress="hidden",
                     )
+                if more:
+                    more_btn = gr.Button("Show more", size="sm", elem_id="chat-more")
+                    more_btn.click(
+                        lambda n: n + chat_svc.SESSION_PAGE,
+                        [shown_state],
+                        [shown_state],
+                        show_progress="hidden",
+                    )
+
+            with gr.Accordion("This chat", open=False, elem_id="chat-manage"):
+                rename_box = gr.Textbox(
+                    show_label=False, label="Chat name", placeholder="New name", max_lines=1, max_length=80,
+                    elem_id="chat-rename",
+                )  # fmt: skip
+                rename_btn = gr.Button("Rename", size="sm", elem_id="chat-rename-btn")
+                export_btn = gr.Button("Export as Markdown", size="sm", elem_id="chat-export-btn")
+                manage_note = gr.Markdown("", elem_id="chat-manage-note")
+
+    def _search(text):
+        return (text or "").strip(), chat_svc.SESSION_PAGE
+
+    def _rename(user_id, sid, title, refresh, request: gr.Request):
+        user_id = request_user(request) or user_id
+        if not user_id or sid is None:
+            return refresh, "Open a chat first."
+        try:
+            new = chat_svc.rename_session(user_id, sid, title)
+        except UserInputError as e:
+            return refresh, f"⚠️ {html_text(e.user_message)}"
+        except LookupError:
+            return refresh, "⚠️ That chat no longer exists."
+        return refresh + 1, f"Renamed to “{html_text(new)}”."
+
+    def _export(user_id, sid, request: gr.Request):
+        user_id = request_user(request) or user_id
+        if not user_id or sid is None:
+            return "Open a chat first."
+        link = chat_svc.export_chat(user_id, sid)
+        return f"[⬇ Download this chat (Markdown)]({link})" if link else "Nothing to export yet."
+
+    search_box.submit(_search, [search_box], [search_state, shown_state], show_progress="hidden")
+    rename_btn.click(
+        _rename, [user_state, session_state, rename_box, refresh_state], [refresh_state, manage_note]
+    )
+    export_btn.click(_export, [user_state, session_state], [manage_note])
 
     new_chat_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs, show_progress="hidden")
     new_chat_icon_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs, show_progress="hidden")

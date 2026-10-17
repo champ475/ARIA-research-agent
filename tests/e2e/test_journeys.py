@@ -178,6 +178,36 @@ def test_alerts_tab_create_in_chat_then_edit_and_delete(page: Page, base_url, em
     assert db.execute("SELECT count(*) AS n FROM alerts WHERE user_id=%s", (uid,)).fetchone()["n"] == 0
 
 
+# 9c ────────────────────────────────────────────────────────────────────────────
+def test_chat_history_rename_search_and_export(page: Page, base_url, email):
+    """UX-09: rename the open chat, find it by what was said, export it as Markdown."""
+    new_user(page, base_url, email)
+    ask(page, "Analyse TCS")
+    wait_answer(page, "Here is what the research shows")
+    sidebar = page.locator(".chat-sidebar")
+    expect(sidebar.locator(".session-btn")).to_have_count(1, timeout=10_000)
+
+    page.get_by_text("This chat", exact=True).click()
+    page.locator("#chat-rename input, #chat-rename textarea").first.fill("TCS deep dive")
+    page.locator("#chat-rename-btn").click()
+    expect(page.locator("#chat-manage-note")).to_contain_text("Renamed", timeout=10_000)
+    expect(sidebar.locator(".session-btn").first).to_have_text("TCS deep dive", timeout=10_000)
+
+    search = page.locator("#chat-search input, #chat-search textarea").first
+    search.fill("nothingmatchesthis")
+    search.press("Enter")
+    expect(sidebar).to_contain_text("No chats match that", timeout=10_000)
+    search.fill("tcs")  # in the chat's text and its new title
+    search.press("Enter")
+    expect(sidebar.locator(".session-btn").first).to_have_text("TCS deep dive", timeout=10_000)
+
+    page.locator("#chat-export-btn").click()
+    link = page.get_by_role("link", name="⬇ Download this chat (Markdown)")
+    expect(link).to_be_visible(timeout=10_000)
+    body = page.request.get(base_url + link.get_attribute("href")).text()
+    assert body.startswith("# TCS deep dive") and "**You**" in body and "Analyse TCS" in body
+
+
 # 10 ────────────────────────────────────────────────────────────────────────────
 def test_planning_intake_to_strategy(page: Page, base_url, email, db):
     new_user(page, base_url, email)

@@ -77,6 +77,11 @@ def test_sessions_and_chat_history(db, two_users):
     assert db.chat_load(b, sid) == []
     db.session_delete(b, sid)
     assert len(db.session_list(a, "chat")) == 1
+    assert db.session_rename(b, sid, "hijacked") is False
+    assert db.session_list(a, "chat")[0]["title"] == "A's secret plan"
+    assert db.session_search(b, "chat", ["portfolio"]) == []
+    assert db.session_get_title(b, sid) is None and db.session_get_title(a, sid) == "A's secret plan"
+    assert [x["id"] for x in db.session_search(a, "chat", ["portfolio"])] == [sid]
 
 
 def test_owner_can_still_touch_and_save(db, two_users):
@@ -306,6 +311,9 @@ COVERED = {
     "alert_list": test_alerts,
     "alert_remove": test_alerts,
     "alert_pause": test_alerts,
+    "session_rename": test_sessions_and_chat_history,
+    "session_get_title": test_sessions_and_chat_history,
+    "session_search": test_sessions_and_chat_history,
     "alert_get": test_alerts,
     "alert_update": test_alerts,
     "alert_resume": test_alerts,

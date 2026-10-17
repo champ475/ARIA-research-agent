@@ -358,11 +358,47 @@ def session_create(user_id: int, tab: str, title: str = "New chat") -> int:
     return row["id"]
 
 
-def session_list(user_id: int, tab: str, limit: int = 50) -> list[dict]:
+def session_list(user_id: int, tab: str, limit: int = 50, offset: int = 0) -> list[dict]:
     return _query(
         "SELECT id, title, updated_at FROM chat_sessions "
-        "WHERE user_id=%s AND tab=%s ORDER BY updated_at DESC LIMIT %s",
-        (user_id, tab, limit),
+        "WHERE user_id=%s AND tab=%s ORDER BY updated_at DESC LIMIT %s OFFSET %s",
+        (user_id, tab, limit, offset),
+        fetch="all",
+    )
+
+
+def session_get_title(user_id: int, session_id: int) -> str | None:
+    """The title of one of the user's own chats, or None."""
+    row = _query(
+        "SELECT title FROM chat_sessions WHERE id=%s AND user_id=%s", (session_id, user_id), fetch="one"
+    )
+    return row["title"] if row else None
+
+
+def session_rename(user_id: int, session_id: int, title: str) -> bool:
+    """Retitle one of the user's own chats; False if it isn't theirs."""
+    row = _query(
+        "UPDATE chat_sessions SET title=%s WHERE id=%s AND user_id=%s RETURNING id",
+        (title, session_id, user_id),
+        fetch="one",
+        commit=True,
+    )
+    return row is not None
+
+
+def session_search(user_id: int, tab: str, terms: list[str], limit: int = 20, offset: int = 0) -> list[dict]:
+    """The user's chats whose title contains the text, or in which one message
+    contains every term (word-prefix match, served by the GIN index idx_chat_history_fts).
+    `terms` are plain words, already cleaned by services/chat.py."""
+    like = "%" + " ".join(terms) + "%"  # words only (letters and digits): nothing to escape
+    tsquery = " & ".join(f"{t}:*" for t in terms)
+    return _query(
+        "SELECT s.id, s.title, s.updated_at FROM chat_sessions s "
+        "WHERE s.user_id=%s AND s.tab=%s AND (s.title ILIKE %s OR EXISTS ("
+        "  SELECT 1 FROM chat_history h WHERE h.session_id = s.id "
+        "  AND to_tsvector('simple', h.content) @@ to_tsquery('simple', %s))) "
+        "ORDER BY s.updated_at DESC LIMIT %s OFFSET %s",
+        (user_id, tab, like, tsquery, limit, offset),
         fetch="all",
     )
 
