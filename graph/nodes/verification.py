@@ -92,6 +92,10 @@ _RATIO_FIELDS = frozenset(
 )  # fmt: skip
 
 
+def _hard(issues: list[VerificationIssue]) -> list[VerificationIssue]:
+    return [{**i, "severity": "hard"} for i in issues]
+
+
 def _stage1_deterministic(evidence: list[Evidence], tasks: list[dict]) -> list[VerificationIssue]:
     issues: list[VerificationIssue] = []
 
@@ -186,13 +190,17 @@ def _stage2_semantic(evidence: list[Evidence]) -> list[VerificationIssue]:
     return issues
 
 
-def _parse_llm_issues(raw: str) -> list[VerificationIssue]:
+def _parse_llm_issues(raw: str) -> list[VerificationIssue] | None:
+    """The judge's issues (all soft), or None when the reply was not usable
+    JSON. None is not "clean": the caller says the cross-check was unavailable."""
     try:
         parsed = extract_json(raw)
         raw_issues = parsed.get("issues", [])
     except (ParseFailure, AttributeError, TypeError):
         log.warning("Verification: failed to parse LLM judge output: %r", raw)
-        return []
+        return None
+    if not isinstance(raw_issues, list):
+        return None
 
     issues: list[VerificationIssue] = []
     for entry in raw_issues:
@@ -207,6 +215,7 @@ def _parse_llm_issues(raw: str) -> list[VerificationIssue]:
                 "issue_type": issue_type,
                 "stage": "llm_judge",
                 "evidence_ids": entry.get("evidence_ids", []),
+                "severity": "soft",
             }
         )
     return issues
@@ -218,10 +227,9 @@ def _build_judge_prompt(objective: str, evidence_summary: dict) -> str:
     return f"Objective: {objective}\n\nEvidence summary:\n{wrap_untrusted('evidence', evidence_json)}"
 
 
-def run_judge(client, objective: str, evidence_summary: dict) -> list[VerificationIssue]:
-    """Stage 3 on its own (LLM-13): the issues the judge raises for one
-    objective + evidence summary. The calibration set scores exactly this.
-    Raises LLMProvidersExhausted."""
+def run_judge_checked(client, objective: str, evidence_summary: dict) -> tuple[list[VerificationIssue], bool]:
+    """Stage 3: (issues, usable). usable is False when the judge gave no
+    parseable reply even after the repair retry. Raises LLMProvidersExhausted."""
     raw = json_reply(
         client,
         VerificationResult,
@@ -230,7 +238,15 @@ def run_judge(client, objective: str, evidence_summary: dict) -> list[Verificati
         max_tokens=TOKENS_AGENT,
         temperature=0.0,
     )
-    return _parse_llm_issues(raw)
+    issues = _parse_llm_issues(raw)
+    return (issues or [], issues is not None)
+
+
+def run_judge(client, objective: str, evidence_summary: dict) -> list[VerificationIssue]:
+    """Stage 3 on its own (LLM-13): the issues the judge raises for one
+    objective + evidence summary. The calibration set scores exactly this.
+    Raises LLMProvidersExhausted."""
+    return run_judge_checked(client, objective, evidence_summary)[0]
 
 
 def build_verification_node(
@@ -257,7 +273,7 @@ def build_verification_node(
                 **log_decision("Verification", "skipped", "turn deadline reached — no further loop"),
             }
 
-        stage1_issues = _stage1_deterministic(evidence, tasks)
+        stage1_issues = _hard(_stage1_deterministic(evidence, tasks))
         if stage1_issues:
             return {
                 "verification_issues": stage1_issues,
@@ -269,7 +285,7 @@ def build_verification_node(
                 ),
             }
 
-        stage2_issues = _stage2_semantic(evidence)
+        stage2_issues = _hard(_stage2_semantic(evidence))
         if stage2_issues:
             return {
                 "verification_issues": stage2_issues,
@@ -283,7 +299,7 @@ def build_verification_node(
 
         max_loops = state.get("max_loops", 2)
         try:
-            stage3_issues = run_judge(
+            stage3_issues, judge_usable = run_judge_checked(
                 _judge_client(state),
                 state.get("objective") or state.get("query", ""),
                 state.get("evidence_summary", {}),
@@ -302,8 +318,10 @@ def build_verification_node(
                         "issue_type": "unsupported",
                         "stage": "llm_judge",
                         "evidence_ids": [],
+                        "severity": "soft",
                     }
                 ],
+                "judge_status": "unavailable",
                 "loop_count": max_loops,
                 **log_decision(
                     "Verification", "llm_judge skipped — all providers exhausted", type(e).__name__
@@ -316,8 +334,20 @@ def build_verification_node(
         # finite even though Reflection itself only increments when IT decides
         # to queue new tasks.
         extra = {"loop_count": 1} if stage3_issues else {}
+        if not judge_usable:
+            # Not "checked, found nothing": say so, and let the answer carry the note.
+            return {
+                "verification_issues": [],
+                "judge_status": "unavailable",
+                **log_decision(
+                    "Verification",
+                    "llm_judge unavailable, no usable reply",
+                    "the cross-check could not run; the answer says so",
+                ),
+            }
         return {
             "verification_issues": stage3_issues,
+            "judge_status": "ok",
             **extra,
             **log_decision(
                 "Verification",

@@ -80,7 +80,7 @@ class TestCommunicationLayerNoConclusions:
                 "complexity": "moderate",
             }
         )
-        assert "wasn't able to verify" in result["final_report"]
+        assert "couldn't find enough data" in result["final_report"]
         assert stub.last_prompt is None
 
     def test_confidence_summary_empty(self):

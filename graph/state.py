@@ -62,6 +62,11 @@ class VerificationIssue(TypedDict):
     issue_type: Literal["unsupported", "contradiction", "low_confidence", "missing_citation"]
     stage: Literal["deterministic", "semantic", "llm_judge"]
     evidence_ids: list[str]
+    # "hard": the evidence itself is wrong or inconsistent (missing fields, NaN,
+    # out of range, contradiction) - the evidence is withheld and the user is
+    # asked. "soft": the LLM judge could not confirm a claim - the answer is
+    # shown with a plain note. A missing severity means hard (older callers).
+    severity: NotRequired[Literal["hard", "soft"]]
 
 
 class MissingInfoItem(TypedDict):
@@ -166,6 +171,7 @@ class GraphState(TypedDict):
     evidence_summary: dict  # EvidenceSummarizer output — what Reflection reads
     missing_info: list[MissingInfoItem]
     verification_issues: list[VerificationIssue]
+    judge_status: str  # "ok" | "unavailable": the LLM judge returned nothing usable
     conclusions: list[Conclusion]  # ConclusionBuilder output — what CommunicationLayer reads
     loop_count: Annotated[int, operator.add]
     max_loops: int

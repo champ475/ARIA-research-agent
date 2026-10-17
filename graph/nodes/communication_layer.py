@@ -253,7 +253,10 @@ def build_communication_layer_node(
             }
 
         if not conclusions:
-            report = f"I wasn't able to verify enough evidence to answer: {objective or query}"
+            report = (
+                f"I couldn't find enough data to answer: {objective or query}\n\n"
+                "Try naming the company or fund exactly (for example its NSE symbol), or ask again in a moment."
+            )
             return {
                 "final_report": report,
                 "pending_synthesis_prompt": None,

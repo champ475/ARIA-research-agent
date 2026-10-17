@@ -82,6 +82,8 @@ def _numeric_fields(payload) -> dict[str, float]:
 def _flagged_evidence_ids(verification_issues: list[dict]) -> set[str]:
     flagged: set[str] = set()
     for issue in verification_issues or []:
+        if issue.get("severity", "hard") == "soft":
+            continue  # unconfirmed by the judge, not wrong: the data still goes in
         flagged.update(issue.get("evidence_ids", []))
     return flagged
 

@@ -77,6 +77,7 @@ from agents.conversation_memory import ConversationMemory, strip_badge, strip_so
 from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT, TRIAL_DAILY_TOKENS
 from graph.analysis_tools import analysis_notes
+from graph.caveats import verification_note
 from graph.checkpointer import get_turn_checkpointer
 from graph.confirmation import REASK_TEXT as CONFIRM_REPROMPT
 from graph.confirmation import classify_reply
@@ -662,7 +663,9 @@ class GraphOrchestrator:
             secondary = result.get("secondary_intents") or []
             tab_used = "+".join([intent] + [s for s in secondary if s != intent])
 
-            gaps_note = entity_notes_text(result) + data_gaps_note(result.get("tasks"))
+            gaps_note = (
+                entity_notes_text(result) + data_gaps_note(result.get("tasks")) + verification_note(result)
+            )
             # DATA-06: market figures say when they're from (and, on a closed
             # day, that they're the last session's).
             header = closed_today_header(result)
