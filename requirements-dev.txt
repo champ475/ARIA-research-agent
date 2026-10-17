@@ -9,7 +9,7 @@ types-requests
 
 # Tests
 pytest-cov>=5.0.0
-hypothesis>=6.100.0
+hypothesis>=6.169.1
 pyyaml>=6.0        # tests/edge_cases/matrix.yaml (TEST-03)
 responses>=0.25.0  # recorded HTTP responses for data-contract tests (TEST-05)
 pytest-playwright>=0.5.0  # end-to-end UI journeys (TEST-04); then: playwright install chromium
