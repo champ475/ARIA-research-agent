@@ -154,3 +154,10 @@ def test_why_question_prompt_contains_the_headlines():
         }
     )
     assert "TCS wins $1bn UK deal" in out["pending_synthesis_prompt"]
+
+
+def test_movers_table_shows_the_percent_change_column():
+    # NSE spells it perChange; without it the writer had only prices (smoke test 2026-10-17).
+    df = pd.DataFrame({"symbol": ["TECHM", "TCS"], "ltp": [1790, 2465], "perChange": [4.21, 3.9]})
+    text = render_for_prompt(_ev("top_movers", df, "market"), 2000)
+    assert "perChange" in text and "4.21" in text

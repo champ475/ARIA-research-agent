@@ -30,17 +30,30 @@ turn's ticker.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 
 import prompts
 from agents.conversation_memory import strip_badge
 from agents.llm_client import LLMClient
 from config import MAX_ENTITIES_PER_TURN, TOKENS_FAST
+from graph.analysis_tools import TRIGGERS
 from graph.data_questions import min_complexity
-from graph.entity_resolution import add_llm_mentions, ambiguous_reference, history_carry, resolve_mentions
+from graph.entity_resolution import (
+    EntityResult,
+    add_llm_mentions,
+    ambiguous_reference,
+    history_carry,
+    lacks_company,
+    match_clarification_reply,
+    missing_company_entry,
+    pending_clarification,
+    resolve_mentions,
+)
 from graph.journal import log_decision
 from graph.schemas import QueryAnalysis
 from graph.state import GraphState
+from tools.screener_grammar import parse as screener_parse
 from utils.llm_json import ParseFailure, extract_json, json_reply
 
 log = logging.getLogger(__name__)
@@ -102,6 +115,64 @@ def _parse(raw: str) -> dict:
         return dict(_FALLBACK)
 
 
+_FUND_WORDS = re.compile(
+    r"\b(?:funds?|mutual|nav|sips?|elss|etfs?|amc|schemes?|flexi\s*cap|multi\s*cap|index\s+fund)\b",
+    re.IGNORECASE,
+)
+_PLANNING_WORDS = re.compile(
+    r"\b(?:goal|goals|retire\w*|years?|save|savings|sip|allocat\w*|plan|invest\s+(?:₹|rs|inr)|lakh|crore)\b",
+    re.IGNORECASE,
+)
+_REPORT_WORDS = re.compile(
+    r"\b(?:report|reports|memo|note|coverage|initiat\w*|deep\s+dive|summary|results|analysis|research|pdf|ic)\b",
+    re.IGNORECASE,
+)
+
+
+def _correct_intent(intent: str, query: str, entities: list[str]) -> str:
+    """The fast model's label is noisy ("PE of Infosys" came back as mf, "How is TCS
+    doing?" as report). Named companies decide where the words cannot:
+    - screener: filters the whole market by numbers; companies and no filter is equity;
+    - mf: needs a fund word, else it is a company question;
+    - report: needs a report word, else it is a company question (a quote, not a PDF)."""
+    if (
+        intent == "planning"
+        and TRIGGERS["portfolio_view"].search(query)
+        and not _PLANNING_WORDS.search(query)
+    ):
+        return "equity"  # "how is my portfolio doing?" reads the holdings; it does not plan goals
+    if not entities:
+        return intent
+    if intent == "screener" and not screener_parse(query).filters:
+        return "equity"
+    if intent == "mf" and not _FUND_WORDS.search(query):
+        return "equity"
+    if intent == "report" and not _REPORT_WORDS.search(query):
+        return "equity"
+    return intent
+
+
+_MAX_REPLY_WORDS = 5  # longer messages are new questions, not answers to "which one?"
+
+
+def _clarification_choice(query: str, history: list[dict]) -> tuple[str, tuple[str, str]] | None:
+    """(original question, (company name, symbol)) when `query` answers a
+    pending "which company?" question, else None."""
+    if len((query or "").split()) > _MAX_REPLY_WORDS:
+        return None
+    pending = pending_clarification(history)
+    if pending is None:
+        return None
+    original, options = pending
+    picked = match_clarification_reply(query, options)
+    if picked is None:
+        # The reply may simply name a company ("HDFC Bank"): accept it when it is exactly one.
+        named = resolve_mentions(query)
+        if len(named.entities) == 1 and not named.unresolved:
+            picked = (named.entities[0], named.entities[0])
+    return (original, picked) if picked else None
+
+
 def build_query_analyzer_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
@@ -114,7 +185,16 @@ def build_query_analyzer_node(
     def query_analyzer(state: GraphState) -> dict:
         query = state["query"]
         history = state.get("history", [])
-        resolved = resolve_mentions(query)
+        # A short reply to "Which HDFC do you mean?" answers that question: carry the
+        # original question over with the company chosen, instead of treating the
+        # reply ("the bank one") as a new, company-less question.
+        chosen = _clarification_choice(query, history)
+        if chosen:
+            original, (name, symbol) = chosen
+            query = f"{original} - {name} ({symbol})"
+            resolved = EntityResult(entities=[symbol], mentioned=True)
+        else:
+            resolved = resolve_mentions(query)
         raw = json_reply(
             client,
             QueryAnalysis,
@@ -124,7 +204,8 @@ def build_query_analyzer_node(
             temperature=0.0,
         )
         classification = _parse(raw)
-        add_llm_mentions(resolved, classification["companies"])
+        if not chosen:
+            add_llm_mentions(resolved, classification["companies"], query)
         unresolved = list(resolved.unresolved)
         if resolved.mentioned:
             entities = resolved.entities
@@ -132,6 +213,10 @@ def build_query_analyzer_node(
             entities, ambiguous = history_carry(history)
             if ambiguous:  # LLM-10: "its RSI" after comparing two companies
                 unresolved.append(ambiguous_reference(ambiguous))
+        intent = _correct_intent(classification["intent"], query, entities)
+        if not entities and not unresolved and lacks_company(query, intent):
+            # "what about its debt?" with nothing to refer to: ask, don't fetch for "market".
+            unresolved.append(missing_company_entry())
         if len(entities) > MAX_ENTITIES_PER_TURN:
             # VAL-03: tasks = companies x tools; past the cap, ask instead of
             # fanning out dozens of fetches (blocking, like an ambiguous name).
@@ -146,16 +231,19 @@ def build_query_analyzer_node(
         # LLM-06: a data question never takes the no-research path.
         complexity, raised = min_complexity(query, entities, classification["complexity"])
         return {
+            **({"query": query} if chosen else {}),
             "entities": entities,
             "entity_resolutions": unresolved,
             "entity_notes": resolved.notes,
-            "intent": classification["intent"],
+            "intent": intent,
             "secondary_intents": classification["secondary_intents"],
-            "objective": classification["objective"],
+            # Never empty: a failed analysis falls back to the user's own words, so the
+            # planner and the judge always have something to work from.
+            "objective": classification["objective"] or query,
             "complexity": complexity,
             **log_decision(
                 "QueryAnalyzer",
-                f"intent={classification['intent']}, complexity={complexity}"
+                f"intent={intent}, complexity={complexity}"
                 + (f" (raised from simple: {raised})" if raised else ""),
                 f"entities={entities or 'none'}"
                 + (f", unresolved={[u['query'] for u in resolved.unresolved]}" if resolved.unresolved else "")

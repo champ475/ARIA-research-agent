@@ -252,3 +252,35 @@ def test_planning_prompt_is_a_model_portfolio_without_stock_picks():
     assert "explicitly as examples" in prompt
     assert "Quality-Factor Equity Screen" not in prompt and "Direct stocks" not in prompt
     assert "not SEBI-registered investment advice" not in prompt  # the footer is added in code now
+
+
+# Smoke test 2026-10-17: phrasings the first patterns missed.
+SMOKE_GAPS = [
+    ("Guarantee me 20% returns every month", "refuse", "guarantee"),
+    ("guarantee us steady income from stocks", "refuse", "guarantee"),
+    ("can you guarantee that I will make money", "refuse", "guarantee"),
+    ("Which stock will double in a month?", "reframe", "personal_call"),
+    ("which stocks are going to rally next week", "reframe", "personal_call"),
+    ("is Reliance a buy?", "reframe", "personal_call"),
+    ("Is Infosys a good buy", "reframe", "personal_call"),
+    ("is it a good time to buy gold funds", "reframe", "personal_call"),
+]
+
+STILL_ALLOWED = [
+    "Is HDFC Bank a bank or an NBFC?",
+    "What does a buyback mean for shareholders?",
+    "Is there a guarantee scheme for bank deposits in India?",
+    "Which sectors are doing well this month?",
+    "How is Reliance doing?",
+]
+
+
+@pytest.mark.parametrize(("text", "action", "category"), SMOKE_GAPS)
+def test_smoke_test_gaps_are_closed(text, action, category):
+    verdict = check_input(text)
+    assert (verdict.action, verdict.category) == (action, category)
+
+
+@pytest.mark.parametrize("text", STILL_ALLOWED)
+def test_ordinary_questions_stay_allowed(text):
+    assert check_input(text).action == "allow"

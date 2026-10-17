@@ -31,13 +31,15 @@ TTL_SECONDS: dict[str, int] = {
     "macro": 3600,
     "pdf_extract": 604800,
     "risk_flag": 3600,
+    "market_overview": 900,
+    "top_movers": 900,
 }
 _DEFAULT_TTL_SECONDS = 900
 
 # Bumped whenever the key scheme changes, so rows written under an old (and
 # possibly under-specified) scheme can never be served again. v2 = DATA-01:
 # query-driven tools started adding their parsed inputs to the key.
-_KEY_VERSION = 2
+_KEY_VERSION = 3  # v3: statement currency, lender rows and fund names changed what is stored
 
 
 def compute_args_hash(entity: str, **kwargs: Any) -> str:

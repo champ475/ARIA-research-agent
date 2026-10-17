@@ -80,7 +80,7 @@ class TestCommunicationLayerNoConclusions:
                 "complexity": "moderate",
             }
         )
-        assert "wasn't able to verify" in result["final_report"]
+        assert "couldn't find enough data" in result["final_report"]
         assert stub.last_prompt is None
 
     def test_confidence_summary_empty(self):
@@ -803,3 +803,56 @@ class TestChartCache:
             assert node(self._state([1, 2]))["chart_html"] is None
             node(self._state([1, 2]))
         assert build.call_count == 2
+
+
+class TestDirectAnswerPath:
+    """Smoke test 2026-10-17: "what does a high PE mean?" got "I don't have the
+    pre-verified conclusions needed" because the no-research path used the
+    prompt that says "use ONLY these conclusions"."""
+
+    class _Fake:
+        built: list = []
+
+        def __init__(self, system, cfg=None, node=None):
+            type(self).built.append(system)
+            self.prompts = []
+
+        def ask(self, prompt, **kwargs):
+            self.prompts.append(prompt)
+            return "A high P/E means investors pay a lot per rupee of earnings."
+
+    def _state(self, intent):
+        return {
+            "conclusions": [],
+            "objective": "explain high PE",
+            "entities": [],
+            "evidence": [],
+            "complexity": "simple",
+            "query": "What does a high PE ratio mean?",
+            "intent": intent,
+        }
+
+    def test_sync_path_uses_the_direct_system_prompt(self, monkeypatch):
+        from graph.nodes import communication_layer as cl
+
+        self._Fake.built = []
+        monkeypatch.setattr(cl, "LLMClient", self._Fake)
+        node = cl.build_communication_layer_node()
+        result = node(self._state("mf"))
+        assert result["final_report"].startswith("A high P/E")
+        assert cl._DIRECT_SYSTEM in self._Fake.built
+        assert cl._DIRECT_SYSTEM != cl._SYSTEM
+
+    def test_streaming_path_flags_the_direct_system_prompt(self, monkeypatch):
+        from graph.nodes import communication_layer as cl
+
+        monkeypatch.setattr(cl, "LLMClient", self._Fake)
+        result = cl.build_communication_layer_node()(self._state("chat"))
+        assert result["pending_synthesis_system"] == "direct"
+        assert result["pending_synthesis_prompt"]
+
+    def test_no_prompt_tells_the_model_to_talk_about_its_inputs(self):
+        from graph.nodes import communication_layer as cl
+
+        assert "pre-verified" not in cl._SYSTEM and "pre-verified" not in cl._DIRECT_SYSTEM
+        assert "knowledge base" not in cl._DIRECT_SYSTEM

@@ -210,13 +210,19 @@ def persist_turn(
     traces link to it, LLM-12) and the route in `meta`; the stored text has no
     routing badge, so it never reaches the model as history."""
     from agents.conversation_memory import strip_badge
-    from utils.db import chat_save, session_touch
+    from utils.db import chat_save_exchange
     from utils.logging_setup import turn_id_var
 
     meta = {"turn_id": turn_id_var.get() or None, "route": route}
-    chat_save(user_id, session_id, "chat", "user", user_msg)
-    chat_save(user_id, session_id, "chat", "assistant", strip_badge(assistant_msg), meta=meta)
-    session_touch(user_id, session_id, title=session_title(user_msg) if is_first else None)
+    chat_save_exchange(
+        user_id,
+        session_id,
+        "chat",
+        user_msg,
+        strip_badge(assistant_msg),
+        meta=meta,
+        title=session_title(user_msg) if is_first else None,
+    )
 
 
 def create_session(user_id: int, tab: str, first_message: str) -> int:

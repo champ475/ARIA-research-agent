@@ -99,6 +99,7 @@ TOOL_LABELS = {
     "fetch_mf_news": "fund news",
     "screener_run": "screener data",
     "fetch_top_movers": "top movers (NSE)",
+    "fetch_market_overview": "index levels",
     "fetch_bulk_deals": "bulk deals (NSE)",
     "fetch_block_deals": "block deals (NSE)",
     "peer_comparison": "peer comparison",

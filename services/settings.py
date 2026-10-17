@@ -25,13 +25,33 @@ log = logging.getLogger(__name__)
 # ── Bring-your-own LLM key ────────────────────────────────────────────────────
 
 
+DEFAULT_PILL = "Free trial · bring your own key for unlimited use (Settings)"
+
+
+def header_pill(user_id: int | None) -> str:
+    """The badge in the page header: what limits this account, not the trial text for everyone."""
+    from utils.db import llm_config_get, user_is_admin
+
+    if not user_id:
+        return DEFAULT_PILL
+    if llm_config_get(user_id):
+        return "Using your own key · no daily message limit"
+    if user_is_admin(user_id):
+        return "Admin · no daily message limit"
+    return DEFAULT_PILL
+
+
 def llm_status_md(user_id: int) -> str:
-    from utils.db import _query, llm_config_get
+    from utils.db import _query, llm_config_get, user_is_admin
 
     row = llm_config_get(user_id)
     if row:
         base = row["base_url"] or "api.openai.com (or provider default)"
         return f"✅ **Using your own key** — model `{row['model']}` via `{base}`."
+    if user_is_admin(user_id):
+        return (
+            "🛡️ **Admin account** — no daily message limit. Add your own key below to use a different model."
+        )
     urow = _query(
         "SELECT free_msgs_used_today, free_msgs_reset_at FROM users WHERE id=%s",
         (user_id,),

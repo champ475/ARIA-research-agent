@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 from tools.data.instruments import (
     AMBIGUOUS_EXACT_NAMES,
+    COMPANY_GROUPS,
     NON_COMPANY_TERMS,
     RENAMED,
     Resolution,
@@ -45,6 +46,8 @@ _BSE_CODE = re.compile(r"\b(5\d{5})\b")
 # Intents where an unknown company stops the turn with "couldn't find X";
 # elsewhere (mf, screener, planning, chat) a stray capitalised word must not.
 _COMPANY_INTENTS = {"equity", "report", "alert"}
+# A bare group name ("Tata") is a company question even when the model called it chat.
+_GROUP_INTENTS = _COMPANY_INTENTS | {"chat"}
 
 
 # Hindi particles in Hinglish questions ("tcs ka share price kya hai").
@@ -132,6 +135,11 @@ def extract_mentions(query: str) -> list[str]:
         for m in regex.finditer("".join(masked)):
             take(m.start(), m.end(), m.group(0))
 
+    # A bare business-group word ("Tata", "Adani") is a mention that must be asked about.
+    for m in _WORD.finditer("".join(masked)):
+        if m.group(0).lower() in COMPANY_GROUPS:
+            take(m.start(), m.end(), m.group(0))
+
     # 2. Words right before "share(s)/stock": "zydus share price", "xyzq stock".
     #    Generic words ("value stocks", "energy stocks") must not become a
     #    company by fuzzy match: only an exact name/alias/symbol, an ambiguous
@@ -207,10 +215,13 @@ def resolve_mentions(query: str) -> EntityResult:
     return result
 
 
-def add_llm_mentions(result: EntityResult, llm_mentions: list) -> EntityResult:
+def add_llm_mentions(result: EntityResult, llm_mentions: list, query: str = "") -> EntityResult:
     """Fold in the company mentions QueryAnalyzer's LLM found, resolving each
-    against the master. Mentions already covered are skipped."""
+    against the master. Mentions already covered are skipped, including a word of
+    a name the deterministic pass already matched: the model's "Relaince" next to
+    the resolved "Relaince industries" must not ask "which Relaince?"."""
     covered = {normalise_name(u["query"]) for u in result.unresolved}
+    spans = " | ".join(normalise_name(m) for m in extract_mentions(query)) if result.entities else ""
     extra: list[str] = []
     for raw in llm_mentions or []:
         if not isinstance(raw, str):
@@ -218,7 +229,7 @@ def add_llm_mentions(result: EntityResult, llm_mentions: list) -> EntityResult:
         mention = raw.strip()
         if not mention or all(_skip(w) for w in mention.split()):
             continue
-        if normalise_name(mention) in covered:
+        if normalise_name(mention) in covered or (spans and normalise_name(mention) in spans):
             continue
         r = resolve(mention)
         if r.status == "found" and r.symbol in result.entities:
@@ -269,7 +280,16 @@ def blocking_resolutions(state: dict) -> list[dict]:
     the turn is about a company."""
     unresolved = state.get("entity_resolutions") or []
     intents = {state.get("intent")} | set(state.get("secondary_intents") or [])
-    if not unresolved or not intents & _COMPANY_INTENTS:
+    if not unresolved:
+        return []
+    if not intents & _COMPANY_INTENTS:
+        # Only a bare group word still asks, and only when the turn is general chat.
+        if intents & _GROUP_INTENTS:
+            return [
+                u
+                for u in unresolved
+                if u["status"] == "ambiguous" and normalise_name(u["query"]) in COMPANY_GROUPS
+            ]
         return []
     too_many = [u for u in unresolved if u["status"] == "too_many"]
     if too_many:
@@ -277,6 +297,9 @@ def blocking_resolutions(state: dict) -> list[dict]:
     ambiguous = [u for u in unresolved if u["status"] == "ambiguous"]
     if ambiguous:
         return ambiguous
+    missing = [u for u in unresolved if u["status"] == "missing_company"]
+    if missing:
+        return missing
     if not state.get("entities"):
         return [u for u in unresolved if u["status"] == "not_found"]
     return []
@@ -298,6 +321,12 @@ def clarification_text(blocking: list[dict]) -> str:
                 f"{u['limit']} at a time, so the answer stays fast and complete.\n\n"
                 f"Tell me which {u['limit']} to start with — or, to compare many at once, ask the screener "
                 'for a table, e.g. *"IT stocks with PE below 30"*.'
+            )
+            return "\n\n".join(parts)
+        if u["status"] == "missing_company":
+            parts.append(
+                "Which company do you mean? Tell me its name or NSE symbol, for example "
+                '*"How is TCS doing?"* or *"What is the debt of Infosys?"*.'
             )
             return "\n\n".join(parts)
         if u["status"] == "ambiguous" and u.get("reference"):
@@ -328,3 +357,171 @@ def entity_notes_text(state: dict) -> str:
                     f"Couldn't find a listed company called “{u['query']}”, so it isn't covered here."
                 )
     return "".join(f"\n\nℹ️ {line}" for line in lines)
+
+
+# ── Answers to "Which X do you mean?" ─────────────────────────────────────────
+
+CLARIFY_MARKER = "Reply with the company name or its NSE symbol"
+_OPTION = re.compile(r"([^\n(]*?)\s*\(\*\*([A-Z0-9&.\-]+)\*\*\)")
+_REPLY_FILLER = frozenset(
+    [
+        "the",
+        "one",
+        "a",
+        "an",
+        "please",
+        "i",
+        "mean",
+        "want",
+        "it",
+        "is",
+        "its",
+        "that",
+        "this",
+        "of",
+        "for",
+        "me",
+        "go",
+        "with",
+        "pick",
+        "choose",
+        "take",
+        "yes",
+        "yeah",
+        "yep",
+        "ok",
+        "okay",
+        "sure",
+    ]
+)
+_ORDINALS = {"first": 0, "1st": 0, "1": 0, "second": 1, "2nd": 1, "2": 1, "third": 2, "3rd": 2, "3": 2}
+
+
+def pending_clarification(history: list[dict]) -> tuple[str, list[tuple[str, str]]] | None:
+    """(the question that was asked, [(company name, symbol), ...]) when the
+    assistant's last message was a "which company?" question and the newest
+    message is the user's reply to it. None otherwise."""
+    from agents.conversation_memory import strip_badge
+
+    msgs = list(history or [])
+    if msgs and msgs[-1].get("role") == "user":
+        msgs.pop()  # the reply being analysed is already in the history
+    if len(msgs) < 2 or msgs[-1].get("role") != "assistant" or msgs[-2].get("role") != "user":
+        return None
+    text = strip_badge(msgs[-1].get("content", ""))
+    if CLARIFY_MARKER not in text:
+        return None
+    options = []
+    for m in _OPTION.finditer(text):
+        name = re.sub(r"^(?:[-*•]\s*|Did you mean\s+|,\s*)", "", m.group(1).strip()).strip()
+        options.append((name, m.group(2)))
+    if not options:
+        return None
+    return strip_badge(msgs[-2].get("content", "")), options
+
+
+def match_clarification_reply(reply: str, options: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """Which option a short reply picks: its symbol, its position ("the first
+    one"), or words that fit exactly one option's name ("the bank one" fits
+    HDFC Bank, not HDFC Life). None when it picks none or several."""
+    words = re.findall(r"[a-z0-9&.\-]+", (reply or "").lower())
+    if not words:
+        return None
+    for name, symbol in options:
+        if symbol.lower() in words or " ".join(words) == name.lower():
+            return name, symbol
+    content = [w for w in words if w not in _REPLY_FILLER]
+    for w in content:
+        if w in _ORDINALS and _ORDINALS[w] < len(options):
+            return options[_ORDINALS[w]]
+    if not content:
+        return None
+    fits = [
+        (n, s)
+        for n, s in options
+        if all(any(c in t for t in re.findall(r"[a-z0-9&]+", n.lower())) for c in content)
+    ]
+    return fits[0] if len(fits) == 1 else None
+
+
+# A question that points at a company without naming one ("what about its debt?").
+_COMPANY_POINTER = re.compile(
+    r"\b(?:its|it's|it|this\s+(?:stock|company|share)|that\s+(?:stock|company|share)|the\s+(?:stock|company|share)|"
+    r"they|their)\b",
+    re.IGNORECASE,
+)
+_NOT_ABOUT_ONE_COMPANY = re.compile(
+    r"\b(?:market|markets|nifty|sensex|sectors?|indices|index|stocks|shares|funds?|my\s+\w+|portfolio|"
+    r"holdings|watchlist|reports?|alerts?|gainers|losers|movers)\b",
+    re.IGNORECASE,
+)
+
+
+def lacks_company(query: str, intent: str | None) -> bool:
+    """True when a company question names none: it points at one ("its debt",
+    "the stock") and says nothing broader, so the answer is to ask which."""
+    q = query or ""
+    return (
+        intent in _COMPANY_INTENTS
+        and bool(_COMPANY_POINTER.search(q))
+        and not _NOT_ABOUT_ONE_COMPANY.search(q)
+    )
+
+
+def missing_company_entry() -> dict:
+    return {"query": "", "status": "missing_company", "candidates": []}
+
+
+# ── Fund names ("Compare Parag Parikh Flexi Cap and HDFC Flexi Cap") ───────────
+# Funds are not company mentions, so the analyzer returns none for them; the fund
+# tools read the names straight from the user's words instead of the "market" sentinel.
+
+_FUND_LEAD = re.compile(
+    r"^\s*(?:please\s+)?(?:compare|comparison\s+of|difference\s+between|show\s+me|tell\s+me\s+about|"
+    r"how\s+(?:is|are|do|does)|which\s+is\s+better|is|"
+    r"(?:what(?:'s|\s+is)\s+(?:the\s+)?)?(?:current\s+|latest\s+)?(?:nav|returns?|performance|cagr)\s+(?:of|for))[,:]?\s+(?:the\s+)?",
+    re.IGNORECASE,
+)
+_FUND_SPLIT = re.compile(r"\s+(?:vs\.?|versus|and|with|or|against)\s+|\s*,\s*", re.IGNORECASE)
+_FUND_TAIL_WORDS = frozenset(
+    [
+        "fund",
+        "funds",
+        "scheme",
+        "schemes",
+        "returns",
+        "return",
+        "performance",
+        "nav",
+        "cagr",
+        "comparison",
+        "compare",
+        "better",
+        "please",
+        "mutual",
+        "direct",
+        "growth",
+        "plan",
+        "doing",
+        "performing",
+        "today",
+        "now",
+        "latest",
+        "looking",
+    ]
+)
+
+
+def extract_fund_names(query: str) -> list[str]:
+    """The fund names a question compares or asks about, in the order written
+    ("Compare A and B" gives [A, B]); [] when it names none."""
+    text = _FUND_LEAD.sub("", (query or "").strip().rstrip("?.! "))
+    names: list[str] = []
+    for part in _FUND_SPLIT.split(text):
+        words = part.split()
+        while words and words[-1].lower().strip(".,") in _FUND_TAIL_WORDS:
+            words.pop()
+        name = " ".join(words).strip()
+        if len(name) >= 4 and name.lower() not in {n.lower() for n in names}:
+            names.append(name)
+    return names[:4]

@@ -50,6 +50,25 @@ TRIGGERS: dict[str, re.Pattern[str]] = {
 ANALYSIS_TOOLS = frozenset(TRIGGERS)
 # Tools that don't take a company: planned once, on the no-entity sentinel.
 ENTITYLESS = frozenset({"portfolio_view"})
+# Tools that only make sense for one named company. With no company in the turn
+# they are not planned at all (they used to run on the "market" sentinel and
+# fetch nothing useful); the answer asks which company instead.
+COMPANY_BOUND_TOOLS = frozenset(
+    {
+        "fetch_info",
+        "fetch_financials",
+        "fetch_ohlcv",
+        "fetch_news",
+        "compute_fundamentals",
+        "compute_technicals",
+        "fetch_quarterly_results",
+        "fetch_annual_report_text",
+        "peer_comparison",
+        "risk_assessment",
+        "news_sentiment",
+        "backtest",
+    }
+)
 _TOOL_INTENTS = {"portfolio_view": {"equity", "report", "chat"}}
 
 PAST_PERFORMANCE_NOTE = (

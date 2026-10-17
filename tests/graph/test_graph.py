@@ -258,12 +258,65 @@ class TestReflectionVerificationLoop:
         node_order = [e["node"] for e in result["research_journal"]]
         assert node_order[-1] == "CommunicationLayer"
 
-    def test_verification_issue_loops_back_to_reflection_then_pauses_for_review(self):
+    def test_hard_verification_issue_loops_back_to_reflection_then_pauses_for_review(self):
         # Reflection is always satisfied (no gaps from its own lens), but
         # Verification keeps finding a low-confidence issue — this is the
         # ping-pong case Verification's own loop_count increment exists for.
         # Once the loop budget is exhausted, VerificationGate (Phase 6) pauses
         # for human review instead of silently reaching CommunicationLayer.
+        qa = _StubClient(
+            json.dumps(
+                {
+                    "intent": "equity",
+                    "objective": "analyse RELIANCE fundamentals",
+                    "complexity": "moderate",
+                }
+            )
+        )
+        planner = _StubClient(json.dumps({"tools": ["fetch_info"]}))
+        reflection = _StubClient(json.dumps({"missing": []}))
+        verification = _StubClient(
+            json.dumps(
+                {
+                    "issues": [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}],
+                }
+            )
+        )
+        communication = _StubClient("Stub final report text.")
+        hard_issue = {"claim": "x", "issue_type": "unsupported", "stage": "deterministic", "evidence_ids": []}
+        with (
+            patch("graph.nodes.verification._stage1_deterministic", return_value=[hard_issue]),
+            patch("graph.tool_catalogue.get_info", return_value={"currentPrice": 2500}),
+            patch("graph.tool_catalogue.get_financials", return_value={"totalRevenue": 900000}),
+            patch("tools.data.evidence_cache.evidence_cache_get", return_value=None),
+            patch("tools.data.evidence_cache.evidence_cache_put", return_value=None),
+        ):
+            graph = build_graph(
+                query_analyzer_client=qa,
+                planner_client=planner,
+                reflection_client=reflection,
+                verification_client=verification,
+                communication_client=communication,
+                checkpointer=InMemorySaver(),
+            )
+            config = {"configurable": {"thread_id": "test-thread"}}
+            paused = graph.invoke({"query": "analyse RELIANCE fundamentals", "max_loops": 2}, config=config)
+            assert "__interrupt__" in paused
+            assert paused["__interrupt__"][0].value["type"] == "verification_gate"
+
+            resumed = graph.invoke(Command(resume=True), config=config)
+
+        node_order = [e["node"] for e in resumed["research_journal"]]
+        assert node_order.count("Verification") >= 2
+        assert resumed["loop_count"] <= resumed["max_loops"]
+        assert node_order[-1] == "CommunicationLayer"
+        # intent="equity" defers the LLM call (see module's other tests) —
+        # CommunicationLayer was reached, it just handed off the prompt.
+        assert resumed["pending_synthesis_prompt"]
+
+    def test_soft_judge_issue_loops_back_then_answers_with_a_note(self):
+        # The judge keeps raising a soft issue: Reflection gets its passes, then the
+        # answer is shown with a note (graph/caveats.py) instead of asking yes/no.
         qa = _StubClient(
             json.dumps(
                 {
@@ -298,11 +351,8 @@ class TestReflectionVerificationLoop:
                 checkpointer=InMemorySaver(),
             )
             config = {"configurable": {"thread_id": "test-thread"}}
-            paused = graph.invoke({"query": "analyse RELIANCE fundamentals", "max_loops": 2}, config=config)
-            assert "__interrupt__" in paused
-            assert paused["__interrupt__"][0].value["type"] == "verification_gate"
-
-            resumed = graph.invoke(Command(resume=True), config=config)
+            resumed = graph.invoke({"query": "analyse RELIANCE fundamentals", "max_loops": 2}, config=config)
+            assert "__interrupt__" not in resumed  # the judge could not confirm: note, not a stop
 
         node_order = [e["node"] for e in resumed["research_journal"]]
         assert node_order.count("Verification") >= 2
@@ -311,6 +361,7 @@ class TestReflectionVerificationLoop:
         # intent="equity" defers the LLM call (see module's other tests) —
         # CommunicationLayer was reached, it just handed off the prompt.
         assert resumed["pending_synthesis_prompt"]
+        assert all(i["severity"] == "soft" for i in resumed["verification_issues"])
 
 
 class TestHumanInTheLoopGates:
@@ -396,7 +447,7 @@ class TestProviderExhaustionTermination:
     ONE pass — not loop back to Reflection repeatedly retrying a call that
     cannot succeed."""
 
-    def test_reaches_verification_gate_without_looping_back_to_reflection(self):
+    def test_ends_in_one_pass_without_looping_back_to_reflection(self):
         qa = _StubClient(
             json.dumps(
                 {
@@ -426,8 +477,8 @@ class TestProviderExhaustionTermination:
         ):
             paused = graph.invoke({"query": "analyse RELIANCE", "max_loops": 2}, config=config)
 
-        assert "__interrupt__" in paused
-        assert paused["__interrupt__"][0].value["type"] == "verification_gate"
+        assert "__interrupt__" not in paused  # soft: the answer says the cross-check was unavailable
+        assert paused["judge_status"] == "unavailable"
         node_order = [entry["node"] for entry in paused["research_journal"]]
         assert node_order.count("Verification") == 1  # never looped back to Reflection
         assert node_order.count("Reflection") == 1  # the initial pass only

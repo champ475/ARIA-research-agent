@@ -85,3 +85,50 @@ def test_orchestrator_answer_carries_as_of_before_the_footer():
     assert "🕒 *Data as of 15 Oct 2026, 15:31 IST" in text
     if "\n---\n" in text:
         assert text.index("Data as of") < text.index("\n---\n")
+
+
+def test_market_wide_evidence_is_dated_by_the_last_session_close_when_closed(monkeypatch):
+    from graph.nodes import execute_task as et
+
+    close = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
+    monkeypatch.setattr("utils.market_clock.last_close", lambda now=None: close)
+    fetched = datetime(2026, 10, 17, 14, 0, tzinfo=UTC)
+    assert et._as_of(None, fetched, "top_movers") == close
+    assert et._as_of({}, fetched, "market_overview") == close
+    assert et._as_of({}, fetched, "news_headline") == fetched  # not a market figure
+
+
+def test_market_wide_evidence_keeps_the_fetch_time_while_open(monkeypatch):
+    from graph.nodes import execute_task as et
+
+    monkeypatch.setattr("utils.market_clock.last_close", lambda now=None: None)
+    fetched = datetime(2026, 10, 15, 6, 0, tzinfo=UTC)
+    assert et._as_of(None, fetched, "top_movers") == fetched
+
+
+def test_index_levels_are_dated_and_marked_as_the_last_session_when_closed():
+    from datetime import UTC, datetime
+
+    from graph.freshness import closed_today_header, freshness_note
+
+    sat = datetime(2026, 10, 17, 14, 0, tzinfo=UTC)  # Saturday
+    state = {
+        "evidence": [{"evidence_type": "market_overview", "as_of": datetime(2026, 10, 16, 10, 0, tzinfo=UTC)}]
+    }
+    assert "Markets are closed today" in closed_today_header(state, now=sat)
+    assert "Data as of 16 Oct 2026" in freshness_note(state, now=sat)
+
+
+def test_screen_results_are_dated_by_their_snapshot_not_the_run_time():
+    from datetime import UTC, datetime
+
+    from graph.nodes import execute_task as et
+
+    rows = [
+        {"symbol": "A", "as_of": "2026-10-16T16:00:00+00:00"},
+        {"symbol": "B", "as_of": "2026-10-15T16:00:00+00:00"},
+    ]
+    fetched = datetime(2026, 10, 17, 21, 0, tzinfo=UTC)
+    assert et._as_of(rows, fetched, "screener_results") == datetime(2026, 10, 15, 16, 0, tzinfo=UTC)
+    assert et._as_of([{"symbol": "A", "as_of": None}], fetched, "screener_results") == fetched
+    assert et._as_of([], fetched, "screener_results") == fetched

@@ -28,12 +28,28 @@ _LENDER_WORDS = ("bank", "credit", "mortgage", "lending", "housing finance", "nb
 
 # Ratios that mislead for each profile.
 SUPPRESSED: dict[str, frozenset[str]] = {
-    LENDER: frozenset({"roce", "de", "current_ratio"}),
+    LENDER: frozenset(
+        {
+            "roce",
+            "de",
+            "current_ratio",
+            "total_debt",
+            "fcf",
+            "operating_cf",
+            "op_margin",
+            "ebitda",
+            "ebitda_margin",
+            "ev",
+            "ev_ebitda",
+            "current_assets",
+            "current_liab",
+        }
+    ),
     GENERAL: frozenset(),
 }
 
 LENDER_NOTE = (
-    "Not shown for lenders: ROCE, D/E and the current ratio. For a bank or NBFC, "
+    "Not shown for lenders: ROCE, D/E, the current ratio, debt, free cash flow, EBITDA and operating margin. For a bank or NBFC, "
     "borrowing is the raw material of the business and its balance sheet has no "
     "current/non-current split, so these ratios don't measure what they measure "
     "for other companies. Lender metrics that matter (net interest margin, gross "

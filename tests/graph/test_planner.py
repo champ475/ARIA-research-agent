@@ -60,11 +60,28 @@ class TestPlannerTrivialPath:
         # screens, alert-list, mf category/news) have no ticker to extract but
         # still need to run a tool — Planner falls back to a synthetic
         # "market" entity so these tools still get exactly one Task.
-        stub = _StubClient(json.dumps({"tools": ["fetch_news"]}))
+        stub = _StubClient(json.dumps({"tools": ["fetch_top_movers"]}))
         node = build_planner_node(stub)
         result = node({"objective": "top gainers today", "entities": [], "complexity": "moderate"})
         assert len(result["tasks"]) == 1
         assert result["tasks"][0]["entity"] == "market"
+
+    def test_company_bound_tools_are_not_run_on_the_market_sentinel(self):
+        # Smoke test 2026-10-17: "what about its debt?" ran fetch_financials on "market".
+        stub = _StubClient(json.dumps({"tools": ["fetch_financials", "fetch_news"]}))
+        node = build_planner_node(stub)
+        result = node({"objective": "its debt", "entities": [], "complexity": "moderate"})
+        assert result["tasks"] == []
+
+    def test_market_wide_tools_survive_alongside_dropped_company_tools(self):
+        stub = _StubClient(json.dumps({"tools": ["fetch_financials", "fetch_top_movers"]}))
+        node = build_planner_node(stub)
+        result = node({"objective": "movers", "entities": [], "complexity": "moderate"})
+        assert [t["tool"] for t in result["tasks"]] == ["fetch_top_movers"]
+
+    def test_company_tools_still_run_for_each_named_company(self):
+        tasks = _build_tasks(["fetch_info"], ["TCS", "INFY"])
+        assert sorted(t["entity"] for t in tasks) == ["INFY", "TCS"]
 
 
 class TestPlannerTaskGeneration:
@@ -122,3 +139,48 @@ class TestPlannerTaskGeneration:
         node = build_planner_node(stub)
         result = node({"objective": "x", "entities": ["RELIANCE"], "complexity": "moderate"})
         assert result["research_journal"][0]["node"] == "Planner"
+
+
+class TestSingleTaskTools:
+    def test_market_wide_tools_run_once_whatever_companies_are_named(self):
+        tasks = _build_tasks(["fetch_info", "fetch_market_overview", "fetch_top_movers"], ["TCS", "INFY"])
+        by_tool = {}
+        for t in tasks:
+            by_tool.setdefault(t["tool"], []).append(t["entity"])
+        assert sorted(by_tool["fetch_info"]) == ["INFY", "TCS"]
+        assert by_tool["fetch_market_overview"] == ["market"] and by_tool["fetch_top_movers"] == ["market"]
+
+    def test_the_portfolio_tool_still_runs_once(self):
+        tasks = _build_tasks(["portfolio_view"], ["TCS"])
+        assert [(t["tool"], t["entity"]) for t in tasks] == [("portfolio_view", "market")]
+
+
+class TestScreenerChain:
+    """Live smoke run 2026-10-18: the model picked screener_parse_query + screener_run but not
+    screener_to_markdown, so the answer was "I couldn't find enough data"."""
+
+    def _plan(self, tools):
+        stub = _StubClient(json.dumps({"tools": tools}))
+        result = build_planner_node(stub)(
+            {
+                "query": "IT stocks with PE under 25 and ROE above 15%",
+                "objective": "screen",
+                "entities": [],
+                "complexity": "moderate",
+                "intent": "screener",
+            }
+        )
+        return sorted({t["tool"] for t in result["tasks"]})
+
+    def test_two_of_three_become_all_three(self):
+        assert self._plan(["screener_parse_query", "screener_run"]) == [
+            "screener_parse_query",
+            "screener_run",
+            "screener_to_markdown",
+        ]
+
+    def test_one_tool_pulls_in_the_rest(self):
+        assert "screener_to_markdown" in self._plan(["screener_run"])
+
+    def test_other_questions_get_no_screener_tools(self):
+        assert self._plan(["fetch_top_movers"]) == ["fetch_top_movers"]

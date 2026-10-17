@@ -36,3 +36,6 @@ class YFinanceProvider:
 
     def block_deals(self, symbol: str | None = None) -> pd.DataFrame:
         raise NotImplementedError("yfinance has no deal data")
+
+    def macro(self) -> dict[str, Any]:
+        return fetcher.get_macro()

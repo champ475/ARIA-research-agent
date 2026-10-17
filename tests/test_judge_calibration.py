@@ -80,8 +80,10 @@ def test_strong_judge_only_for_complex_turns(monkeypatch, strong, complexity, ex
     monkeypatch.setattr(verification, "LLMClient", fake_llm)
     monkeypatch.setattr(verification, "VERIFICATION_STRONG_JUDGE", strong)
     seen = []
-    orig = verification.run_judge
-    monkeypatch.setattr(verification, "run_judge", lambda c, o, e: seen.append(c.tag) or orig(c, o, e))
+    orig = verification.run_judge_checked
+    monkeypatch.setattr(
+        verification, "run_judge_checked", lambda c, o, e: seen.append(c.tag) or orig(c, o, e)
+    )
     node = verification.build_verification_node(None, None)
     node({"evidence": [], "tasks": [], "objective": "x", "evidence_summary": {}, "complexity": complexity})
     assert seen == ["verification_complex" if expected == "strong" else "verification"]

@@ -29,6 +29,7 @@ class TestCatalogueRegistry:
             "screener_to_markdown",
             "screener_save",
             "fetch_top_movers",
+            "fetch_market_overview",
             "fetch_bulk_deals",
             "fetch_block_deals",
             # UX-04
@@ -68,7 +69,7 @@ class TestToolAdapters:
             "graph.tool_catalogue.compute_fundamental_ratios", return_value={"pe": 24.3}
         ) as mock_compute:
             result = get_tool("compute_fundamentals").fn("RELIANCE", context)
-        mock_compute.assert_called_once_with({"a": 1}, {"b": 2})
+        mock_compute.assert_called_once_with({"a": 1}, {"b": 2}, None)
         assert result == {"pe": 24.3}
 
     def test_compute_technicals_reads_ohlcv_from_context(self):
@@ -324,6 +325,33 @@ class TestAlertSpecTools:
         monkeypatch.setattr("graph.tool_catalogue._current_price", lambda s: 3400.0)
         out, add = self._create("alert me if TCS falls below 3500 anyway", return_value=9)
         assert out["result"] == "created" and add.call_args.kwargs["direction"] is None
+
+    def test_a_level_far_from_the_price_asks_first(self, monkeypatch):
+        # Smoke test 2026-10-17: "TCS below 1 rupee" was saved without a word.
+        monkeypatch.setattr("graph.tool_catalogue._current_price", lambda s: 3000.0)
+        out, add = self._create("alert me when TCS drops below 1 rupee", return_value=9)
+        add.assert_not_called()
+        assert out["result"] == "needs_confirmation" and out["reason"] == "far_from_price"
+
+    def test_anyway_confirms_a_far_level(self, monkeypatch):
+        monkeypatch.setattr("graph.tool_catalogue._current_price", lambda s: 3000.0)
+        out, add = self._create("alert me when TCS drops below 1 rupee anyway", return_value=9)
+        assert out["result"] == "created"
+
+    def test_a_far_level_is_worded_for_the_user(self):
+        from graph.nodes.conclusion_builder import _alert_action_claim
+
+        text = _alert_action_claim(
+            {
+                "action": "create",
+                "symbol": "TCS",
+                "result": "needs_confirmation",
+                "reason": "far_from_price",
+                "current_price": 3000.0,
+                "condition": "TCS: price falls below ₹1.00",
+            }
+        )
+        assert "far from today's price" in text and "₹3,000.00" in text and "'anyway'" in text
 
     def test_out_of_range_is_refused_with_a_reason(self):
         out, add = self._create("alert if TCS RSI goes above 150", return_value=9)

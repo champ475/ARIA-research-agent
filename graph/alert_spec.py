@@ -279,6 +279,18 @@ def already_true(spec: AlertSpec, price: float | None) -> bool:
     return False
 
 
+def far_from_price(spec: AlertSpec, price: float | None) -> bool:
+    """A price alert set so far from today's price that it is almost certainly a typo
+    (TCS "below ₹1", or "above ₹3,00,000"): below 20% or above 3x the current price."""
+    if price is None or price <= 0 or spec.threshold is None:
+        return False
+    if spec.alert_type == "price_below":
+        return spec.threshold < 0.2 * price
+    if spec.alert_type == "price_above":
+        return spec.threshold > 3 * price
+    return False
+
+
 _CONFIRM = re.compile(
     r"\b(anyway|regardless|even\s+(?:if|though)|still\s+(?:set|create|add)|i\s+know)\b", re.IGNORECASE
 )

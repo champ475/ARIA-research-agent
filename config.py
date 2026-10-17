@@ -69,6 +69,11 @@ class Settings(BaseSettings):
 
     # ── Timeouts and the turn deadline (REL-02) ───────────────────────────────
     LLM_TIMEOUT_SECONDS: float = Field(30, gt=0)
+    # Reasoning models (gpt-oss) spend max_tokens on hidden reasoning first; at
+    # 200 tokens the reply came back empty (smoke test 2026-10-17). Low effort
+    # plus headroom on top of each call's own cap keeps room for the answer.
+    GROQ_REASONING_EFFORT: Literal["low", "medium", "high"] = "low"
+    LLM_REASONING_HEADROOM: int = Field(512, ge=0, le=8192)
     LLM_STREAM_TIMEOUT_SECONDS: float = Field(15, gt=0)
     YF_TIMEOUT_SECONDS: float = Field(10, gt=0)
     TOOL_TIMEOUT_SECONDS: float = Field(25, gt=0)
@@ -115,7 +120,11 @@ class Settings(BaseSettings):
     # REL-08: where scripts/backup_db.py writes dumps (copy them off the machine).
     BACKUP_DIR: str = "backups"
     DB_POOL_MAX: int = Field(20, ge=1, le=500)
-    DB_POOL_ACQUIRE_TIMEOUT: float = Field(10, gt=0)
+    # Neon wakes a suspended compute in a few seconds: wait longer than one connect attempt.
+    DB_POOL_ACQUIRE_TIMEOUT: float = Field(20, gt=0)
+    # Recycle idle connections before the server or pooler drops them (Neon: ~5 min idle).
+    DB_POOL_MAX_IDLE: float = Field(180, gt=0)
+    DB_POOL_MAX_LIFETIME: float = Field(1800, gt=0)
     DB_POOL_MIN: int = Field(2, ge=0)
     DB_CONNECT_TIMEOUT: int = Field(10, ge=1)
     # Server-side cap on one statement (REL-04); 0 disables it.
@@ -389,6 +398,8 @@ LOCAL_LLM_TIMEOUT_SECONDS = settings.LOCAL_LLM_TIMEOUT_SECONDS
 # Cloud LLM calls: total wait for a non-streaming reply, and the longest gap
 # allowed between streamed chunks (which also bounds time-to-first-token).
 LLM_TIMEOUT_SECONDS = settings.LLM_TIMEOUT_SECONDS
+GROQ_REASONING_EFFORT = settings.GROQ_REASONING_EFFORT
+LLM_REASONING_HEADROOM = settings.LLM_REASONING_HEADROOM
 LLM_STREAM_TIMEOUT_SECONDS = settings.LLM_STREAM_TIMEOUT_SECONDS
 # One yfinance call (it takes no timeout of its own; utils/resilience.py bounds the wait).
 YF_TIMEOUT_SECONDS = settings.YF_TIMEOUT_SECONDS
@@ -508,6 +519,8 @@ BACKUP_DIR = settings.BACKUP_DIR
 RUN_JOBS_IN_APP = settings.run_jobs_in_app
 DB_POOL_MAX = settings.DB_POOL_MAX
 DB_POOL_ACQUIRE_TIMEOUT = settings.DB_POOL_ACQUIRE_TIMEOUT
+DB_POOL_MAX_IDLE = settings.DB_POOL_MAX_IDLE
+DB_POOL_MAX_LIFETIME = settings.DB_POOL_MAX_LIFETIME
 DB_POOL_MIN = settings.DB_POOL_MIN
 DB_CONNECT_TIMEOUT = settings.DB_CONNECT_TIMEOUT
 DB_STATEMENT_TIMEOUT_MS = settings.DB_STATEMENT_TIMEOUT_MS

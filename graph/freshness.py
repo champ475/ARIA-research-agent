@@ -23,6 +23,7 @@ MARKET_EVIDENCE = frozenset(
         "technical_indicator",
         "fundamental_ratio",
         "top_movers",
+        "market_overview",
         "screener_results",
         "screener_table",
         "bulk_deals",
@@ -34,7 +35,7 @@ MARKET_EVIDENCE = frozenset(
     }
 )
 # "Today" figures: on a closed day these are the last session's.
-_TODAY_EVIDENCE = frozenset({"quote_info", "top_movers"})
+_TODAY_EVIDENCE = frozenset({"quote_info", "top_movers", "market_overview"})
 
 
 def _market_evidence(state: dict) -> list[dict]:

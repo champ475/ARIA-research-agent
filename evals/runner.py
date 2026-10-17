@@ -251,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
         "--record", action="store_true", help="call the LLM for missing responses and save them"
     )
     ap.add_argument("--limit", type=int, help="only the first N cases (recording in chunks)")
+    ap.add_argument(
+        "--domain", action="append", help="only cases of this domain (repeatable), before --limit"
+    )
     ap.add_argument("--compare", type=Path, help="baseline JSON; exit 1 on a regression")
     ap.add_argument("--out", type=Path, help="results file (default evals/results/<sha>.json)")
     ap.add_argument("--markdown", type=Path, help="also write a Markdown diff (for a PR comment)")
@@ -271,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     cases = [json.loads(line) for line in CASES.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if args.domain:
+        cases = [c for c in cases if c["domain"] in args.domain]
     if args.limit:
         cases = cases[: args.limit]
     started = time.monotonic()

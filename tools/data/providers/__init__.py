@@ -45,8 +45,19 @@ class MarketDataProvider(Protocol):
 
     def block_deals(self, symbol: str | None = None) -> pd.DataFrame: ...
 
+    def macro(self) -> dict[str, dict[str, Any]]: ...
 
-METHODS = ("quote", "ohlcv", "financials", "corporate_actions", "movers", "bulk_deals", "block_deals")
+
+METHODS = (
+    "quote",
+    "ohlcv",
+    "financials",
+    "corporate_actions",
+    "movers",
+    "bulk_deals",
+    "block_deals",
+    "macro",
+)
 
 
 class RoutedProvider:
@@ -84,6 +95,9 @@ class RoutedProvider:
     def block_deals(self, symbol: str | None = None) -> pd.DataFrame:
         return self.routes["block_deals"].block_deals(symbol)
 
+    def macro(self) -> dict[str, dict[str, Any]]:
+        return dict(self.routes["macro"].macro())
+
 
 def default_provider() -> RoutedProvider:
     from tools.data.providers.nse import NseProvider
@@ -99,6 +113,7 @@ def default_provider() -> RoutedProvider:
             "movers": nse,
             "bulk_deals": nse,
             "block_deals": nse,
+            "macro": yf,
         }
     )
 

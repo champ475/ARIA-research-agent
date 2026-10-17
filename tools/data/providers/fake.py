@@ -122,3 +122,11 @@ class FakeProvider:
     def block_deals(self, symbol: str | None = None) -> pd.DataFrame:
         faults.data_call()
         return pd.DataFrame()
+
+    def macro(self) -> dict[str, dict[str, Any]]:
+        faults.data_call()
+        return {
+            "Nifty 50": {"price": 24850.35, "change": 0.42},
+            "Sensex": {"price": 81420.1, "change": 0.38},
+            "Nifty Bank": {"price": 53110.8, "change": -0.15},
+        }
