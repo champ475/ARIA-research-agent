@@ -42,7 +42,7 @@ jobs:
           --health-cmd "pg_isready -U aria -d aria_load" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip

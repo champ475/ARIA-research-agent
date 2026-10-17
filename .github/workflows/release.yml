@@ -94,7 +94,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: start the image with the offline test stack
         run: docker compose -f compose.test.yml up -d --no-build --wait --wait-timeout 180
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
