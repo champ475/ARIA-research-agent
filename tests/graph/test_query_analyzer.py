@@ -172,3 +172,87 @@ class TestQueryAnalyzerMultiIntent:
         node = build_query_analyzer_node(stub)
         result = node({"query": "x"})
         assert result["secondary_intents"] == []
+
+
+class TestAskingWhichCompany:
+    """Smoke test 2026-10-17: questions with no company named ran tools on 'market'
+    or answered with jargon; replies to 'which HDFC?' lost the original question."""
+
+    @staticmethod
+    def _clarification(question: str):
+        from graph.entity_resolution import blocking_resolutions, clarification_text, resolve_mentions
+
+        res = resolve_mentions(question)
+        text = clarification_text(
+            blocking_resolutions({"entity_resolutions": res.unresolved, "intent": "equity"})
+        )
+        return [{"role": "user", "content": question}, {"role": "assistant", "content": text}]
+
+    def _analyzer(self, intent="equity", companies=()):
+        return build_query_analyzer_node(
+            _StubClient(
+                json.dumps(
+                    {
+                        "intent": intent,
+                        "objective": "obj",
+                        "complexity": "moderate",
+                        "companies": list(companies),
+                    }
+                )
+            )
+        )
+
+    def test_reply_picks_one_option_and_keeps_the_original_question(self):
+        history = [*self._clarification("How is HDFC doing?"), {"role": "user", "content": "the bank one"}]
+        result = self._analyzer()({"query": "the bank one", "history": history})
+        assert result["entities"] == ["HDFCBANK"]
+        assert result["entity_resolutions"] == []
+        assert "How is HDFC doing?" in result["query"] and "HDFCBANK" in result["query"]
+
+    def test_reply_by_symbol(self):
+        history = [*self._clarification("How is HDFC doing?"), {"role": "user", "content": "HDFCLIFE"}]
+        result = self._analyzer()({"query": "HDFCLIFE", "history": history})
+        assert result["entities"] == ["HDFCLIFE"]
+
+    def test_reply_by_position(self):
+        history = [*self._clarification("Tell me about Adani"), {"role": "user", "content": "the first one"}]
+        result = self._analyzer(intent="chat")({"query": "the first one", "history": history})
+        assert len(result["entities"]) == 1
+
+    def test_a_long_new_question_is_not_taken_as_an_answer(self):
+        question = "show me the technicals and the latest news for TCS please"
+        history = [*self._clarification("How is HDFC doing?"), {"role": "user", "content": question}]
+        result = self._analyzer()({"query": question, "history": history})
+        assert result["entities"] == ["TCS"]
+        assert result["query"] == question if "query" in result else True
+
+    def test_unmatched_reply_stays_a_normal_turn(self):
+        history = [*self._clarification("How is HDFC doing?"), {"role": "user", "content": "hmm not sure"}]
+        result = self._analyzer()({"query": "hmm not sure", "history": history})
+        assert "query" not in result
+
+    def test_pointer_without_a_company_asks_which(self):
+        from graph.entity_resolution import blocking_resolutions, clarification_text
+
+        result = self._analyzer()({"query": "what about its debt?", "history": []})
+        assert [u["status"] for u in result["entity_resolutions"]] == ["missing_company"]
+        blocking = blocking_resolutions({**result, "intent": "equity"})
+        assert "Which company do you mean?" in clarification_text(blocking)
+
+    def test_pointer_after_a_company_turn_carries_over(self):
+        history = [{"role": "user", "content": "How is TCS doing?"}, {"role": "assistant", "content": "ok"}]
+        result = self._analyzer()({"query": "what about its debt?", "history": history})
+        assert result["entities"] == ["TCS"]
+        assert result["entity_resolutions"] == []
+
+    def test_market_wide_and_portfolio_questions_do_not_ask(self):
+        for q in ("Is the market good today?", "How is my portfolio doing?", "which stocks are gaining?"):
+            result = self._analyzer()({"query": q, "history": []})
+            assert result["entity_resolutions"] == [], q
+
+    def test_bare_group_name_is_asked_even_when_called_chat(self):
+        from graph.entity_resolution import blocking_resolutions
+
+        result = self._analyzer(intent="chat")({"query": "Tell me about Tata", "history": []})
+        blocking = blocking_resolutions({**result, "intent": "chat"})
+        assert blocking and {c["symbol"] for c in blocking[0]["candidates"]} >= {"TCS", "TATASTEEL"}

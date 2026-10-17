@@ -37,7 +37,17 @@ from agents.conversation_memory import strip_badge
 from agents.llm_client import LLMClient
 from config import MAX_ENTITIES_PER_TURN, TOKENS_FAST
 from graph.data_questions import min_complexity
-from graph.entity_resolution import add_llm_mentions, ambiguous_reference, history_carry, resolve_mentions
+from graph.entity_resolution import (
+    EntityResult,
+    add_llm_mentions,
+    ambiguous_reference,
+    history_carry,
+    lacks_company,
+    match_clarification_reply,
+    missing_company_entry,
+    pending_clarification,
+    resolve_mentions,
+)
 from graph.journal import log_decision
 from graph.schemas import QueryAnalysis
 from graph.state import GraphState
@@ -102,6 +112,27 @@ def _parse(raw: str) -> dict:
         return dict(_FALLBACK)
 
 
+_MAX_REPLY_WORDS = 5  # longer messages are new questions, not answers to "which one?"
+
+
+def _clarification_choice(query: str, history: list[dict]) -> tuple[str, tuple[str, str]] | None:
+    """(original question, (company name, symbol)) when `query` answers a
+    pending "which company?" question, else None."""
+    if len((query or "").split()) > _MAX_REPLY_WORDS:
+        return None
+    pending = pending_clarification(history)
+    if pending is None:
+        return None
+    original, options = pending
+    picked = match_clarification_reply(query, options)
+    if picked is None:
+        # The reply may simply name a company ("HDFC Bank"): accept it when it is exactly one.
+        named = resolve_mentions(query)
+        if len(named.entities) == 1 and not named.unresolved:
+            picked = (named.entities[0], named.entities[0])
+    return (original, picked) if picked else None
+
+
 def build_query_analyzer_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
@@ -114,7 +145,16 @@ def build_query_analyzer_node(
     def query_analyzer(state: GraphState) -> dict:
         query = state["query"]
         history = state.get("history", [])
-        resolved = resolve_mentions(query)
+        # A short reply to "Which HDFC do you mean?" answers that question: carry the
+        # original question over with the company chosen, instead of treating the
+        # reply ("the bank one") as a new, company-less question.
+        chosen = _clarification_choice(query, history)
+        if chosen:
+            original, (name, symbol) = chosen
+            query = f"{original} - {name} ({symbol})"
+            resolved = EntityResult(entities=[symbol], mentioned=True)
+        else:
+            resolved = resolve_mentions(query)
         raw = json_reply(
             client,
             QueryAnalysis,
@@ -124,7 +164,8 @@ def build_query_analyzer_node(
             temperature=0.0,
         )
         classification = _parse(raw)
-        add_llm_mentions(resolved, classification["companies"])
+        if not chosen:
+            add_llm_mentions(resolved, classification["companies"])
         unresolved = list(resolved.unresolved)
         if resolved.mentioned:
             entities = resolved.entities
@@ -132,6 +173,9 @@ def build_query_analyzer_node(
             entities, ambiguous = history_carry(history)
             if ambiguous:  # LLM-10: "its RSI" after comparing two companies
                 unresolved.append(ambiguous_reference(ambiguous))
+        if not entities and not unresolved and lacks_company(query, classification["intent"]):
+            # "what about its debt?" with nothing to refer to: ask, don't fetch for "market".
+            unresolved.append(missing_company_entry())
         if len(entities) > MAX_ENTITIES_PER_TURN:
             # VAL-03: tasks = companies x tools; past the cap, ask instead of
             # fanning out dozens of fetches (blocking, like an ambiguous name).
@@ -146,6 +190,7 @@ def build_query_analyzer_node(
         # LLM-06: a data question never takes the no-research path.
         complexity, raised = min_complexity(query, entities, classification["complexity"])
         return {
+            **({"query": query} if chosen else {}),
             "entities": entities,
             "entity_resolutions": unresolved,
             "entity_notes": resolved.notes,

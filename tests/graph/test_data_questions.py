@@ -76,7 +76,7 @@ def test_casual_data_question_runs_tools_even_if_classified_simple(query):
     )
     state = {"query": query, "history": [], **qa({"query": query, "history": []})}
     assert state["complexity"] == "moderate", state["research_journal"]
-    plan = build_planner_node(_Stub(json.dumps({"tools": ["fetch_info"]})))(state)
+    plan = build_planner_node(_Stub(json.dumps({"tools": ["fetch_top_movers"]})))(state)
     assert plan["tasks"], f"no tools ran for {query!r}"
 
 

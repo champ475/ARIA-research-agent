@@ -30,7 +30,7 @@ from collections.abc import Callable
 import prompts
 from agents.llm_client import LLMClient
 from config import TOKENS_AGENT
-from graph.analysis_tools import ANALYSIS_TOOLS, ENTITYLESS, triggered_tools
+from graph.analysis_tools import ANALYSIS_TOOLS, COMPANY_BOUND_TOOLS, ENTITYLESS, triggered_tools
 from graph.entity_resolution import blocking_resolutions
 from graph.journal import log_decision
 from graph.schemas import ToolSelection
@@ -86,6 +86,8 @@ def _with_transitive_deps(selected: list[str]) -> list[str]:
 
 
 def _build_tasks(tool_names: list[str], entities: list[str]) -> list[Task]:
+    if not entities:
+        tool_names = [t for t in tool_names if t not in COMPANY_BOUND_TOOLS]
     tasks: list[Task] = []
     for entity in entities or [NO_ENTITY_SENTINEL]:
         for tool_name in tool_names:

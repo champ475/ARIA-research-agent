@@ -60,11 +60,28 @@ class TestPlannerTrivialPath:
         # screens, alert-list, mf category/news) have no ticker to extract but
         # still need to run a tool — Planner falls back to a synthetic
         # "market" entity so these tools still get exactly one Task.
-        stub = _StubClient(json.dumps({"tools": ["fetch_news"]}))
+        stub = _StubClient(json.dumps({"tools": ["fetch_top_movers"]}))
         node = build_planner_node(stub)
         result = node({"objective": "top gainers today", "entities": [], "complexity": "moderate"})
         assert len(result["tasks"]) == 1
         assert result["tasks"][0]["entity"] == "market"
+
+    def test_company_bound_tools_are_not_run_on_the_market_sentinel(self):
+        # Smoke test 2026-10-17: "what about its debt?" ran fetch_financials on "market".
+        stub = _StubClient(json.dumps({"tools": ["fetch_financials", "fetch_news"]}))
+        node = build_planner_node(stub)
+        result = node({"objective": "its debt", "entities": [], "complexity": "moderate"})
+        assert result["tasks"] == []
+
+    def test_market_wide_tools_survive_alongside_dropped_company_tools(self):
+        stub = _StubClient(json.dumps({"tools": ["fetch_financials", "fetch_top_movers"]}))
+        node = build_planner_node(stub)
+        result = node({"objective": "movers", "entities": [], "complexity": "moderate"})
+        assert [t["tool"] for t in result["tasks"]] == ["fetch_top_movers"]
+
+    def test_company_tools_still_run_for_each_named_company(self):
+        tasks = _build_tasks(["fetch_info"], ["TCS", "INFY"])
+        assert sorted(t["entity"] for t in tasks) == ["INFY", "TCS"]
 
 
 class TestPlannerTaskGeneration:

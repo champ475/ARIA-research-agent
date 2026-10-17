@@ -183,6 +183,7 @@ class GraphState(TypedDict):
     research_journal: Annotated[list[JournalEntry], operator.add]
     final_report: str
     pending_synthesis_prompt: str | None  # set instead of final_report when CommunicationLayer defers
+    pending_synthesis_system: str | None  # "direct" = the no-research system prompt for that call
     # the LLM call to GraphOrchestrator for token streaming
     # (equity/chat intents with no file output to write synchronously)
     pending_fundamental_payload: dict | None  # footnote source for the deferred call above, applied

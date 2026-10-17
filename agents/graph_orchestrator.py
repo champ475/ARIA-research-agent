@@ -677,11 +677,16 @@ class GraphOrchestrator:
             pending_prompt = result.get("pending_synthesis_prompt")
             if pending_prompt:
                 from agents.llm_client import LLMClient
+                from graph.nodes.communication_layer import _DIRECT_SYSTEM
                 from graph.nodes.communication_layer import _SYSTEM as _COMM_SYSTEM
                 from tools.analysis.fundamental import cited_footnotes
 
                 synthesis_client = LLMClient(
-                    system_prompt=_COMM_SYSTEM, provider_config=self._provider_config, node="communication"
+                    system_prompt=_DIRECT_SYSTEM
+                    if result.get("pending_synthesis_system") == "direct"
+                    else _COMM_SYSTEM,
+                    provider_config=self._provider_config,
+                    node="communication",
                 )
                 chunks: list[str] = []
                 cut_off = False
