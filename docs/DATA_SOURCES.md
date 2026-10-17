@@ -26,7 +26,8 @@ This file lists every outside source ARIA reads from: what each one gives us, it
 | Code | Built from | Notes |
 |---|---|---|
 | `tools/data/instruments.py` | `data/instruments/` (NSE/BSE instrument masters, refreshed by `scripts/refresh_instruments.py`) | Symbol resolution only (VAL-02) |
-| `tools/data/bhavcopy_history.py` | NSE bhavcopy rows ARIA has already fetched | Per-symbol fallback history |
+| `tools/data/bhavcopy_history.py` | NSE bhavcopy rows ARIA has already fetched | Per-symbol fallback history, kept in Postgres (`bhavcopy_bars`, DATA-10) |
+| `tools/data/adjustments.py` | NSE corporate actions (the `nse` row above) | Split/bonus factors applied to the stored bhavcopy history when it is read (DATA-07) |
 | `tools/data/mf_data.py` | AMFI and mfapi (above) | Category and return metrics |
 | `tools/data/providers/fake.py` | Recorded fixtures in `data/fake/` | Tests and offline demos only (`ARIA_FAKE_DATA`) |
 | `fundamentals_snapshot` table | yfinance, through `scripts/refresh_fundamentals.py` | Screener universe (DATA-05) |

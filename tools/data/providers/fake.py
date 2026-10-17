@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 
+from utils import faults
 from utils.helpers import IST
 
 # Fixed "as of" so answers render the same timestamp on every run.
@@ -30,6 +31,7 @@ class FakeProvider:
     name = "fake"
 
     def quote(self, symbol: str) -> dict[str, Any]:
+        faults.data_call()
         s, price = _seed(symbol), _price(symbol)
         eps = round(price / (12 + s % 30), 2)
         return {
@@ -56,6 +58,7 @@ class FakeProvider:
         }
 
     def ohlcv(self, symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
+        faults.data_call()
         s, base = _seed(symbol), _price(symbol)
         days = pd.bdate_range(end=FAKE_AS_OF.date(), periods=250)
         closes = [base * (1 + 0.15 * math.sin(i / 20 + s % 7) - 0.0004 * (250 - i)) for i in range(250)]
@@ -71,6 +74,7 @@ class FakeProvider:
         )
 
     def financials(self, symbol: str) -> dict[str, Any]:
+        faults.data_call()
         s = _seed(symbol)
         revenue = 10_000e7 + (s % 90_000) * 1e7
         cols = [pd.Timestamp("2026-03-31"), pd.Timestamp("2025-03-31")]
@@ -99,9 +103,11 @@ class FakeProvider:
         }
 
     def corporate_actions(self, symbol: str) -> pd.DataFrame:
+        faults.data_call()
         return pd.DataFrame()
 
     def movers(self, direction: str = "gainers") -> pd.DataFrame:
+        faults.data_call()
         sign = -1 if direction == "losers" else 1
         rows = [
             {"symbol": sym, "ltp": _price(sym), "pchange": round(sign * (4.5 - i * 0.5), 2), "volume": 1_000_000 + i}
@@ -110,7 +116,9 @@ class FakeProvider:
         return pd.DataFrame(rows)
 
     def bulk_deals(self, symbol: str | None = None) -> pd.DataFrame:
+        faults.data_call()
         return pd.DataFrame()
 
     def block_deals(self, symbol: str | None = None) -> pd.DataFrame:
+        faults.data_call()
         return pd.DataFrame()

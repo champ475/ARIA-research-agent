@@ -51,7 +51,7 @@ def test_app_tabs(page: Page, base_url, email, scheme):
     page.wait_for_function("() => window.ariaToggleTheme !== undefined")
     assert page.evaluate("document.body.classList.contains('dark')") == (scheme == "dark")
     problems = {"Chat": _violations(page)}
-    for tab in ("📌 Watchlist", "📊 Portfolio", "⚙️ Settings"):
+    for tab in ("📌 Watchlist", "📊 Portfolio", "🔔 Alerts", "⚙️ Settings"):
         open_tab(page, tab)
         problems[tab] = _violations(page)
     assert all(not v for v in problems.values()), problems
@@ -68,3 +68,15 @@ def test_theme_toggle_is_remembered_and_icons_are_labelled(page: Page, base_url,
     expect(page.locator("#msg-chat textarea")).to_be_visible(timeout=30_000)
     expect(page.locator("#theme-btn")).to_have_attribute("aria-pressed", "false")
     assert page.get_by_role("button", name="Show or hide chat history").count() == 1
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_admin_tab(page: Page, base_url, email, db, scheme):
+    """OBS-05: the Admin tab (admins only) meets the same bar."""
+    page.emulate_media(color_scheme=scheme)
+    new_user(page, base_url, email)
+    db.execute("UPDATE users SET is_admin=TRUE WHERE email=%s", (email,))
+    page.reload()
+    expect(page.get_by_role("tab", name="🛠 Admin")).to_be_visible(timeout=15_000)
+    open_tab(page, "🛠 Admin")
+    assert _violations(page) == []

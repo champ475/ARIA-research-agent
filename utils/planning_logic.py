@@ -22,6 +22,7 @@ from tools.data.news_fetcher import market_news
 from utils.financial_profile import REQUIRED_FIELDS as _PROFILE_REQUIRED
 from utils.financial_profile import is_complete, rejected_note, validate_updates
 from utils.helpers import now_ist
+from utils.parallel import parallel_map
 
 log = logging.getLogger(__name__)
 
@@ -105,14 +106,22 @@ def fetch_fund_data(profile: dict) -> str:
     if "new" in tax_regime:
         categories = [c for c in categories if c != "elss"]  # ELSS 80C benefit is old-regime only
 
+    horizon = _horizon(profile)
+
+    def one(cat: str) -> str:
+        # DATA-04: ranked by the CAGR that matches the investor's horizon.
+        funds = get_category_funds(cat, top_n=5, horizon_years=horizon)
+        return f"--- {cat.title()} (AMFI NAV data) ---\n{format_fund_search_results(funds)}"
+
+    # REL-07: the categories are independent lookups, so run them side by side.
     blocks = []
-    for cat in categories:
-        try:
-            # DATA-04: ranked by the CAGR that matches the investor's horizon.
-            funds = get_category_funds(cat, top_n=5, horizon_years=_horizon(profile))
-            blocks.append(f"--- {cat.title()} (AMFI NAV data) ---\n{format_fund_search_results(funds)}")
-        except Exception as e:
-            log.warning("[planning] fund data for %s unavailable: %s", cat, e)
+    for cat, (ok, value) in zip(
+        categories, parallel_map(one, categories, max_workers=len(categories) or 1, budget_s=30), strict=True
+    ):
+        if ok:
+            blocks.append(value)
+        else:
+            log.warning("[planning] fund data for %s unavailable: %s", cat, type(value).__name__)
             blocks.append(f"--- {cat.title()} ---\nUnavailable (data source error).")
     return "\n\n".join(blocks)
 

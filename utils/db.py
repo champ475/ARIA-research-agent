@@ -27,6 +27,7 @@ from config import (
     DB_STATEMENT_TIMEOUT_MS,
     db_host,
 )
+from utils.money import tidy, to_db
 
 log = logging.getLogger(__name__)
 
@@ -357,11 +358,47 @@ def session_create(user_id: int, tab: str, title: str = "New chat") -> int:
     return row["id"]
 
 
-def session_list(user_id: int, tab: str, limit: int = 50) -> list[dict]:
+def session_list(user_id: int, tab: str, limit: int = 50, offset: int = 0) -> list[dict]:
     return _query(
         "SELECT id, title, updated_at FROM chat_sessions "
-        "WHERE user_id=%s AND tab=%s ORDER BY updated_at DESC LIMIT %s",
-        (user_id, tab, limit),
+        "WHERE user_id=%s AND tab=%s ORDER BY updated_at DESC LIMIT %s OFFSET %s",
+        (user_id, tab, limit, offset),
+        fetch="all",
+    )
+
+
+def session_get_title(user_id: int, session_id: int) -> str | None:
+    """The title of one of the user's own chats, or None."""
+    row = _query(
+        "SELECT title FROM chat_sessions WHERE id=%s AND user_id=%s", (session_id, user_id), fetch="one"
+    )
+    return row["title"] if row else None
+
+
+def session_rename(user_id: int, session_id: int, title: str) -> bool:
+    """Retitle one of the user's own chats; False if it isn't theirs."""
+    row = _query(
+        "UPDATE chat_sessions SET title=%s WHERE id=%s AND user_id=%s RETURNING id",
+        (title, session_id, user_id),
+        fetch="one",
+        commit=True,
+    )
+    return row is not None
+
+
+def session_search(user_id: int, tab: str, terms: list[str], limit: int = 20, offset: int = 0) -> list[dict]:
+    """The user's chats whose title contains the text, or in which one message
+    contains every term (word-prefix match, served by the GIN index idx_chat_history_fts).
+    `terms` are plain words, already cleaned by services/chat.py."""
+    like = "%" + " ".join(terms) + "%"  # words only (letters and digits): nothing to escape
+    tsquery = " & ".join(f"{t}:*" for t in terms)
+    return _query(
+        "SELECT s.id, s.title, s.updated_at FROM chat_sessions s "
+        "WHERE s.user_id=%s AND s.tab=%s AND (s.title ILIKE %s OR EXISTS ("
+        "  SELECT 1 FROM chat_history h WHERE h.session_id = s.id "
+        "  AND to_tsvector('simple', h.content) @@ to_tsquery('simple', %s))) "
+        "ORDER BY s.updated_at DESC LIMIT %s OFFSET %s",
+        (user_id, tab, like, tsquery, limit, offset),
         fetch="all",
     )
 
@@ -559,6 +596,7 @@ MAX_ACTIVE_ALERTS = 50
 
 
 def _existing_alert_id(user_id: int, symbol: str, alert_type: str, threshold, direction) -> int | None:
+    threshold = to_db(threshold)
     row = _query(
         "SELECT id FROM alerts WHERE user_id=%s AND symbol=%s AND alert_type=%s AND active "
         "AND COALESCE(threshold, -1) = COALESCE(%s, -1) AND COALESCE(direction, '') = COALESCE(%s, '')",
@@ -582,6 +620,7 @@ def alert_add(
     AlertLimitReached once the user has MAX_ACTIVE_ALERTS active alerts.
     The cap is checked in the INSERT itself, so a burst can't overshoot it
     by more than its own concurrency (and per-user turns run one at a time)."""
+    threshold = to_db(threshold)  # NUMERIC(18,4): exact, never a float round-trip
     try:
         row = _query(
             "INSERT INTO alerts (user_id, symbol, alert_type, condition, threshold, recurring, cooldown_hours, "
@@ -616,7 +655,42 @@ def alert_list(user_id: int, active_only: bool = False) -> list[dict]:
     if active_only:
         sql += " AND active=TRUE"
     sql += " ORDER BY created_at DESC"
-    return _query(sql, (user_id,), fetch="all")
+    rows = _query(sql, (user_id,), fetch="all")
+    for r in rows:
+        r["threshold"] = tidy(r.get("threshold"))
+    return rows
+
+
+def alert_get(user_id: int, alert_id: int) -> dict | None:
+    """One of the user's own alerts (tenant isolation), or None."""
+    row = _query("SELECT * FROM alerts WHERE id=%s AND user_id=%s", (alert_id, user_id), fetch="one")
+    if row:
+        row["threshold"] = tidy(row.get("threshold"))
+    return row
+
+
+def alert_update(
+    user_id: int,
+    alert_id: int,
+    condition: str,
+    threshold: float | None,
+    direction: str | None,
+    recurring: bool,
+    cooldown_hours: int,
+) -> bool:
+    """Change the condition of one of the user's own alerts. Raises DuplicateAlert
+    if it would equal another active alert; False if the alert isn't theirs."""
+    try:
+        row = _query(
+            "UPDATE alerts SET condition=%s, threshold=%s, direction=%s, recurring=%s, cooldown_hours=%s "
+            "WHERE id=%s AND user_id=%s RETURNING id",
+            (condition, to_db(threshold), direction, recurring, cooldown_hours, alert_id, user_id),
+            fetch="one",
+            commit=True,
+        )
+    except pg_errors.UniqueViolation as e:
+        raise DuplicateAlert(None) from e
+    return row is not None
 
 
 def alert_remove(user_id: int, alert_id: int) -> bool:
@@ -747,6 +821,149 @@ def profile_upsert(user_id: int, updates: dict) -> dict:
         commit=True,
     )
     return current
+
+
+# ── Shared market-data caches (DATA-10; no user_id: shared, not tenant data) ──
+
+
+def ohlcv_cache_get(symbol: str, period: str, interval: str, max_age_hours: float) -> bytes | None:
+    """Parquet bytes of a cached OHLCV frame younger than `max_age_hours`, else None."""
+    row = _query(
+        "SELECT data FROM ohlcv_cache WHERE symbol=%s AND period=%s AND interval=%s "
+        "AND fetched_at > now() - make_interval(secs => %s)",
+        (symbol, period, interval, max_age_hours * 3600),
+        fetch="one",
+    )
+    return bytes(row["data"]) if row else None
+
+
+def ohlcv_cache_put(symbol: str, period: str, interval: str, data: bytes) -> None:
+    _query(
+        "INSERT INTO ohlcv_cache (symbol, period, interval, data) VALUES (%s,%s,%s,%s) "
+        "ON CONFLICT (symbol, period, interval) DO UPDATE SET data=EXCLUDED.data, fetched_at=now()",
+        (symbol, period, interval, data),
+        fetch=None,
+        commit=True,
+    )
+
+
+def ohlcv_cache_clear(symbol: str | None = None) -> int:
+    if symbol is None:
+        rows = _query("DELETE FROM ohlcv_cache RETURNING 1", fetch="all", commit=True)
+    else:
+        rows = _query(
+            "DELETE FROM ohlcv_cache WHERE symbol=%s RETURNING 1", (symbol,), fetch="all", commit=True
+        )
+    return len(rows or [])
+
+
+BHAVCOPY_MAX_BARS = 300  # ~14 months of sessions per symbol
+
+
+def bhavcopy_bar_put(symbol: str, day: date, open_, high, low, close) -> None:
+    """One session's unadjusted bar; a repeat of the same day is ignored. Keeps the
+    newest BHAVCOPY_MAX_BARS per symbol."""
+    _query(
+        "INSERT INTO bhavcopy_bars (symbol, day, open, high, low, close) VALUES (%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (symbol, day) DO NOTHING",
+        (symbol, day, to_db(open_), to_db(high), to_db(low), to_db(close)),
+        fetch=None,
+        commit=True,
+    )
+    _query(
+        "DELETE FROM bhavcopy_bars WHERE symbol=%s AND day < "
+        "(SELECT day FROM bhavcopy_bars WHERE symbol=%s ORDER BY day DESC OFFSET %s LIMIT 1)",
+        (symbol, symbol, BHAVCOPY_MAX_BARS - 1),
+        fetch=None,
+        commit=True,
+    )
+
+
+def bhavcopy_bars_get(symbol: str) -> list[dict]:
+    return _query(
+        "SELECT day, open, high, low, close FROM bhavcopy_bars WHERE symbol=%s ORDER BY day",
+        (symbol,),
+        fetch="all",
+    )
+
+
+# ── Retention purges (DATA-10, COMP-06; see utils/retention.py) ──────────────
+
+_PURGE_BATCH = 5000
+
+
+def purge_older_than(table: str, column: str, cutoff, extra_where: str = "") -> int:
+    """Delete up to _PURGE_BATCH rows of one of the allow-listed retention
+    tables whose `column` is before `cutoff`; returns the number deleted (call
+    again until it returns less than a batch)."""
+    if (table, column) not in _PURGEABLE:
+        raise ValueError(f"{table}.{column} is not a retention target")
+    where = f"{column} < %s" + (f" AND ({extra_where})" if extra_where else "")
+    rows = _query(
+        f"DELETE FROM {table} WHERE ctid IN (SELECT ctid FROM {table} WHERE {where} LIMIT {_PURGE_BATCH}) "  # noqa: S608  # nosec B608
+        "RETURNING 1",
+        (cutoff,),
+        fetch="all",
+        commit=True,
+    )
+    return len(rows or [])
+
+
+def oldest_row(table: str, column: str, extra_where: str = ""):
+    if (table, column) not in _PURGEABLE:
+        raise ValueError(f"{table}.{column} is not a retention target")
+    where = f" WHERE {extra_where}" if extra_where else ""
+    row = _query(f"SELECT min({column}) AS oldest FROM {table}{where}", fetch="one")  # noqa: S608  # nosec B608
+    return row["oldest"] if row else None
+
+
+# (table, timestamp column) pairs the retention job may purge — never user input.
+_PURGEABLE = {
+    ("evidence_cache", "fetched_at"),
+    ("pdf_cache", "fetched_at"),
+    ("ohlcv_cache", "fetched_at"),
+    ("auth_attempts", "attempted_at"),
+    ("telegram_link_codes", "created_at"),
+    # COMP-06: user data past its retention period
+    ("chat_sessions", "updated_at"),  # deleting a session cascades to its chat_history
+    ("reports", "created_at"),
+    ("answer_feedback", "created_at"),
+    ("turns", "created_at"),
+    ("notifications", "created_at"),
+    ("ops_alerts", "resolved_at"),
+    ("audit_log", "at"),  # the table trigger only lets rows older than 5 years go
+}
+
+
+def checkpoints_purge(older_than, batch: int = 200) -> int:
+    """Delete LangGraph threads whose newest checkpoint is older than `older_than`,
+    except a thread a chat is paused on (pending_thread_id: its human-in-the-loop
+    answer is still awaited). Returns threads removed."""
+    rows = _query(
+        "SELECT thread_id FROM checkpoints GROUP BY thread_id "
+        "HAVING max((checkpoint->>'ts')::timestamptz) < %s "
+        "AND thread_id NOT IN (SELECT pending_thread_id FROM chat_sessions WHERE pending_thread_id IS NOT NULL) "
+        "LIMIT %s",
+        (older_than, batch),
+        fetch="all",
+    )
+    ids = [r["thread_id"] for r in rows or []]
+    if not ids:
+        return 0
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+            cur.execute(f"DELETE FROM {table} WHERE thread_id = ANY(%s)", (ids,))  # noqa: S608  # nosec B608
+        conn.commit()
+    finally:
+        release_conn(conn)
+    return len(ids)
+
+
+def checkpoints_oldest():
+    row = _query("SELECT min((checkpoint->>'ts')::timestamptz) AS oldest FROM checkpoints", fetch="one")
+    return row["oldest"] if row else None
 
 
 # ── Evidence cache helpers (research graph, see tools/data/evidence_cache.py) ─
@@ -912,7 +1129,7 @@ def telegram_link_code_resolve(code: str):
     return row["user_id"]
 
 
-def telegram_chat_id_set(user_id: int, chat_id: str) -> None:
+def telegram_chat_id_set(user_id: int, chat_id: str | None) -> None:
     _query("UPDATE users SET telegram_chat_id=%s WHERE id=%s", (chat_id, user_id), fetch=None, commit=True)
 
 
@@ -1097,6 +1314,16 @@ def user_password_hash(user_id: int) -> str | None:
     return row["password_hash"] if row else None
 
 
+def user_rehash_password(user_id: int, password_hash: str) -> None:
+    """Swap in a stronger hash of the same password (SEC-07). Sessions stay."""
+    _query(
+        "UPDATE users SET password_hash=%s WHERE id=%s",
+        (password_hash, user_id),
+        fetch=None,
+        commit=True,
+    )
+
+
 def user_mark_verified(user_id: int) -> None:
     _query(
         "UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()) WHERE id=%s",
@@ -1196,7 +1423,8 @@ def auth_session_lookup(token_hash: str) -> dict | None:
         "  COALESCE(u.accepted_terms_version >= ("
         "    SELECT max(version) FROM terms_versions WHERE material AND effective_at <= now()"
         "  ), TRUE) AND u.accepted_terms_version IS NOT NULL AS consent_ok "
-        "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash=%s AND s.expires_at > now()",
+        "FROM sessions s JOIN users u ON u.id = s.user_id "
+        "WHERE s.token_hash=%s AND s.expires_at > now() AND u.disabled_at IS NULL",
         (token_hash,),
         fetch="one",
     )
@@ -1755,6 +1983,79 @@ def ops_alerts_open() -> list[dict]:
 
 
 # ── Onboarding (UX-01) ───────────────────────────────────────────────────────
+
+
+# ── Admin console (OBS-05; services/admin.py checks the actor first) ──────────
+
+
+def user_is_admin(user_id: int) -> bool:
+    row = _query(
+        "SELECT is_admin AND disabled_at IS NULL AS ok FROM users WHERE id=%s", (user_id,), fetch="one"
+    )
+    return bool(row and row["ok"])
+
+
+def user_admin_view(email: str) -> dict | None:
+    """What support needs to see about one account, found by email. Never a
+    password hash, key or token."""
+    return _query(
+        "SELECT u.id, u.email, u.created_at, u.email_verified_at, u.disabled_at, u.is_admin, "
+        "  u.free_msgs_used_today, u.free_msgs_reset_at, u.onboarded_at, "
+        "  (u.telegram_chat_id IS NOT NULL) AS telegram_linked, "
+        "  EXISTS (SELECT 1 FROM user_llm_config c WHERE c.user_id = u.id) AS byo, "
+        "  (SELECT count(*) FROM alerts a WHERE a.user_id = u.id AND a.active) AS active_alerts, "
+        "  (SELECT count(*) FROM sessions s WHERE s.user_id = u.id AND s.expires_at > now()) AS live_sessions, "
+        "  (SELECT max(t.created_at) FROM turns t WHERE t.user_id = u.id) AS last_turn_at "
+        "FROM users u WHERE u.email = %s",
+        (email.strip().lower(),),
+        fetch="one",
+    )
+
+
+def user_set_disabled(user_id: int, disabled: bool) -> bool:
+    """Lock or unlock an account. Locking also ends every live session. False if no such user."""
+    row = _query(
+        "UPDATE users SET disabled_at = CASE WHEN %s THEN COALESCE(disabled_at, now()) ELSE NULL END "
+        "WHERE id=%s RETURNING id",
+        (disabled, user_id),
+        fetch="one",
+        commit=True,
+    )
+    if row and disabled:
+        _query("DELETE FROM sessions WHERE user_id=%s", (user_id,), fetch=None, commit=True)
+    return row is not None
+
+
+def user_set_admin(user_id: int, is_admin: bool) -> bool:
+    row = _query(
+        "UPDATE users SET is_admin=%s WHERE id=%s RETURNING id", (is_admin, user_id), fetch="one", commit=True
+    )
+    return row is not None
+
+
+def turns_recent(user_id: int | None, limit: int = 25) -> list[dict]:
+    """The latest turns (of one user, or of everyone): what happened and what it cost."""
+    return _query(
+        "SELECT turn_id::text AS turn_id, user_id, created_at, intent, status, error_id, latency_ms, "
+        "  llm_calls, tokens_in + tokens_out AS tokens, cost_inr, data_gaps, trace_url "
+        "FROM turns WHERE (%s::int IS NULL OR user_id = %s) ORDER BY created_at DESC LIMIT %s",
+        (user_id, user_id, limit),
+        fetch="all",
+    )
+
+
+def flags_all() -> dict[str, bool]:
+    return {r["key"]: r["enabled"] for r in _query("SELECT key, enabled FROM feature_flags", fetch="all")}
+
+
+def flag_upsert(key: str, enabled: bool, updated_by: int | None) -> None:
+    _query(
+        "INSERT INTO feature_flags (key, enabled, updated_by) VALUES (%s,%s,%s) "
+        "ON CONFLICT (key) DO UPDATE SET enabled=EXCLUDED.enabled, updated_at=now(), updated_by=EXCLUDED.updated_by",
+        (key, enabled, updated_by),
+        fetch=None,
+        commit=True,
+    )
 
 
 def user_onboarding(user_id: int, today: "date") -> dict:

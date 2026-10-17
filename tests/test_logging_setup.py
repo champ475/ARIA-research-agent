@@ -148,7 +148,7 @@ def _prints_outside_main(path: pathlib.Path) -> list[int]:
 def test_no_print_in_application_packages():
     offenders = {}
     files = [REPO / "app.py"]
-    for pkg in ("agents", "graph", "tools", "utils"):
+    for pkg in ("agents", "graph", "tools", "utils", "services", "ui", "web"):
         files += list((REPO / pkg).rglob("*.py"))
     for f in files:
         hits = _prints_outside_main(f)

@@ -48,10 +48,11 @@ Out of scope:
 | Area | Control | Where |
 |---|---|---|
 | Sessions | HttpOnly, SameSite=Lax, Secure cookie; only a sha256 of the token is stored; rotation on login; "log out other devices" | SEC-04, `web/session.py` |
-| Passwords and accounts | salted PBKDF2-SHA256; per-email and per-IP throttling with backoff; optional CAPTCHA; email verification; reset tokens that are single-use, expire in 30 minutes and are stored hashed | SEC-05, SEC-06 |
+| Passwords and accounts | argon2id (old PBKDF2 hashes upgrade on login), 8-128 characters, common passwords refused; per-email and per-IP throttling with backoff; optional CAPTCHA; email verification; reset tokens that are single-use, expire in 30 minutes and are stored hashed | SEC-05, SEC-06, SEC-07 |
 | Secrets | Fernet encryption of BYO keys with rotation (`SECRET_KEY_PREVIOUS`); boot refuses weak keys; log redaction filter | SEC-11 |
 | Input and output | input guard, URL safety (SSRF), HTML/Markdown escaping, untrusted-text wrapping in prompts, write tools gated on explicit intent | SEC-01, SEC-03, SEC-10 |
 | Data | tenant-isolation tests for every user-scoped query; append-only audit log; data export and account deletion | COMP-03, COMP-04 |
+| Transport and framing | CSP, X-Frame-Options / `frame-ancestors` (`FRAME_ANCESTORS`), HSTS, nosniff, Referrer-Policy and Permissions-Policy on every response | SEC-15, `web/security_headers.py` |
 | Supply chain | hashed lock files, non-root image pinned by digest, Trivy, pip-audit, bandit, gitleaks, Dependabot; release images carry an SBOM and provenance | SEC-14, TEST-07 |
 
 The incident steps for operators are in docs/RUNBOOK.md, and breach response is in docs/PRIVACY.md.

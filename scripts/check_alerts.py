@@ -54,6 +54,7 @@ from tools.analysis.technical import compute_all
 from tools.data.fetcher import get_info, get_ohlcv
 from tools.data.nse_scraper import get_bulk_deals
 from utils.logging_setup import configure_logging
+from utils.money import to_decimal
 
 log = logging.getLogger("check_alerts")
 
@@ -140,10 +141,18 @@ class RunCache:
         return self._get(("bulk", symbol), lambda: get_bulk_deals(symbol))
 
 
-def _price_alert(cache: RunCache, symbol: str, alert_type: str, threshold: float) -> str | None:
+def _price_alert(
+    cache: RunCache, symbol: str, alert_type: str, threshold: Decimal | float | None
+) -> str | None:
     info = cache.info(symbol)
-    price = info.get("currentPrice") or info.get("regularMarketPrice")
-    if price is None or threshold is None:
+    quote = info.get("currentPrice") or info.get("regularMarketPrice")
+    limit = to_decimal(threshold)
+    if quote is None or limit is None:
+        return None
+    # DATA-09: compare as Decimal (the quote through its shortest repr), so a
+    # threshold of 1234.5678 is not decided by float noise.
+    price, threshold = to_decimal(quote), limit
+    if price is None:
         return None
     if alert_type == "price_above" and price > threshold:
         return f"🔔 {symbol} is now ₹{price:.2f} — above your alert threshold of ₹{threshold:.2f}"
@@ -292,6 +301,8 @@ def evaluate(conn, alert: dict, cache: RunCache | None = None) -> str | None:
     symbol, atype, threshold = alert["symbol"], alert["alert_type"], alert["threshold"]
     if atype in ("price_above", "price_below"):
         return _price_alert(cache, symbol, atype, threshold)
+    if threshold is not None:
+        threshold = float(threshold)  # percentages / RSI levels / ratios, not money
     if atype == "pct_change":
         return _pct_change_alert(cache, symbol, threshold, alert.get("direction"))
     if atype in _INDICATOR_TYPES:
@@ -359,6 +370,7 @@ def run_once(conn) -> dict[str, int]:
     log.info(f"Evaluating {len(alerts)} active alert(s).")
     cache = RunCache()
     counts = {"fired": 0, "telegram": 0, "in_app": 0, "retry": 0, "errors": 0}
+    checked: list[int] = []
     for alert in alerts:
         alert = dict(alert)
         if in_cooldown(alert):
@@ -369,6 +381,7 @@ def run_once(conn) -> dict[str, int]:
             counts["errors"] += 1
             log.exception(f"Error evaluating alert {alert['id']} ({alert['symbol']}): {e}")
             continue
+        checked.append(alert["id"])
         if not msg:
             continue
         counts["fired"] += 1
@@ -382,6 +395,13 @@ def run_once(conn) -> dict[str, int]:
             continue
         counts[outcome] += 1
         log.info(f"Fired alert {alert['id']} via {outcome}: {msg}")
+    if checked:  # UX-06: one UPDATE per run says "last checked" for every alert it evaluated
+        try:
+            cur.execute("UPDATE alerts SET last_checked_at=now() WHERE id = ANY(%s)", (checked,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            log.warning("could not stamp last_checked_at", exc_info=True)
     log.info(f"Run summary: {counts}")
     return counts
 

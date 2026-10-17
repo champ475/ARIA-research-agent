@@ -30,3 +30,9 @@ When a budget is burning:
 - **Weekly:** `python scripts/slo_report.py`, the SLO and burn-rate report.
 
 Alerts on these numbers are defined in OBS-04 (`docs/RUNBOOK.md`).
+
+## Verification judge (LLM-13)
+
+`python evals/judge_calibration.py` scores the Verification node's LLM judge on 100 labelled evidence/objective pairs (`evals/cases/judge_labels.jsonl`; replies recorded in `evals/fixtures/judge.jsonl`, and `tests/test_judge_calibration.py` fails if they stop meeting the targets). Targets: precision ≥ 0.80, recall ≥ 0.70, false-gate rate < 5%.
+
+Measured 2026-10-17 on the fast model: prompt v1 gave precision 0.73, recall 0.98, gate rate 36% (it flagged compressed summaries such as a bare headline count). Prompt v2 gives precision 0.96, recall 0.92, gate rate 4%. The labelled set is synthetic, so also watch the live rate: `sum(rate(aria_gates_total{gate="verification_gate"}[7d])) / sum(rate(aria_turns_total[7d]))` should stay under 5%. `VERIFICATION_STRONG_JUDGE=1` routes complex turns to the synthesis-class model (`--strong` scores it); it is off because the fast model already meets the targets.

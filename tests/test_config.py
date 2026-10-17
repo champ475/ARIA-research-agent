@@ -13,7 +13,7 @@ import pytest
 import config
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_DIRS = ("agents", "graph", "tools", "utils", "scripts")
+APP_DIRS = ("agents", "graph", "tools", "utils", "scripts", "services", "ui", "web")
 
 
 _NO_LLM = {f"GROQ_API_KEY_{i}": "" for i in range(1, 6)} | {"GEMINI_API_KEY": "", "LOCAL_LLM_BASE_URL": ""}

@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 import config
-from utils import auth
+from utils import auth, flags
 from utils.audit import audit
 from web import captcha, csrf
 from web.session import (
@@ -139,6 +139,10 @@ def signup_submit(
             email=email,
         )
     ip, ua = client_ip(request), request.headers.get("user-agent")
+    if not flags.enabled("signups_open"):  # OBS-05
+        return render(
+            request, "signup.html", 403, title="Sign up", error="Sign-up is closed for now.", email=email
+        )
     try:
         user_id = auth.signup(email[:320], password[:1024], ip=ip)
     except auth.AuthError as e:

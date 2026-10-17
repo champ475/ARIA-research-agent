@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     # ── Serving ───────────────────────────────────────────────────────────────
     CHAT_CONCURRENCY: int = Field(8, ge=1, le=256)
     QUEUE_MAX_SIZE: int = Field(100, ge=1)
+    # REL-07: the watchlist table's parallel fetch.
+    WATCHLIST_WORKERS: int = Field(8, ge=1, le=32)
+    WATCHLIST_BUDGET_SECONDS: float = Field(15.0, gt=0)
+    WATCHLIST_ROW_TTL_SECONDS: int = Field(60, ge=0)
     TRIAL_DAILY_LIMIT: int = Field(5, ge=0)
     # SEC-12: chat turns one user may start per minute (everyone, BYO or trial).
     TURNS_PER_MINUTE: int = Field(10, ge=1)
@@ -151,6 +155,8 @@ class Settings(BaseSettings):
     ARIA_FAKE_DATA: bool = False
     # TEST-04: a deterministic LLM (agents/providers/fake_llm.py) for e2e tests and demos.
     ARIA_FAKE_LLM: bool = False
+    # TEST-06: a JSON file the fakes read for injected latency / failures (utils/faults.py).
+    ARIA_FAULTS_FILE: str = ""
     # Evidence confidence when a fallback source stood in (e.g. bhavcopy for a quote).
     DEGRADED_CONFIDENCE: float = Field(0.6, gt=0, lt=1)
     # Rupees per US dollar, for the per-turn cost estimate.
@@ -175,6 +181,12 @@ class Settings(BaseSettings):
     SMTP_STARTTLS: bool = True
     # Block the app until the email address is verified; unset = on except dev/test.
     REQUIRE_EMAIL_VERIFICATION: bool | None = None
+    # LLM-13: judge complex turns with the synthesis-class model instead of the fast one.
+    VERIFICATION_STRONG_JUDGE: bool = False
+    # SEC-15: who may frame the app (CSP frame-ancestors); none unless it is embedded.
+    FRAME_ANCESTORS: str = "'none'"
+    # SEC-15: send Strict-Transport-Security; unset = on except dev/test (plain http there).
+    HSTS_ENABLED: bool | None = None
     # SEC-05: proxies whose X-Forwarded-For is trusted (comma-separated IPs/CIDRs).
     TRUSTED_PROXIES: str = ""
     # Optional Cloudflare Turnstile CAPTCHA after repeated failures (SEC-05).
@@ -202,6 +214,7 @@ class Settings(BaseSettings):
         "RUN_JOBS_IN_APP",
         "COOKIE_SECURE",
         "REQUIRE_EMAIL_VERIFICATION",
+        "HSTS_ENABLED",
         "TURN_DEADLINE_SECONDS",
         mode="before",
     )
@@ -238,6 +251,12 @@ class Settings(BaseSettings):
     def require_email_verification(self) -> bool:
         if self.REQUIRE_EMAIL_VERIFICATION is not None:
             return self.REQUIRE_EMAIL_VERIFICATION
+        return self.APP_ENV not in ("dev", "test")
+
+    @property
+    def hsts_enabled(self) -> bool:
+        if self.HSTS_ENABLED is not None:
+            return self.HSTS_ENABLED
         return self.APP_ENV not in ("dev", "test")
 
     @property
@@ -411,6 +430,9 @@ PROVIDER_ZERO_QUOTA_TTL_SECONDS = 3600
 # ── Serving / free trial ──────────────────────────────────────────────────────
 CHAT_CONCURRENCY = settings.CHAT_CONCURRENCY  # chat turns at once, server-wide
 QUEUE_MAX_SIZE = settings.QUEUE_MAX_SIZE
+WATCHLIST_WORKERS = settings.WATCHLIST_WORKERS
+WATCHLIST_BUDGET_SECONDS = settings.WATCHLIST_BUDGET_SECONDS
+WATCHLIST_ROW_TTL_SECONDS = settings.WATCHLIST_ROW_TTL_SECONDS
 HOST = settings.HOST
 PORT = settings.PORT
 COOKIE_SECURE = settings.cookie_secure
@@ -423,6 +445,9 @@ SMTP_PASSWORD = settings.SMTP_PASSWORD
 SMTP_FROM = settings.SMTP_FROM
 SMTP_STARTTLS = settings.SMTP_STARTTLS
 REQUIRE_EMAIL_VERIFICATION = settings.require_email_verification
+VERIFICATION_STRONG_JUDGE = settings.VERIFICATION_STRONG_JUDGE
+FRAME_ANCESTORS = settings.FRAME_ANCESTORS.strip() or "'none'"
+HSTS_ENABLED = settings.hsts_enabled
 TRUSTED_PROXIES = [p.strip() for p in settings.TRUSTED_PROXIES.split(",") if p.strip()]
 TURNSTILE_SITE_KEY = settings.TURNSTILE_SITE_KEY
 TURNSTILE_SECRET = settings.TURNSTILE_SECRET
@@ -432,6 +457,7 @@ MAX_ENTITIES_PER_TURN = settings.MAX_ENTITIES_PER_TURN
 TRIAL_DAILY_TOKENS = settings.TRIAL_DAILY_TOKENS
 ARIA_FAKE_DATA = settings.ARIA_FAKE_DATA
 ARIA_FAKE_LLM = settings.ARIA_FAKE_LLM
+ARIA_FAULTS_FILE = settings.ARIA_FAULTS_FILE
 FUNDAMENTALS_MAX_AGE_HOURS = settings.FUNDAMENTALS_MAX_AGE_HOURS
 BACKTEST_COST_PCT = settings.BACKTEST_COST_PCT
 DEGRADED_CONFIDENCE = settings.DEGRADED_CONFIDENCE
@@ -681,6 +707,7 @@ NODE_MODEL_CLASS: dict[str, str] = {
     "planner": "fast",
     "reflection": "fast",
     "verification": "fast",
+    "verification_complex": "synthesis",
     "suggestions": "fast",
     "summary": "fast",
     "extract": "fast",

@@ -55,6 +55,12 @@ PARSE_FAILURES = Counter(
 GROUNDING = Counter(
     "aria_grounding_checks", "Answers checked for unsupported numbers", ["result"], registry=REGISTRY
 )
+GATES = Counter(
+    "aria_gates",
+    "Turns paused for the user's approval, by gate (LLM-13: verification < 5% of turns)",
+    ["gate"],
+    registry=REGISTRY,
+)
 FEEDBACK = Counter("aria_feedback", "Answer ratings", ["rating"], registry=REGISTRY)
 LLM_EXHAUSTED = Counter("aria_llm_exhausted", "Turns where every LLM provider failed", registry=REGISTRY)
 
@@ -103,6 +109,10 @@ def observe_llm_call(
             LLM_FALLBACKS.labels(node or "other").inc()
     except Exception:
         log.debug("[metrics] could not record LLM call", exc_info=True)
+
+
+def observe_gate(gate: str) -> None:
+    GATES.labels(gate[:30]).inc()
 
 
 def observe_feedback(rating: int) -> None:

@@ -94,13 +94,13 @@ class TestComputeDE:
 
 class TestRatio:
     def test_basic_division(self):
-        assert fundamental._ratio(50, 200, "x") == 0.25
+        assert fundamental._ratio(50, 200) == 0.25
 
     def test_none_numerator_returns_none(self):
-        assert fundamental._ratio(None, 200, "x") is None
+        assert fundamental._ratio(None, 200) is None
 
     def test_zero_denominator_returns_none(self):
-        assert fundamental._ratio(50, 0, "x") is None
+        assert fundamental._ratio(50, 0) is None
 
 
 class TestComputeEndToEnd:

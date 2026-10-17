@@ -8,6 +8,7 @@ import re
 import pytest
 
 from tests.conftest import import_app_without_side_effects
+from ui import theme
 
 app = import_app_without_side_effects()
 
@@ -32,7 +33,7 @@ TEXT_PAIRS = [
 
 
 def _tokens(selector: str) -> dict[str, str]:
-    block = re.search(re.escape(selector) + r"\s*\{(.*?)\}", app.APP_CSS, flags=re.S)
+    block = re.search(re.escape(selector) + r"\s*\{(.*?)\}", theme.APP_CSS, flags=re.S)
     assert block, selector
     return dict(re.findall(r"--aria-([\w-]+):\s*(#[0-9a-fA-F]{6})\s*;", block.group(1)))
 
@@ -69,16 +70,17 @@ def test_both_themes_define_the_same_tokens():
 
 def test_no_text_below_12px():
     sizes = [
-        int(n) for n in re.findall(r"font-size:\s*(\d+)px", app.APP_CSS + app.HEADER_HTML + app.FOOTER_HTML)
+        int(n)
+        for n in re.findall(r"font-size:\s*(\d+)px", theme.APP_CSS + theme.HEADER_HTML + theme.FOOTER_HTML)
     ]
     assert sizes and min(sizes) >= 12
 
 
 def test_colours_only_in_token_blocks():
-    outside = re.sub(r"(:root|\.dark)\s*\{.*?\}", "", app.APP_CSS, count=2, flags=re.S)
-    assert not re.findall(r"#[0-9a-fA-F]{3,8}\b", outside + app.HEADER_HTML + app.FOOTER_HTML)
+    outside = re.sub(r"(:root|\.dark)\s*\{.*?\}", "", theme.APP_CSS, count=2, flags=re.S)
+    assert not re.findall(r"#[0-9a-fA-F]{3,8}\b", outside + theme.HEADER_HTML + theme.FOOTER_HTML)
 
 
 def test_icon_buttons_get_names():
     for glyph, name in (("◧", "Show or hide chat history"), ("✎", "New chat"), ("✕", "Delete this chat")):
-        assert glyph in app.APP_JS and name in app.APP_JS
+        assert glyph in theme.APP_JS and name in theme.APP_JS

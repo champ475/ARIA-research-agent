@@ -78,9 +78,9 @@ def compute(info: dict, financials: dict) -> dict:
     eb = d["ebit"]
     ebd = d["ebitda"]
 
-    d["net_margin"] = _ratio(ni, rev, "Net Margin  = Net Income / Revenue")
-    d["op_margin"] = _ratio(eb, rev, "Op Margin   = EBIT / Revenue")
-    d["ebitda_margin"] = _ratio(ebd, rev, "EBITDA Margin = EBITDA / Revenue")
+    d["net_margin"] = _ratio(ni, rev)
+    d["op_margin"] = _ratio(eb, rev)
+    d["ebitda_margin"] = _ratio(ebd, rev)
 
     # Fallback to upstream if recomputed is None
     if d["net_margin"] is None:
@@ -94,12 +94,12 @@ def compute(info: dict, financials: dict) -> dict:
     assets = d["total_assets"]
 
     # ROE = Net Income / Total Equity
-    d["roe"] = _ratio(ni, equity, "ROE = Net Income / Total Equity")
+    d["roe"] = _ratio(ni, equity)
     if d["roe"] is None:
         d["roe"] = _f("returnOnEquity")
 
     # ROA = Net Income / Total Assets
-    d["roa"] = _ratio(ni, assets, "ROA = Net Income / Total Assets")
+    d["roa"] = _ratio(ni, assets)
     if d["roa"] is None:
         d["roa"] = _f("returnOnAssets")
 
@@ -205,7 +205,7 @@ def compute(info: dict, financials: dict) -> dict:
             d[key] = None
         d["roce_detail"] = d["de_calc_detail"] = d["cr_detail"] = LENDER_NOTE
         nii, assets = raw.get("net_interest_income"), d["total_assets"]
-        d["nim_proxy"] = _ratio(nii, assets, "NII / Total Assets")
+        d["nim_proxy"] = _ratio(nii, assets)
         d["nim_detail"] = (
             f"NII / Total Assets = ₹{fmt_num(nii)} / ₹{fmt_num(assets)} = {pct(d['nim_proxy'])}\n"
             "     Method: a proxy. Reported NIM divides by average interest-earning assets, "
@@ -353,7 +353,7 @@ def _compute_de(raw: dict, info: dict) -> dict:
     return {"value": None, "detail": "D/E: balance sheet data unavailable"}
 
 
-def _ratio(num, denom, formula: str) -> float | None:
+def _ratio(num, denom) -> float | None:
     n = safe_float(num)
     d = safe_float(denom)
     if n is None or d is None or d == 0:

@@ -14,6 +14,7 @@ import pytest
 
 from tests.integration import (
     test_account_lifecycle,
+    test_admin_console,
     test_audit,
     test_brute_force,
     test_consent,
@@ -24,6 +25,7 @@ from tests.integration import (
     test_jobs,
     test_rate_limits,
     test_sessions,
+    test_shared_caches,
     test_slo,
     test_watchdog,
 )
@@ -340,6 +342,18 @@ COVERED = {
     "ops_alert_fire": test_watchdog.test_error_rate_pages_once_reminds_and_resolves,
     "ops_alert_resolve": test_watchdog.test_error_rate_pages_once_reminds_and_resolves,
     "ops_alerts_open": test_watchdog.test_a_check_that_cannot_run_resolves_nothing,
+    "user_admin_view": test_admin_console.test_lookup_shows_support_facts_and_no_secrets,
+    "flags_all": test_admin_console.test_flags_default_on_change_and_are_audited,
+    "flag_upsert": test_admin_console.test_flags_default_on_change_and_are_audited,
+    "ohlcv_cache_get": test_shared_caches.test_ohlcv_cache_round_trips_through_postgres_without_disk,
+    "ohlcv_cache_put": test_shared_caches.test_ohlcv_cache_round_trips_through_postgres_without_disk,
+    "ohlcv_cache_clear": test_shared_caches.test_ohlcv_cache_round_trips_through_postgres_without_disk,
+    "bhavcopy_bar_put": test_shared_caches.test_bhavcopy_keeps_only_the_newest_300_sessions,
+    "bhavcopy_bars_get": test_shared_caches.test_bhavcopy_fallback_survives_a_container_restart,
+    "purge_older_than": test_shared_caches.test_retention_purges_old_cache_rows_and_keeps_fresh_ones,
+    "oldest_row": test_shared_caches.test_retention_purges_old_cache_rows_and_keeps_fresh_ones,
+    "checkpoints_purge": test_shared_caches.test_checkpoints_older_than_7_days_go_but_a_paused_thread_stays,
+    "checkpoints_oldest": test_shared_caches.test_checkpoints_older_than_7_days_go_but_a_paused_thread_stays,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
 # Pool plumbing is exercised by every test and directly in test_db_pool.py.

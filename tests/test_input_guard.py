@@ -9,6 +9,7 @@ from hypothesis import strategies as st
 
 from agents.llm_client import LLMProvidersExhausted, format_exhausted_message
 from config import MAX_CHAT_CHARS
+from ui import chat as chat_ui
 from utils.input_guard import CleanMessage, InputRejected, clean_message
 
 _INVISIBLE = {"​", "‌", "‍", "⁠", "﻿", "­"}
@@ -117,10 +118,10 @@ def _drain(gen):
 
 def test_respond_rejects_too_long_without_calling_the_orchestrator(app_module):
     with (
-        patch.object(app_module, "get_orchestrator") as get_orch,
-        patch.object(app_module, "_persist_turn") as persist,
+        patch("services.chat.get_orchestrator") as get_orch,
+        patch("services.chat.persist_turn") as persist,
     ):
-        outputs = _drain(app_module.respond(1, "x" * (MAX_CHAT_CHARS + 50), [], [], 7, "1M"))
+        outputs = _drain(chat_ui.respond(1, "x" * (MAX_CHAT_CHARS + 50), [], [], 7, "1M"))
     get_orch.assert_not_called()
     persist.assert_not_called()
     (final,) = outputs
@@ -135,8 +136,8 @@ def test_respond_uses_cleaned_text_downstream(app_module):
     orch.process_stream.return_value = iter([("ok", None, None, None, None, "chat")])
     orch.generate_suggestions.return_value = []
     with (
-        patch.object(app_module, "get_orchestrator", return_value=orch),
-        patch.object(app_module, "_persist_turn"),
+        patch("services.chat.get_orchestrator", return_value=orch),
+        patch("services.chat.persist_turn"),
     ):
-        _drain(app_module.respond(1, "T​CS\x00 price", [], [], 7, "1M"))
+        _drain(chat_ui.respond(1, "T​CS\x00 price", [], [], 7, "1M"))
     orch.process_stream.assert_called_once_with("TCS price", progress=True)

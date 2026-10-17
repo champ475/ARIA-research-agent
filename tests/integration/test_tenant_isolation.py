@@ -77,6 +77,11 @@ def test_sessions_and_chat_history(db, two_users):
     assert db.chat_load(b, sid) == []
     db.session_delete(b, sid)
     assert len(db.session_list(a, "chat")) == 1
+    assert db.session_rename(b, sid, "hijacked") is False
+    assert db.session_list(a, "chat")[0]["title"] == "A's secret plan"
+    assert db.session_search(b, "chat", ["portfolio"]) == []
+    assert db.session_get_title(b, sid) is None and db.session_get_title(a, sid) == "A's secret plan"
+    assert [x["id"] for x in db.session_search(a, "chat", ["portfolio"])] == [sid]
 
 
 def test_owner_can_still_touch_and_save(db, two_users):
@@ -114,6 +119,23 @@ def test_alerts(db, two_users):
     db.alert_resume(b, aid)
     assert db.alert_list(a)[0]["active"] is False
     assert len(db.alert_list(a)) == 1
+    assert db.alert_get(b, aid) is None and db.alert_get(a, aid)["id"] == aid
+    assert db.alert_update(b, aid, "x", 1.0, None, False, 24) is False
+    assert db.alert_get(a, aid)["threshold"] == 4000
+
+
+def test_admin_console_scope(db, two_users):
+    """OBS-05: these functions cross tenants on purpose; services/admin.py only calls them
+    for an admin (tests/integration/test_admin_console.py proves a non-admin is refused)."""
+    a, b = two_users
+    assert db.user_is_admin(a) is False
+    db.user_set_admin(a, True)
+    assert db.user_is_admin(a) is True and db.user_is_admin(b) is False
+    assert (
+        db.turns_recent(a) == []
+        and db.user_set_disabled(b, True) is True
+        and db.user_set_disabled(b, False) is True
+    )
 
 
 def test_notifications(db, two_users):
@@ -175,6 +197,7 @@ def test_account_lifecycle_functions(db, two_users):
     assert db.auth_token_consume("reset", "tok-a") == a
     a_hash = db.user_password_hash(a)
     db.user_set_password(b, "new-hash-b")
+    db.user_rehash_password(b, "new-hash-b")
     assert db.user_password_hash(a) == a_hash and db.user_password_hash(b) == "new-hash-b"
     db._query("UPDATE users SET email_verified_at=NULL", fetch=None, commit=True)
     db.user_mark_verified(b)
@@ -302,6 +325,15 @@ COVERED = {
     "alert_list": test_alerts,
     "alert_remove": test_alerts,
     "alert_pause": test_alerts,
+    "user_is_admin": test_admin_console_scope,
+    "user_set_disabled": test_admin_console_scope,
+    "user_set_admin": test_admin_console_scope,
+    "turns_recent": test_admin_console_scope,
+    "session_rename": test_sessions_and_chat_history,
+    "session_get_title": test_sessions_and_chat_history,
+    "session_search": test_sessions_and_chat_history,
+    "alert_get": test_alerts,
+    "alert_update": test_alerts,
     "alert_resume": test_alerts,
     "notification_add": test_notifications,
     "notifications_list": test_notifications,
@@ -322,6 +354,7 @@ COVERED = {
     "user_password_hash": test_account_lifecycle_functions,
     "user_mark_verified": test_account_lifecycle_functions,
     "user_set_password": test_account_lifecycle_functions,
+    "user_rehash_password": test_account_lifecycle_functions,
     "user_delete": test_account_lifecycle_functions,
     "user_rows": test_data_export_rows,
     "user_account_row": test_data_export_rows,

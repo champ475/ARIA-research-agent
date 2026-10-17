@@ -18,6 +18,8 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
+from utils import faults
+
 _INTENT_RULES = [
     ("alert", r"\balert|notify me|remind me|\bcancel\b.*\b(alert|#\d+)|pause .*alert|my alerts"),
     (
@@ -143,6 +145,7 @@ class FakeLLMProvider:
     def ask(
         self, prompt: str, temperature: float = 0.0, max_tokens: int = 0, model: str | None = None
     ) -> str:
+        faults.llm_call()  # TEST-06: realistic latency / flaky provider, when a faults file asks for it
         out = self._reply(prompt)
         self.last_usage = (max(1, len(prompt) // 4), max(1, len(out) // 4))
         return out
@@ -153,5 +156,6 @@ class FakeLLMProvider:
         self, prompt: str, temperature: float = 0.0, max_tokens: int = 0, model: str | None = None
     ) -> Iterator[str]:
         text = self.ask(prompt, temperature, max_tokens, model)
+        faults.llm_first_token()
         for i in range(0, len(text), 40):
             yield text[i : i + 40]

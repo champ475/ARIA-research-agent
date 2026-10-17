@@ -25,10 +25,16 @@ loudly at write time instead of silently falling back to pickle.
 
 from __future__ import annotations
 
+import logging
 import threading
+from collections.abc import Callable
 from typing import Any
 
+from langgraph.checkpoint.memory import InMemorySaver
+
 from config import DATABASE_URL, DB_POOL_ACQUIRE_TIMEOUT
+
+log = logging.getLogger(__name__)
 
 CHECKPOINT_POOL_MAX = 5
 
@@ -87,3 +93,116 @@ def close_checkpointer() -> None:
             _pool.close()
         _pool = None
         _checkpointer = None
+
+
+# ── ARCH-04: checkpoints in memory, durable only while a turn is paused ──────
+
+
+class TurnCheckpointer(InMemorySaver):
+    """LangGraph checkpoints for a turn live in memory; Postgres only holds a
+    turn that is paused on a yes/no.
+
+    Every turn used to write several checkpoint rows (about 350 KiB measured by
+    scripts/growth_sim.py) for a capability only a small share of turns need:
+    resuming after an interrupt. Now the graph runs against this in-memory
+    saver, and when a turn pauses `persist()` copies its newest checkpoint and
+    pending writes to Postgres, so the answer can arrive on another replica or
+    after a restart. `mark_resumable()` tells the saver such a thread exists in
+    Postgres (the orchestrator learns it from `chat_sessions.pending_thread_id`);
+    only those threads ever read from the database. `finish()` deletes the
+    durable copy once the turn has completed, and `release()` frees the memory.
+    """
+
+    def __init__(self, durable: Callable[[], Any] | None = None):
+        super().__init__(serde=make_serializer())
+        self._durable_factory = durable or get_postgres_checkpointer
+        self._resumable: set[str] = set()
+        self._keep: set[str] = set()  # persist failed: memory is the only copy
+        self._tlock = threading.Lock()
+
+    def get_tuple(self, config: Any) -> Any:
+        found = super().get_tuple(config)
+        if found is not None:
+            return found
+        thread_id = config["configurable"].get("thread_id")
+        with self._tlock:
+            durable = thread_id in self._resumable
+        if durable:
+            return self._durable_factory().get_tuple(config)
+        return None
+
+    # Turn lifecycle (called by GraphOrchestrator) ---------------------------
+
+    def mark_resumable(self, thread_id: str) -> None:
+        with self._tlock:
+            self._resumable.add(thread_id)
+
+    def persist(self, thread_id: str) -> bool:
+        """Copy the thread's newest checkpoint and its pending writes to Postgres.
+        Returns False (and keeps the thread in memory) when that fails."""
+        cfg = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        latest = super().get_tuple(cfg)
+        if latest is None:
+            return False
+        try:
+            durable = self._durable_factory()
+            durable.delete_thread(thread_id)  # a re-pause replaces the earlier copy
+            parent = (latest.parent_config or {}).get("configurable", {})
+            put_cfg = {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": "",
+                    **({"checkpoint_id": parent["checkpoint_id"]} if parent.get("checkpoint_id") else {}),
+                }
+            }
+            checkpoint = latest.checkpoint
+            saved = durable.put(put_cfg, checkpoint, latest.metadata, dict(checkpoint["channel_versions"]))
+            by_task: dict[str, list[tuple[str, Any]]] = {}
+            for task_id, channel, value in latest.pending_writes or []:
+                by_task.setdefault(task_id, []).append((channel, value))
+            for task_id, writes in by_task.items():
+                durable.put_writes(saved, writes, task_id)
+        except Exception:
+            log.warning("could not persist the paused turn %s", thread_id, exc_info=True)
+            with self._tlock:
+                self._keep.add(thread_id)
+            return False
+        with self._tlock:
+            self._resumable.add(thread_id)
+        return True
+
+    def finish(self, thread_id: str) -> None:
+        """The turn completed: drop the durable copy, if there ever was one."""
+        with self._tlock:
+            had = thread_id in self._resumable
+            self._resumable.discard(thread_id)
+            self._keep.discard(thread_id)
+        self.delete_thread(thread_id)
+        if had:
+            try:
+                self._durable_factory().delete_thread(thread_id)
+            except Exception:
+                log.warning("could not delete the finished checkpoint %s", thread_id, exc_info=True)
+
+    def release(self, thread_id: str) -> None:
+        """Free the thread's in-memory checkpoints (the durable copy, if any, stays),
+        unless saving it failed and memory holds the only copy."""
+        with self._tlock:
+            if thread_id in self._keep:
+                return
+        self.delete_thread(thread_id)
+
+    def memory_threads(self) -> int:
+        return len(self.storage)
+
+
+_turn_checkpointer: TurnCheckpointer | None = None
+
+
+def get_turn_checkpointer() -> TurnCheckpointer:
+    """The process-wide checkpointer every compiled graph shares."""
+    global _turn_checkpointer
+    with _lock:
+        if _turn_checkpointer is None:
+            _turn_checkpointer = TurnCheckpointer()
+        return _turn_checkpointer

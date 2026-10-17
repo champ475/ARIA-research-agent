@@ -32,6 +32,10 @@ jobs:
       - run: pip install "ruff==0.17.0"
       - run: ruff check . --output-format=github
       - run: ruff format --check .
+      - name: no unused or undeclared dependencies, no dead code (ARCH-07)
+        run: pip install "deptry==0.25.1" "vulture==2.16" -r requirements.txt && deptry . && vulture
+      - name: layering - ui calls services, never the database or data tools (ARCH-02)
+        run: pip install "import-linter==2.15" -r requirements.txt && lint-imports
       - name: lock files match requirements*.txt (SEC-14)
         run: pip install "uv==0.12.23" && python scripts/lock.py --check
 
@@ -155,7 +159,7 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - run: pip install "bandit[toml]>=1.7.9" "pip-audit>=2.7.0"
       - name: bandit (static security scan)
-        run: bandit -c pyproject.toml -r agents graph tools utils web app.py server.py scripts -q
+        run: bandit -c pyproject.toml -r agents graph tools utils web services ui loadtests app.py server.py worker.py scripts -q
       - name: pip-audit (known-vulnerable dependencies)
         run: pip-audit -r requirements-dev.lock --disable-pip --require-hashes --progress-spinner off
       - name: gitleaks (committed secrets)

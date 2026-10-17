@@ -1,5 +1,5 @@
 # Developer shortcuts. Windows users without make: run the commands directly.
-.PHONY: eval eval-record eval-baseline test lint lock lock-check
+.PHONY: eval eval-record eval-baseline test lint lock lock-check loadtest
 
 eval:  ## golden-set eval against the baseline (replay; no network) — PRD LLM-01
 	python evals/runner.py --replay --compare evals/baseline.json
@@ -21,3 +21,6 @@ lock:  ## regenerate the hashed lock files after editing requirements*.txt — P
 
 lock-check:
 	python scripts/lock.py --check
+
+loadtest:  ## load + chaos profile and report (needs loadtests/requirements.txt and a throwaway database) — PRD TEST-06
+	python loadtests/run.py --database-url $(LOAD_DATABASE_URL) --users 20 --duration 300 --version dev

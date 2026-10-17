@@ -230,15 +230,37 @@ def add_llm_mentions(result: EntityResult, llm_mentions: list) -> EntityResult:
     return result
 
 
-def history_entities(history: list[dict]) -> list[str]:
-    """The most recently mentioned resolvable company in earlier user turns."""
+def history_carry(history: list[dict]) -> tuple[list[str], list[str]]:
+    """What a company-less follow-up refers to: (entity, ambiguous_candidates).
+
+    The most recent user turn that named a company decides. One company is
+    carried over; two or more (a comparison) are ambiguous, so the caller asks
+    instead of silently picking one (LLM-10).
+    """
     for msg in reversed(history or []):
         if msg.get("role") != "user":
             continue
         found = resolve_mentions(msg.get("content", "")).entities
+        if len(found) == 1:
+            return found, []
         if found:
-            return found[:1]
-    return []
+            return [], found
+    return [], []
+
+
+def history_entities(history: list[dict]) -> list[str]:
+    """The single company an earlier user turn settled on; [] if none or ambiguous."""
+    return history_carry(history)[0]
+
+
+def ambiguous_reference(candidates: list[str]) -> dict:
+    """An unresolved entry for "its RSI" after a multi-company turn."""
+    return {
+        "query": "that",
+        "status": "ambiguous",
+        "reference": True,
+        "candidates": [{"symbol": c, "name": c} for c in candidates],
+    }
 
 
 def blocking_resolutions(state: dict) -> list[dict]:
@@ -278,7 +300,10 @@ def clarification_text(blocking: list[dict]) -> str:
                 'for a table, e.g. *"IT stocks with PE below 30"*.'
             )
             return "\n\n".join(parts)
-        if u["status"] == "ambiguous":
+        if u["status"] == "ambiguous" and u.get("reference"):
+            symbols = " or ".join(f"**{c['symbol']}**" for c in u["candidates"])
+            parts.append(f"You mentioned more than one company earlier. Do you mean {symbols}?")
+        elif u["status"] == "ambiguous":
             options = "\n".join(f"- {_option(c)}" for c in u["candidates"])
             parts.append(f"Which **{name}** do you mean?\n{options}")
         else:

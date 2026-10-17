@@ -136,6 +136,35 @@ Useful everywhere:
 **Fix:**
 - `python scripts/refresh_fundamentals.py`. It resumes and skips fresh rows. A full run takes about 8 minutes.
 
+## retention-overdue
+
+**Means:** a table still holds rows older than its retention period (`utils/retention.py`, COMP-06). The nightly `retention` job (02:30 IST) should have removed them.
+
+**First checks:**
+1. `python scripts/retention_report.py` lists each class, its limit and its oldest row.
+2. The `retention` row in `job_heartbeats`: did it run, did it fail? A failing class is logged as `[retention] <class> failed` and the other classes still run.
+3. Is a class far behind? One run purges at most 40 batches (200,000 rows) per class, so a big backlog clears over several nights.
+
+**Fix:**
+- Fix the failing class, then run `python -c "from utils.retention import run_retention; print(run_retention())"` from the app environment.
+- `audit_log` is special: its trigger refuses any delete of a row younger than 5 years, so it can only be late if the migration 0024 trigger is missing.
+
+---
+
+## Support: the Admin tab
+
+Give an operator access with `python scripts/make_admin.py you@example.com` (add `--revoke` to take it back). They then see a **🛠 Admin** tab. Every handler checks `users.is_admin` on the server, so a non-admin who calls one gets "403"; everything an admin looks up or changes is in `audit_log` (`admin.*` actions) with their id.
+
+The three questions support gets most, each answered in a minute or two:
+
+| Question | Do this |
+|---|---|
+| "My alert didn't fire." | Find the user, **Their alerts**. Read *Status* (paused?), *Last checked* (blank means the checker never evaluated it; stale means the `alert_check` job is down: see `heartbeat-stale`), *Last fired* and *Delivery* (a "Waiting in your inbox" alert fired but Telegram failed; *Last error* says why). |
+| "Why did my quota run out?" | Find the user: *Quota* shows messages used today, or "own key". **Recent turns** lists each turn's LLM calls, tokens and ₹ cost; a few expensive report turns or a retry loop explains it. |
+| "I can't log in." | Find the user: *verified* (no: they never confirmed the email), **DISABLED** (an operator locked it; **Enable account** undoes it), *Live sessions*. A turn's *Error ID* goes to `python scripts/find_turn.py <id>` for the trace. |
+
+Other controls: **Disable account** locks a user out and ends their sessions (you can't disable yourself). **Feature flags**: `signups_open` and `chat_enabled` (turn it off for maintenance: chat answers "paused for maintenance"); a change reaches every replica within 15 seconds.
+
 ---
 
 ## Backups

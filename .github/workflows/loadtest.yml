@@ -1,0 +1,72 @@
+# Load, soak and chaos report per release (PRD TEST-06). A `vX.Y.Z` tag, or a manual
+# run, starts the app with the fake LLM and fake data (realistic latency), loads it with
+# 20 concurrent users, breaks it on a timeline, and uploads the report as an artifact.
+# The job fails when a target is missed, so the artifact says which. Manual runs can
+# ask for the 2-hour soak. See loadtests/README.md.
+name: loadtest
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Label for the report, e.g. v2.1.0"
+        required: false
+        default: "manual"
+      soak:
+        description: "Run the 2-hour soak (flat-memory verdict) instead of the 5-minute profile"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  VERSION: ${{ inputs.version || github.ref_name }}
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: aria
+          POSTGRES_PASSWORD: aria
+          POSTGRES_DB: aria_load
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aria -d aria_load" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: pip install --require-hashes -r requirements.lock && pip install -r loadtests/requirements.txt
+      - name: Clean run (and the 2-hour soak when asked)
+        run: >-
+          python loadtests/run.py --database-url postgresql://aria:aria@localhost:5432/aria_load
+          --users 20 --duration ${{ inputs.soak && '7200' || '300' }} --baseline-seconds 60
+          --version "$VERSION" --out test-results/load-clean
+      - name: Chaos run (slow and flaky LLM, upstream 500s)
+        if: ${{ !inputs.soak }}
+        run: >-
+          python loadtests/run.py --database-url postgresql://aria:aria@localhost:5432/aria_load
+          --users 20 --duration 240 --baseline-seconds 30 --version "$VERSION-chaos"
+          --chaos "40:slow_llm:30,100:flaky_llm:30,160:upstream_500:30" --out test-results/load-chaos
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load-report-${{ env.VERSION }}
+          path: |
+            test-results/load-clean/report.*
+            test-results/load-clean/*_stats.csv
+            test-results/load-clean/mem.csv
+            test-results/load-chaos/report.*
+            test-results/load-chaos/chaos.json
+            test-results/load-*/server.log

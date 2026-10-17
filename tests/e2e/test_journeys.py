@@ -52,24 +52,35 @@ def test_login_refresh_and_logout(page: Page, base_url, email):
 # 3 + 5 ─────────────────────────────────────────────────────────────────────────
 def test_equity_question_streams_progress_answer_and_chart(page: Page, base_url, email):
     new_user(page, base_url, email)
+    # A MutationObserver records every progress text as it is rendered, so a
+    # fast turn on a slow runner cannot slip between two polls.
+    page.evaluate(
+        """() => {
+            window.__aria_seen = new Set();
+            const grab = () => document.querySelectorAll('#chatbot-chat .aria-progress')
+                .forEach(e => window.__aria_seen.add(e.innerText));
+            new MutationObserver(grab).observe(document.body, {subtree: true, childList: true, characterData: true});
+        }"""
+    )
     ask(page, "Analyse TCS")
     expect(page.locator("#msg-chat textarea")).to_be_disabled(timeout=10_000)  # the turn has started
-    seen: set[str] = set()
     deadline = datetime.now().timestamp() + ANSWER_TIMEOUT / 1000
     while datetime.now().timestamp() < deadline and not page.locator("#msg-chat textarea").is_enabled():
-        # One atomic read: the progress line can vanish between a count() and
-        # an inner_text(), which then waits out its 30 s timeout.
-        seen.update(
-            page.evaluate(
-                "() => [...document.querySelectorAll('#chatbot-chat .aria-progress')].map(e => e.innerText)"
-            )
-        )
         page.wait_for_timeout(150)
+    seen = set(page.evaluate("() => [...window.__aria_seen]"))
     assert len(seen) >= 2, f"expected at least two progress states, saw {seen}"
     text = wait_answer(page, "Here is what the research shows")
     assert ERROR not in text and "Data as of" in text and "Routed to" not in text
     expect(page.locator("#chart-chat")).to_be_visible(timeout=10_000)
     assert "Chart in words." in text  # UX-03: the chart's text alternative
+    # UX-07: a collapsed Sources block with source, as-of time and confidence
+    sources = page.locator("#chatbot-chat details").last
+    expect(sources).to_be_visible(timeout=10_000)
+    assert sources.get_attribute("open") is None
+    sources.locator("summary").click()
+    expect(sources).to_contain_text("Yahoo Finance")
+    expect(sources).to_contain_text("IST")
+    expect(sources).to_contain_text("full")
 
 
 # 4 ─────────────────────────────────────────────────────────────────────────────
@@ -131,6 +142,95 @@ def test_create_list_and_cancel_an_alert(page: Page, base_url, email, db):
     ask(page, "cancel my TCS alert")
     assert ERROR not in wait_answer(page)
     assert db.execute("SELECT count(*) AS n FROM alerts WHERE user_id=%s", (uid,)).fetchone()["n"] == 0
+
+
+# 9b ────────────────────────────────────────────────────────────────────────────
+def test_alerts_tab_create_in_chat_then_edit_and_delete(page: Page, base_url, email, db):
+    """UX-06: an alert made in chat shows in the Alerts tab, can be paused, edited and deleted."""
+    new_user(page, base_url, email)
+    ask(page, "Alert me if TCS goes above 99999")
+    assert ERROR not in wait_answer(page)
+    uid = _user_id(db, email)
+    aid = db.execute("SELECT id FROM alerts WHERE user_id=%s", (uid,)).fetchone()["id"]
+
+    open_tab(page, "🔔 Alerts")
+    table = page.locator("#alerts-table")
+    expect(table).to_contain_text("TCS", timeout=ANSWER_TIMEOUT)
+    expect(table).to_contain_text("Active")
+
+    page.locator("#alert-id input").fill(str(aid))
+    page.locator("#alert-pause").click()
+    expect(page.locator("#alerts-status")).to_contain_text("paused", timeout=ANSWER_TIMEOUT)
+    expect(table).to_contain_text("Paused", timeout=ANSWER_TIMEOUT)
+    page.locator("#alert-resume").click()
+    expect(table).to_contain_text("Active", timeout=ANSWER_TIMEOUT)
+
+    page.get_by_text("Change the number").click()
+    page.locator("#alert-value input, #alert-value textarea").first.fill("88888")
+    page.locator("#alert-save").click()
+    expect(page.locator("#alerts-status")).to_contain_text("Saved", timeout=ANSWER_TIMEOUT)
+    assert db.execute("SELECT threshold FROM alerts WHERE id=%s", (aid,)).fetchone()["threshold"] == 88888
+
+    page.locator("#alert-value input, #alert-value textarea").first.fill("-5")
+    page.locator("#alert-save").click()
+    expect(page.locator("#alerts-status")).to_contain_text("isn't allowed", timeout=ANSWER_TIMEOUT)
+    assert db.execute("SELECT threshold FROM alerts WHERE id=%s", (aid,)).fetchone()["threshold"] == 88888
+
+    page.locator("#alert-delete").click()
+    expect(page.locator("#alerts-status")).to_contain_text("deleted", timeout=ANSWER_TIMEOUT)
+    assert db.execute("SELECT count(*) AS n FROM alerts WHERE user_id=%s", (uid,)).fetchone()["n"] == 0
+
+
+# 9c ────────────────────────────────────────────────────────────────────────────
+def test_chat_history_rename_search_and_export(page: Page, base_url, email):
+    """UX-09: rename the open chat, find it by what was said, export it as Markdown."""
+    new_user(page, base_url, email)
+    ask(page, "Analyse TCS")
+    wait_answer(page, "Here is what the research shows")
+    sidebar = page.locator(".chat-sidebar")
+    expect(sidebar.locator(".session-btn")).to_have_count(1, timeout=10_000)
+
+    page.get_by_text("This chat", exact=True).click()
+    page.locator("#chat-rename input, #chat-rename textarea").first.fill("TCS deep dive")
+    page.locator("#chat-rename-btn").click()
+    expect(page.locator("#chat-manage-note")).to_contain_text("Renamed", timeout=10_000)
+    expect(sidebar.locator(".session-btn").first).to_have_text("TCS deep dive", timeout=10_000)
+
+    search = page.locator("#chat-search input, #chat-search textarea").first
+    search.fill("nothingmatchesthis")
+    search.press("Enter")
+    expect(sidebar).to_contain_text("No chats match that", timeout=10_000)
+    search.fill("tcs")  # in the chat's text and its new title
+    search.press("Enter")
+    expect(sidebar.locator(".session-btn").first).to_have_text("TCS deep dive", timeout=10_000)
+
+    page.locator("#chat-export-btn").click()
+    link = page.get_by_role("link", name="⬇ Download this chat (Markdown)")
+    expect(link).to_be_visible(timeout=10_000)
+    body = page.request.get(base_url + link.get_attribute("href")).text()
+    assert body.startswith("# TCS deep dive") and "**You**" in body and "Analyse TCS" in body
+
+
+# 9d ────────────────────────────────────────────────────────────────────────────
+def test_admin_tab_is_for_admins_only(page: Page, base_url, email, db):
+    """OBS-05: a normal user has no Admin tab; an admin finds a user and sees the facts."""
+    new_user(page, base_url, email)
+    expect(page.get_by_role("tab", name="💬 Chat")).to_be_visible()
+    assert page.get_by_role("tab", name="🛠 Admin").count() == 0
+
+    db.execute("UPDATE users SET is_admin=TRUE WHERE email=%s", (email,))
+    page.reload()
+    expect(page.get_by_role("tab", name="🛠 Admin")).to_be_visible(timeout=15_000)
+    open_tab(page, "🛠 Admin")
+    page.locator("#admin-email input, #admin-email textarea").first.fill(email)
+    page.locator("#admin-find").click()
+    expect(page.locator("#admin-card")).to_contain_text(email, timeout=10_000)
+    expect(page.locator("#admin-card")).to_contain_text("free messages today")
+    page.locator("#admin-turns").click()
+    expect(page.locator("#admin-detail")).to_be_visible()
+    expect(page.locator("#admin-flags")).to_contain_text("signups_open", timeout=10_000)
+    page.locator("#admin-disable").click()
+    expect(page.locator("#admin-detail")).to_contain_text("can't disable your own account", timeout=10_000)
 
 
 # 10 ────────────────────────────────────────────────────────────────────────────

@@ -5,14 +5,13 @@ openai>=1.0.0
 
 # ── Crypto (encrypting user-supplied LLM API keys, utils/crypto.py) ──────────
 cryptography>=50.0.2
+argon2-cffi>=23.1.0              # password hashing, argon2id (SEC-07)
 
 # ── Agentic research graph ────────────────────────────────────────────────────
 langgraph>=0.2.0
-langchain-core>=0.3.0
-langchain-groq>=0.2.0
-langchain-google-genai>=2.0.0
 langgraph-checkpoint-postgres>=2.0.0
 psycopg[binary,pool]>=3.1.0      # the one Postgres driver: app pool, checkpointer, Alembic (REL-04)
+psycopg-pool>=3.2.0              # imported directly by utils/db.py and graph/checkpointer.py
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 yfinance>=0.2.40
@@ -22,7 +21,6 @@ pyarrow>=26.0.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 feedparser>=6.0.11
-lxml>=5.0.0
 
 # ── PDF processing ────────────────────────────────────────────────────────────
 pdfplumber>=0.10.0
@@ -36,19 +34,28 @@ ta>=0.11.0
 # ── Charts ────────────────────────────────────────────────────────────────────
 plotly>=5.18.0
 
-# ── UI ────────────────────────────────────────────────────────────────────────
+# ── UI and web ────────────────────────────────────────────────────────────────
 gradio>=6.16.0
+fastapi>=0.115.0                 # server.py and web/ routes (also a gradio dependency)
+starlette>=0.40.0                # pure-ASGI middleware (server.py, web/security_headers.py)
+uvicorn>=0.30.0                  # serve()
+jinja2>=3.1.0                    # web/ server-rendered pages
 
 # ── Sentiment ─────────────────────────────────────────────────────────────────
 vaderSentiment>=3.3.2
 
 # ── Database ──────────────────────────────────────────────────────────────────
 rapidfuzz>=3.6.0                 # instrument-name fuzzy matching (VAL-02)
-alembic>=1.13.0                  # versioned schema migrations (ARCH-01); pulls in SQLAlchemy
+alembic>=1.13.0                  # versioned schema migrations (ARCH-01)
+sqlalchemy>=2.0.0                # migrations/env.py
 
 # ── Utils ─────────────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
+pydantic>=2.9.0                  # schemas everywhere (graph/schemas.py, tools/data/contracts.py, config.py)
 pydantic-settings>=2.6.0         # typed, validated configuration (ARCH-03)
+httpx>=0.27.0                    # utils/url_safety.py
+urllib3>=2.0.0                   # utils/http.py retry policy
+langsmith>=0.1.0                 # utils/tracing.py (only touched when tracing is on)
 cachetools>=5.5.0                # bounded TTL caches: sessions (SEC-04), orchestrators (REL-03)
 prometheus-client>=0.26.0        # /metrics for dashboards and alerts (OBS-03)
 pytz>=2024.1

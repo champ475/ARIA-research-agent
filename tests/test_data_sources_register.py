@@ -7,10 +7,11 @@ import re
 from pathlib import Path
 
 import config
+from ui import theme
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTER = (ROOT / "docs" / "DATA_SOURCES.md").read_text(encoding="utf-8")
-CODE_DIRS = ["tools", "utils", "graph", "agents", "web", "scripts"]
+CODE_DIRS = ["tools", "utils", "graph", "agents", "web", "scripts", "services", "ui"]
 CODE_FILES = ["app.py", "server.py", "worker.py"]
 # `source=` inside an http.get/post call (arguments may nest parentheses two
 # deep, e.g. URL.format(d=d.strftime(...))), or the first argument of a
@@ -70,8 +71,5 @@ ATTRIBUTION = "Data: Yahoo Finance (via yfinance), NSE, BSE, AMFI, mfapi.in, Goo
 
 
 def test_attribution_line_is_the_same_in_app_readme_and_register():
-    from tests.conftest import import_app_without_side_effects
-
-    app = import_app_without_side_effects()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert ATTRIBUTION in app.FOOTER_HTML and ATTRIBUTION in readme and ATTRIBUTION in REGISTER
+    assert ATTRIBUTION in theme.FOOTER_HTML and ATTRIBUTION in readme and ATTRIBUTION in REGISTER

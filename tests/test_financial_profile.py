@@ -70,9 +70,9 @@ def test_nothing_invalid_reaches_the_db_through_the_planning_node():
 
     for case in CASES:
         with (
-            patch("graph.nodes.communication_layer.profile_get", return_value={}),
-            patch("graph.nodes.communication_layer.profile_upsert", side_effect=fake_upsert),
-            patch("graph.nodes.communication_layer._planning_build_strategy", return_value="plan"),
+            patch("graph.nodes.planning_node.profile_get", return_value={}),
+            patch("graph.nodes.planning_node.profile_upsert", side_effect=fake_upsert),
+            patch("graph.nodes.planning_node._planning_build_strategy", return_value="plan"),
         ):
             node = build_communication_layer_node(_StubLLM(case["llm"]))
             node({"intent": "planning", "query": case["say"], "user_id": 1, "conclusions": []})

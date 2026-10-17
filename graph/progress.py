@@ -26,6 +26,9 @@ NODE_LABELS = {
     "Verification": "Verifying the numbers",
     "ConclusionBuilder": "Drawing conclusions",
     "CommunicationLayer": "Writing the answer",
+    "PlanningNode": "Working on your plan",
+    "ReportManagementNode": "Looking up your reports",
+    "OutputFiles": "Saving the report",
 }
 
 

@@ -28,6 +28,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 import config
 from utils import lifecycle
 from web import account_routes, auth_routes, download_routes, ops_routes
+from web.security_headers import SecurityHeadersMiddleware
 from web.session import COOKIE_NAME, current_session, gradio_auth_dependency
 
 log = logging.getLogger(__name__)
@@ -96,7 +97,8 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(demo: gr.Blocks | None = None) -> FastAPI:
     """The production ASGI app. `demo` defaults to app.build_ui()."""
-    from app import APP_CSS, APP_JS, build_ui
+    from app import build_ui
+    from ui.theme import APP_CSS, APP_JS
 
     api = FastAPI(title="ARIA", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
     api.include_router(ops_routes.router)
@@ -104,6 +106,7 @@ def create_app(demo: gr.Blocks | None = None) -> FastAPI:
     api.include_router(account_routes.router)
     api.include_router(download_routes.router)
     api.add_middleware(LoginRedirectMiddleware)
+    api.add_middleware(SecurityHeadersMiddleware)  # outermost: covers redirects and errors too
     demo = demo if demo is not None else build_ui()
     kwargs: dict[str, Any] = {
         "auth_dependency": gradio_auth_dependency,

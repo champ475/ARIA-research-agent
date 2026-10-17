@@ -15,10 +15,12 @@ class _FakeOrch:
 
 
 @pytest.fixture
-def fresh_cache(app_module, monkeypatch):
-    monkeypatch.setattr(app_module, "_orchestrators", TTLCache(maxsize=3, ttl=1800))
+def fresh_cache(monkeypatch):
+    from services import chat as chat_svc
+
+    monkeypatch.setattr(chat_svc, "_orchestrators", TTLCache(maxsize=3, ttl=1800))
     with patch("agents.graph_orchestrator.GraphOrchestrator", _FakeOrch):
-        yield app_module
+        yield chat_svc
 
 
 def test_one_instance_per_conversation(fresh_cache):
@@ -51,7 +53,7 @@ def test_compiled_graph_is_shared_per_provider_config():
     go.clear_graph_cache()
     with (
         patch.object(go, "build_graph", side_effect=lambda **kw: MagicMock()) as bg,
-        patch.object(go, "get_postgres_checkpointer", return_value=None),
+        patch.object(go, "get_turn_checkpointer", return_value=None),
     ):
         trial_a, trial_b = go.shared_graph(None), go.shared_graph(None)
         byo = go.shared_graph({"provider": "openai_compatible", "api_key": "k", "model": "m"})

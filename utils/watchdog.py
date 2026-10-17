@@ -18,6 +18,7 @@ Rules (docs/RUNBOOK.md has one section per anchor):
   db_connections      > 80% of Postgres connections in use
   db_size             database > 80% of DB_SIZE_LIMIT_MB
   fundamentals_stale  the screener's snapshot is older than FUNDAMENTALS_MAX_AGE_HOURS
+  retention_overdue   a table still holds rows older than its retention period (hourly check)
 """
 
 from __future__ import annotations
@@ -188,7 +189,21 @@ def _fundamentals(now: datetime) -> list[Firing]:
     return []
 
 
-CHECKS: list[Check] = [_error_rate, _latency, _jobs, _llm, _database, _fundamentals]
+def _retention(now: datetime) -> list[Firing]:
+    if now.minute >= 5:  # the scans are cheap but not free: once an hour is plenty
+        return []
+    from utils.retention import report
+
+    late = [r for r in report(now) if r["ok"] is False]
+    if not late:
+        return []
+    detail = "; ".join(f"{r['class']}: oldest row {r['age_days']} days, limit {r['keep_days']}" for r in late)
+    return [
+        Firing("retention_overdue", "Data is older than its retention period", detail, "retention-overdue")
+    ]
+
+
+CHECKS: list[Check] = [_error_rate, _latency, _jobs, _llm, _database, _fundamentals, _retention]
 
 
 # ── notification ──────────────────────────────────────────────────────────────

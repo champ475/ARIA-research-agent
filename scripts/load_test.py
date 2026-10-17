@@ -36,6 +36,18 @@ QUESTIONS = [
 ]
 
 
+def _last_message(update) -> str:
+    """The newest chat message text in one streamed update (the Chatbot output is the one list
+    of {role, content} dicts; its position moves when outputs change)."""
+    for part in update if isinstance(update, (list, tuple)) else [update]:
+        if isinstance(part, list) and part and isinstance(part[-1], dict) and "content" in part[-1]:
+            content = part[-1]["content"]
+            if isinstance(content, list):
+                content = "".join(c.get("text", "") for c in content if isinstance(c, dict))
+            return str(content)
+    return ""
+
+
 def _percentile(values: list[float], pct: float) -> float:
     if not values:
         return float("nan")
@@ -87,8 +99,7 @@ def _one_user(
         job = client.submit(question, api_name=chat_api)
         first = None
         for update in job:
-            history = update[2] if isinstance(update, (list, tuple)) and len(update) > 2 else None
-            text = (history or [{}])[-1].get("content", "") if history else ""
+            text = _last_message(update)
             if text and "aria-dot" not in str(text):
                 first = time.monotonic() - t0
                 break
