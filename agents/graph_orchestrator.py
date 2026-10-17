@@ -73,7 +73,7 @@ from typing import Any
 from langgraph.types import Command
 
 import prompts
-from agents.conversation_memory import ConversationMemory, strip_badge
+from agents.conversation_memory import ConversationMemory, strip_badge, strip_sources
 from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT, TRIAL_DAILY_TOKENS
 from graph.analysis_tools import analysis_notes
@@ -89,6 +89,7 @@ from graph.grounding import record as record_grounding
 from graph.grounding import unverified_note
 from graph.guardrails import check_input, finalize
 from graph.progress import ProgressUpdate, run_with_progress
+from graph.provenance import footnote_source, sources_block
 
 log = logging.getLogger(__name__)
 
@@ -356,7 +357,9 @@ class GraphOrchestrator:
         try:
             rows = chat_load(self._user_id, self._session_id)
             if rows:
-                self._memory.load([{"role": m["role"], "content": strip_badge(m["content"])} for m in rows])
+                self._memory.load(
+                    [{"role": m["role"], "content": strip_sources(strip_badge(m["content"]))} for m in rows]
+                )
             pending = session_pending_get(self._user_id, self._session_id)
         except Exception:
             log.warning("[GraphOrchestrator] could not restore session state", exc_info=True)
@@ -689,15 +692,20 @@ class GraphOrchestrator:
                     text += unverified_note(grounded.unsupported)
                 fundamental_payload = result.get("pending_fundamental_payload")
                 if fundamental_payload:
-                    text = text + cited_footnotes(text, fundamental_payload)
-                text = header + finalize(text + as_of_note, result) + gaps_note
-                self._memory.add_assistant(text)
+                    footnotes = cited_footnotes(text, fundamental_payload)
+                    if footnotes:  # UX-07: say where the cited ratios came from
+                        footnotes += footnote_source(result, (result.get("entities") or [None])[0])
+                    text = text + footnotes
+                text = header + finalize(text + as_of_note, result) + sources_block(result) + gaps_note
+                self._memory.add_assistant(strip_sources(text))
                 yield text, chart, pdf_url, md_url, csv_url, tab_used
                 return
 
             report = result.get("final_report", "") or ""
-            text = (header + finalize(report + as_of_note, result) if report else "") + gaps_note
-            self._memory.add_assistant(text)
+            text = (
+                header + finalize(report + as_of_note, result) + sources_block(result) if report else ""
+            ) + gaps_note
+            self._memory.add_assistant(strip_sources(text))
             yield text, chart, pdf_url, md_url, csv_url, tab_used
         except LLMProvidersExhausted as e:
             from agents.llm_client import format_exhausted_message

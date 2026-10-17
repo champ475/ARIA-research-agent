@@ -30,6 +30,15 @@ def strip_badge(text: str) -> str:
     return _BADGE_RE.sub("", text or "", count=1)
 
 
+# The collapsible "Sources" block under an answer (graph/provenance.py, UX-07) is
+# provenance for the reader, not conversation: the model never needs it as history.
+_SOURCES_RE = re.compile(r"\n*<details><summary>Sources \(\d+\)</summary>.*?</details>", re.DOTALL)
+
+
+def strip_sources(text: str) -> str:
+    return _SOURCES_RE.sub("", text or "")
+
+
 # The one summarisation prompt (ARCH-03): every provider's overflow summariser
 # and the orchestrator's history summary format it with old= and chunk=.
 SUMMARY_PROMPT = prompts.get("memory.summary")

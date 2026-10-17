@@ -70,6 +70,14 @@ def test_equity_question_streams_progress_answer_and_chart(page: Page, base_url,
     assert ERROR not in text and "Data as of" in text and "Routed to" not in text
     expect(page.locator("#chart-chat")).to_be_visible(timeout=10_000)
     assert "Chart in words." in text  # UX-03: the chart's text alternative
+    # UX-07: a collapsed Sources block with source, as-of time and confidence
+    sources = page.locator("#chatbot-chat details").last
+    expect(sources).to_be_visible(timeout=10_000)
+    assert sources.get_attribute("open") is None
+    sources.locator("summary").click()
+    expect(sources).to_contain_text("Yahoo Finance")
+    expect(sources).to_contain_text("IST")
+    expect(sources).to_contain_text("full")
 
 
 # 4 ─────────────────────────────────────────────────────────────────────────────
