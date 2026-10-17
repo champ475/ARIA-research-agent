@@ -25,9 +25,11 @@ which streams it; every other domain gets its finished text from here.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 
 import pandas as pd
+from cachetools import TTLCache
 
 import prompts
 from agents.llm_client import LLMClient
@@ -100,6 +102,42 @@ def _grounded_ask(client: LLMClient, prompt: str) -> str:
             answer += unverified_note(result.unsupported)
     record_grounding(result)
     return answer
+
+
+# TEST-06: building the candlestick figure (plotly validates every property) was about
+# two thirds of the CPU a whole equity turn used, so a load run saturated one core at
+# ~1.5 turns/s. The same price history gives the same chart, so the JSON is reused for a
+# few minutes; the key is the series itself (symbol, length, first and last bar).
+_CHART_TTL_SECONDS = 600
+_chart_cache: TTLCache = TTLCache(maxsize=256, ttl=_CHART_TTL_SECONDS)
+_chart_lock = threading.Lock()
+
+
+def clear_chart_cache() -> None:
+    with _chart_lock:
+        _chart_cache.clear()
+
+
+def _chart_json(ohlcv: pd.DataFrame, entity: str) -> str | None:
+    """The price chart as Plotly JSON for this symbol's history, or None if there is too little."""
+    key = (
+        entity,
+        len(ohlcv),
+        str(ohlcv.index[0]),
+        str(ohlcv.index[-1]),
+        float(ohlcv["Close"].iloc[0]),
+        float(ohlcv["Close"].iloc[-1]),
+    )
+    with _chart_lock:
+        hit = _chart_cache.get(key)
+    if hit is not None:
+        return hit
+    fig = candlestick(ohlcv, entity)
+    chart = fig.to_json() if fig is not None else None
+    if chart is not None:
+        with _chart_lock:
+            _chart_cache[key] = chart
+    return chart
 
 
 def _confidence_summary(conclusions: list[Conclusion]) -> dict:
@@ -234,8 +272,7 @@ def build_communication_layer_node(
         if primary_entity:
             ohlcv = _find_ohlcv_evidence(evidence, primary_entity)
             if isinstance(ohlcv, pd.DataFrame) and not ohlcv.empty:
-                fig = candlestick(ohlcv, primary_entity)
-                chart = fig.to_json() if fig is not None else None
+                chart = _chart_json(ohlcv, primary_entity)
 
         if _is_streamable(intent, intents):
             # Chart doesn't depend on the LLM call, so it's still available

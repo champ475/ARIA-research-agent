@@ -155,6 +155,8 @@ class Settings(BaseSettings):
     ARIA_FAKE_DATA: bool = False
     # TEST-04: a deterministic LLM (agents/providers/fake_llm.py) for e2e tests and demos.
     ARIA_FAKE_LLM: bool = False
+    # TEST-06: a JSON file the fakes read for injected latency / failures (utils/faults.py).
+    ARIA_FAULTS_FILE: str = ""
     # Evidence confidence when a fallback source stood in (e.g. bhavcopy for a quote).
     DEGRADED_CONFIDENCE: float = Field(0.6, gt=0, lt=1)
     # Rupees per US dollar, for the per-turn cost estimate.
@@ -455,6 +457,7 @@ MAX_ENTITIES_PER_TURN = settings.MAX_ENTITIES_PER_TURN
 TRIAL_DAILY_TOKENS = settings.TRIAL_DAILY_TOKENS
 ARIA_FAKE_DATA = settings.ARIA_FAKE_DATA
 ARIA_FAKE_LLM = settings.ARIA_FAKE_LLM
+ARIA_FAULTS_FILE = settings.ARIA_FAULTS_FILE
 FUNDAMENTALS_MAX_AGE_HOURS = settings.FUNDAMENTALS_MAX_AGE_HOURS
 BACKTEST_COST_PCT = settings.BACKTEST_COST_PCT
 DEGRADED_CONFIDENCE = settings.DEGRADED_CONFIDENCE

@@ -159,7 +159,7 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - run: pip install "bandit[toml]>=1.7.9" "pip-audit>=2.7.0"
       - name: bandit (static security scan)
-        run: bandit -c pyproject.toml -r agents graph tools utils web app.py server.py scripts -q
+        run: bandit -c pyproject.toml -r agents graph tools utils web services ui loadtests app.py server.py worker.py scripts -q
       - name: pip-audit (known-vulnerable dependencies)
         run: pip-audit -r requirements-dev.lock --disable-pip --require-hashes --progress-spinner off
       - name: gitleaks (committed secrets)

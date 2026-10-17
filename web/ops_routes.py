@@ -55,7 +55,10 @@ def _check_database() -> str | None:
 
 
 def _llm_configured() -> bool:
-    return bool(config.GROQ_API_KEYS or config.GEMINI_API_KEY or config.LOCAL_LLM_BASE_URL)
+    # ARIA_FAKE_LLM (tests, demos, load runs) is refused when APP_ENV=prod, so it can't mask a missing key there.
+    return bool(
+        config.GROQ_API_KEYS or config.GEMINI_API_KEY or config.LOCAL_LLM_BASE_URL or config.ARIA_FAKE_LLM
+    )
 
 
 @router.get("/readyz")

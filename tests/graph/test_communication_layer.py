@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 from graph.data_questions import NO_LIVE_DATA_INSTRUCTION
 from graph.nodes.communication_layer import build_communication_layer_node
@@ -24,6 +25,15 @@ def build_report_turn_node(client):
         return out
 
     return run
+
+
+@pytest.fixture(autouse=True)
+def _fresh_chart_cache():
+    from graph.nodes.communication_layer import clear_chart_cache
+
+    clear_chart_cache()
+    yield
+    clear_chart_cache()
 
 
 def REPORT_FOOTED(body: str) -> str:  # noqa: N802 — reads like a constant at call sites
@@ -744,3 +754,52 @@ class TestCommunicationLayerReportManagement:
                 }
             )
         assert result["final_report"] == REPORT_FOOTED("Full IC report body")
+
+
+class TestChartCache:
+    """TEST-06: the same price history reuses its chart instead of rebuilding the figure."""
+
+    @staticmethod
+    def _state(closes, entity="TCS"):
+        df = pd.DataFrame(
+            {"Open": closes, "High": closes, "Low": closes, "Close": closes, "Volume": [1] * len(closes)}
+        )
+        ev = {
+            "id": "e",
+            "tool": "fetch_ohlcv",
+            "entity": entity,
+            "evidence_type": "price_ohlcv",
+            "payload": df,
+            "source": "fetch_ohlcv",
+            "timestamp": None,
+            "confidence": 1.0,
+            "citation_key": "price_ohlcv",
+        }
+        return {"conclusions": [_conclusion()], "objective": "x", "entities": [entity], "evidence": [ev]}
+
+    def test_second_turn_on_the_same_history_does_not_rebuild_the_figure(self):
+        fig = MagicMock()
+        fig.to_json.return_value = '{"data": [1]}'
+        node = build_communication_layer_node(_StubClient("t"))
+        with patch("graph.nodes.communication_layer.candlestick", return_value=fig) as build:
+            first = node(self._state([1, 2, 3]))
+            second = node(self._state([1, 2, 3]))
+        assert build.call_count == 1
+        assert first["chart_html"] == second["chart_html"] == '{"data": [1]}'
+
+    def test_a_new_bar_or_another_symbol_gets_its_own_chart(self):
+        fig = MagicMock()
+        fig.to_json.return_value = "{}"
+        node = build_communication_layer_node(_StubClient("t"))
+        with patch("graph.nodes.communication_layer.candlestick", return_value=fig) as build:
+            node(self._state([1, 2, 3]))
+            node(self._state([1, 2, 4]))  # a new close
+            node(self._state([1, 2, 3], entity="INFY"))  # a different company
+        assert build.call_count == 3
+
+    def test_too_little_history_is_not_cached_as_a_chart(self):
+        node = build_communication_layer_node(_StubClient("t"))
+        with patch("graph.nodes.communication_layer.candlestick", return_value=None) as build:
+            assert node(self._state([1, 2]))["chart_html"] is None
+            node(self._state([1, 2]))
+        assert build.call_count == 2

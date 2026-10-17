@@ -42,7 +42,7 @@ repos:
       # Same scope and config as CI's security job.
       - id: bandit
         name: bandit
-        entry: python scripts/in_venv.py bandit -c pyproject.toml -r agents graph tools utils web app.py server.py scripts -q
+        entry: python scripts/in_venv.py bandit -c pyproject.toml -r agents graph tools utils web services ui loadtests app.py server.py worker.py scripts -q
         language: python
         pass_filenames: false
         types: [python]
