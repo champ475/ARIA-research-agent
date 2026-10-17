@@ -215,10 +215,13 @@ def resolve_mentions(query: str) -> EntityResult:
     return result
 
 
-def add_llm_mentions(result: EntityResult, llm_mentions: list) -> EntityResult:
+def add_llm_mentions(result: EntityResult, llm_mentions: list, query: str = "") -> EntityResult:
     """Fold in the company mentions QueryAnalyzer's LLM found, resolving each
-    against the master. Mentions already covered are skipped."""
+    against the master. Mentions already covered are skipped, including a word of
+    a name the deterministic pass already matched: the model's "Relaince" next to
+    the resolved "Relaince industries" must not ask "which Relaince?"."""
     covered = {normalise_name(u["query"]) for u in result.unresolved}
+    spans = " | ".join(normalise_name(m) for m in extract_mentions(query)) if result.entities else ""
     extra: list[str] = []
     for raw in llm_mentions or []:
         if not isinstance(raw, str):
@@ -226,7 +229,7 @@ def add_llm_mentions(result: EntityResult, llm_mentions: list) -> EntityResult:
         mention = raw.strip()
         if not mention or all(_skip(w) for w in mention.split()):
             continue
-        if normalise_name(mention) in covered:
+        if normalise_name(mention) in covered or (spans and normalise_name(mention) in spans):
             continue
         r = resolve(mention)
         if r.status == "found" and r.symbol in result.entities:

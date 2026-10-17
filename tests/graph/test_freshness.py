@@ -117,3 +117,18 @@ def test_index_levels_are_dated_and_marked_as_the_last_session_when_closed():
     }
     assert "Markets are closed today" in closed_today_header(state, now=sat)
     assert "Data as of 16 Oct 2026" in freshness_note(state, now=sat)
+
+
+def test_screen_results_are_dated_by_their_snapshot_not_the_run_time():
+    from datetime import UTC, datetime
+
+    from graph.nodes import execute_task as et
+
+    rows = [
+        {"symbol": "A", "as_of": "2026-10-16T16:00:00+00:00"},
+        {"symbol": "B", "as_of": "2026-10-15T16:00:00+00:00"},
+    ]
+    fetched = datetime(2026, 10, 17, 21, 0, tzinfo=UTC)
+    assert et._as_of(rows, fetched, "screener_results") == datetime(2026, 10, 15, 16, 0, tzinfo=UTC)
+    assert et._as_of([{"symbol": "A", "as_of": None}], fetched, "screener_results") == fetched
+    assert et._as_of([], fetched, "screener_results") == fetched

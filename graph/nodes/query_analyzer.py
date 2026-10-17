@@ -205,7 +205,7 @@ def build_query_analyzer_node(
         )
         classification = _parse(raw)
         if not chosen:
-            add_llm_mentions(resolved, classification["companies"])
+            add_llm_mentions(resolved, classification["companies"], query)
         unresolved = list(resolved.unresolved)
         if resolved.mentioned:
             entities = resolved.entities

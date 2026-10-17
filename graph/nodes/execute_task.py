@@ -150,6 +150,17 @@ def _as_of(payload: Any, fetched_at: datetime, evidence_type: str = "") -> datet
         now = datetime.now(UTC)
         if isinstance(t, (int, float)) and not isinstance(t, bool) and 0 < t <= now.timestamp():
             return datetime.fromtimestamp(t, UTC)
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict) and "as_of" in payload[0]:
+        # A screen is dated by the snapshot its rows came from, not by the moment it was run.
+        stamps = []
+        for row in payload[:500]:
+            try:
+                stamp = datetime.fromisoformat(str(row.get("as_of")))
+            except (TypeError, ValueError):
+                continue
+            stamps.append(stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC))
+        if stamps:
+            return min(stamps)
     if evidence_type in _LAST_SESSION_EVIDENCE:
         from utils.market_clock import last_close
 

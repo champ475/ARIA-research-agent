@@ -319,3 +319,15 @@ def test_two_tabs_keep_separate_conversations(page: Page, base_url, email):
     a, b = page.locator("#chatbot-chat").inner_text(), other.locator("#chatbot-chat").inner_text()
     assert "TCS" in a and "WIPRO" not in a
     assert "WIPRO" in b and "Analyse TCS" not in b
+
+
+def test_the_box_is_empty_and_has_the_cursor_after_an_answer(page: Page, base_url, email):
+    """Live run 2026-10-18: the text stayed in the box and the next message went out glued to it."""
+    new_user(page, base_url, email)
+    ask(page, "Analyse TCS")
+    wait_answer(page, "Here is what the research shows")
+    box = page.locator("#msg-chat textarea")
+    expect(box).to_have_value("")
+    expect(box).to_be_focused()
+    page.keyboard.type("and the RSI?")  # no click needed
+    expect(box).to_have_value("and the RSI?")

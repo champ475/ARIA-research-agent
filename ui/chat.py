@@ -92,11 +92,11 @@ CHAT_PLACEHOLDER = (
 # sent. "" after "" is dropped, so the text the user typed stayed in the box through the whole turn
 # (live smoke test 2026-10-18: "yes" and the previous question were still there, and the next
 # message went out glued to it). A single space while busy makes the final "" a real change.
-# Client-side step run before the event's function: it passes the inputs through unchanged and, a
+# Client-side step run before the event's function (args[3] is the message): it passes the inputs through unchanged and, a
 # moment later, empties the textbox the way typing would (native setter plus an input event, which
 # Gradio's bound value follows).
 CLEAR_BOX_JS = (
-    "(...args) => { setTimeout(() => { const t = document.querySelector('#__BOX__ textarea'); "
+    "(...args) => { window.__ariaSent = args[3]; setTimeout(() => { const t = document.querySelector('#__BOX__ textarea'); "
     "if (t) { const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; "
     "set.call(t, ''); t.dispatchEvent(new Event('input', {bubbles: true})); } }, 30); return args; }"
 )
@@ -773,7 +773,7 @@ def build_chat_tab(user_state: gr.State):
     # After the turn: make sure the box is empty (a second, deterministic clear) and give it the cursor.
     refocus = (
         "() => { setTimeout(() => { const t = document.querySelector('#msg-" + tab_id + " textarea'); "
-        "if (!t) return; if (t.value) { const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; "
+        "if (!t) return; if (t.value && t.value === window.__ariaSent) { const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; "
         "set.call(t, ''); t.dispatchEvent(new Event('input', {bubbles: true})); } t.focus(); }, 250); }"
     )
     msg_box.submit(_respond, chat_inputs, outputs, **send_kwargs).then(
