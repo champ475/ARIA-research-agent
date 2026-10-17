@@ -38,7 +38,7 @@ plotly>=5.18.0
 gradio>=6.16.0
 fastapi>=0.115.0                 # server.py and web/ routes (also a gradio dependency)
 starlette>=0.40.0                # pure-ASGI middleware (server.py, web/security_headers.py)
-uvicorn>=0.30.0                  # serve()
+uvicorn>=0.54.0                  # serve()
 jinja2>=3.1.0                    # web/ server-rendered pages
 
 # ── Sentiment ─────────────────────────────────────────────────────────────────
