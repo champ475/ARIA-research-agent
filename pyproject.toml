@@ -54,7 +54,8 @@ known-first-party = ["agents", "graph", "tools", "utils", "services", "config", 
 extend_exclude = ["tests", "evals", "venv", "docs", "ops", "loadtests"]
 [tool.deptry.per_rule_ignores]
 DEP002 = ["pyarrow"]        # the Parquet engine pandas loads by name (cache, bhavcopy history)
-DEP003 = ["gradio_client"]  # scripts/load_test.py; installed and version-pinned by gradio
+DEP001 = ["openpyxl"]       # scripts/capacity_model.py writes the OPS-05 workbook; a dev tool (requirements-dev.txt)
+DEP003 = ["gradio_client", "openpyxl"]  # gradio_client: scripts/load_test.py, pinned by gradio; openpyxl: see DEP001
 
 [tool.vulture]
 # ARCH-07: `vulture` (CI) reports nothing at 80% confidence. Tests are skipped: fixtures and
