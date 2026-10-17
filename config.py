@@ -198,6 +198,19 @@ class Settings(BaseSettings):
     def _strip(cls, v: object) -> object:
         return v.strip() if isinstance(v, str) else v
 
+    @field_validator(
+        "RUN_JOBS_IN_APP",
+        "COOKIE_SECURE",
+        "REQUIRE_EMAIL_VERIFICATION",
+        "TURN_DEADLINE_SECONDS",
+        mode="before",
+    )
+    @classmethod
+    def _empty_is_unset(cls, v: object) -> object:
+        # `NAME=` (an uncommented .env.example line) means "use the default",
+        # not an invalid boolean/number that stops the app at boot.
+        return None if isinstance(v, str) and not v.strip() else v
+
     @property
     def groq_api_keys(self) -> list[str]:
         keys = [
