@@ -414,11 +414,25 @@ class GraphOrchestrator:
             "api_key": api_key,
         }
 
+    def _is_admin(self) -> bool:
+        """Admins (OBS-05) are exempt from the trial daily limits. Read fresh
+        each message so a revoked admin is limited again at once; a database
+        error means "not an admin" (the limit applies)."""
+        from utils.db import user_is_admin
+
+        try:
+            return user_is_admin(self._user_id)
+        except Exception:
+            log.warning("[GraphOrchestrator] admin check failed; applying the trial limit", exc_info=True)
+            return False
+
     def _trial_quota_exceeded(self) -> bool:
         """Only meaningful when self._provider_config is None (no BYO key)
         — checked fresh every message, unlike the BYO config above, since
         the daily count genuinely changes turn to turn."""
         if self._provider_config is not None:
+            return False
+        if self._is_admin():
             return False
         from datetime import datetime
 
