@@ -34,7 +34,29 @@ PAIRS = [
 PLATFORM = ["--python-platform", "x86_64-manylinux_2_28", "--python-version", "3.11"]
 
 
-def _compile(src: str, out: Path, constraints: list[str], upgrade: list[str], upgrade_all: bool) -> None:
+def _norm(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
+
+
+def _without(lock: Path, packages: list[str], tmp: Path) -> Path:
+    """A copy of `lock` minus the pins (and their hash lines) of `packages`.
+    A lock is a hard constraint, so `--upgrade X` (or a raised floor such as
+    Dependabot's `X>=new`) can't resolve while the old `X==old` pin is in it."""
+    drop = {_norm(p) for p in packages}
+    kept, skipping = [], False
+    for line in lock.read_text(encoding="utf-8").splitlines():
+        if not line.startswith((" ", "\t")):
+            skipping = "==" in line and _norm(line.split("==", 1)[0]) in drop
+        if not skipping:
+            kept.append(line)
+    out = tmp / f"constraint-{lock.name}"
+    out.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    return out
+
+
+def _compile(
+    src: str, out: Path, constraints: list[str], upgrade: list[str], upgrade_all: bool, tmp: Path
+) -> None:
     uv = shutil.which("uv")
     if not uv:
         sys.exit("uv is not installed: pip install uv")
@@ -45,7 +67,7 @@ def _compile(src: str, out: Path, constraints: list[str], upgrade: list[str], up
     else:
         for c in constraints:
             if (ROOT / c).exists():
-                cmd += ["-c", c]
+                cmd += ["-c", str(_without(ROOT / c, upgrade, tmp)) if upgrade else c]
         for pkg in upgrade:
             cmd += ["--upgrade-package", pkg]
     cmd += ["-o", str(out)]
@@ -75,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             # The dev lock is also constrained by the runtime lock, so the two
             # never disagree on a shared package.
             constraints = [lock] if lock == "requirements.lock" else ["requirements.lock", lock]
-            _compile(src, out, constraints, args.upgrade, args.upgrade_all)
+            _compile(src, out, constraints, args.upgrade, args.upgrade_all, Path(tmp))
             if args.check:
                 old = (ROOT / lock).read_text(encoding="utf-8").splitlines()
                 new = out.read_text(encoding="utf-8").splitlines()
