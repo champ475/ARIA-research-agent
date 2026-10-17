@@ -70,6 +70,99 @@ _DATAFRAME_EVIDENCE_TYPES = {
 }
 
 
+# Computed fundamentals (tools/analysis/fundamental.py): how each field reads to a user.
+# unit: "x" a plain multiple, "frac" a decimal shown as a percentage, "pct" already a
+# percentage, "inr" a rupee amount, "crore" an amount shown in rupees crore.
+_FIELD_LABELS: dict[str, tuple[str, str]] = {
+    "pe": ("P/E (trailing)", "x"),
+    "pb": ("P/B", "x"),
+    "ps": ("Price/Sales", "x"),
+    "ev_ebitda": ("EV/EBITDA", "x"),
+    "peg": ("PEG", "x"),
+    "de": ("Debt/Equity", "x"),
+    "current_ratio": ("Current ratio", "x"),
+    "quick_ratio": ("Quick ratio", "x"),
+    "beta": ("Beta", "x"),
+    "roe": ("ROE", "frac"),
+    "roa": ("ROA", "frac"),
+    "net_margin": ("Net margin", "frac"),
+    "op_margin": ("Operating margin", "frac"),
+    "ebitda_margin": ("EBITDA margin", "frac"),
+    "gross_margin": ("Gross margin", "frac"),
+    "payout": ("Payout ratio", "frac"),
+    "rev_growth": ("Revenue growth (YoY)", "frac"),
+    "earn_growth": ("Earnings growth (YoY)", "frac"),
+    "nim_proxy": ("Net interest margin (proxy: net interest income / assets)", "frac"),
+    "roce": ("ROCE", "pct"),
+    "div_yield": ("Dividend yield", "pct"),
+    "analyst_upside": ("Analyst upside to mean target", "pct"),
+    "eps": ("EPS (TTM)", "inr"),
+    "book_value": ("Book value per share", "inr"),
+    "price": ("Price", "inr"),
+    "target_mean": ("Analyst mean target", "inr"),
+    "target_high": ("Analyst high target", "inr"),
+    "target_low": ("Analyst low target", "inr"),
+    "w52_high": ("52-week high", "inr"),
+    "w52_low": ("52-week low", "inr"),
+    "mktcap": ("Market cap", "crore"),
+    "ev": ("Enterprise value", "crore"),
+    "revenue": ("Revenue (latest year)", "crore"),
+    "net_income": ("Net income (latest year)", "crore"),
+    "ebitda": ("EBITDA (latest year)", "crore"),
+    "ebit": ("EBIT (latest year)", "crore"),
+    "fcf": ("Free cash flow (latest year)", "crore"),
+    "operating_cf": ("Operating cash flow (latest year)", "crore"),
+    "total_assets": ("Total assets", "crore"),
+    "total_equity": ("Shareholders' equity", "crore"),
+    "total_debt": ("Total debt", "crore"),
+    "cash": ("Cash and equivalents", "crore"),
+}
+# Fields the quote already carries (graph/quote_fields.py), so a second copy would
+# only repeat it, and where the two disagree (two ROE figures) the reported one wins.
+_QUOTE_TWIN = {
+    "pe": "trailingPE",
+    "pb": "priceToBook",
+    "eps": "trailingEps",
+    "book_value": "bookValue",
+    "roe": "returnOnEquity",
+    "net_margin": "profitMargins",
+    "rev_growth": "revenueGrowth",
+    "earn_growth": "earningsGrowth",
+    "price": "currentPrice",
+    "mktcap": "marketCap",
+    "beta": "beta",
+    "div_yield": "trailingAnnualDividendYield",
+    "target_mean": "targetMeanPrice",
+    "w52_high": "fiftyTwoWeekHigh",
+    "w52_low": "fiftyTwoWeekLow",
+}
+# Numbers in the payload that are not findings (headcount, counts, volume, cached text sizes).
+_TRIVIA_FIELDS = frozenset({"employees", "n_analysts", "volume", "mktcap_fmt", "revenue_fmt"})
+_CANONICAL_ALWAYS = frozenset(CANONICAL_RATIO_KEYS)  # their [^key] footnotes need them
+
+
+def _shown(field: str, value: float) -> str:
+    _label, unit = _FIELD_LABELS[field]
+    if unit == "frac":
+        return f"{value * 100:.2f}%"
+    if unit == "pct":
+        return f"{value:.2f}%"
+    if unit == "inr":
+        return f"₹{value:,.2f}"
+    if unit == "crore":
+        return f"₹{value / 1e7:,.2f} crore"
+    return f"{value:,.2f}"
+
+
+def _quote_twins(evidence: list[Evidence]) -> dict[str, set[str]]:
+    """entity -> the quote fields that arrived usable (so their computed twins are redundant)."""
+    out: dict[str, set[str]] = {}
+    for ev in evidence:
+        if ev["evidence_type"] == "quote_info" and isinstance(ev["payload"], dict):
+            out.setdefault(ev["entity"], set()).update(f for f, *_ in quote_rows(ev["payload"]))
+    return out
+
+
 _PCT_COLUMNS = ("perchange", "pchange", "pct_change", "pct", "change_pct")
 
 
@@ -102,7 +195,7 @@ def _flagged_evidence_ids(verification_issues: list[dict]) -> set[str]:
     return flagged
 
 
-def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
+def _conclusions_from_evidence(ev: Evidence, quote_fields: set[str] | None = None) -> list[Conclusion]:
     conclusions: list[Conclusion] = []
 
     if ev["evidence_type"] == "quote_info":
@@ -121,10 +214,24 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
 
     elif ev["evidence_type"] in _NUMERIC_EVIDENCE_TYPES:
         for field, value in _numeric_fields(ev["payload"]).items():
+            if ev["evidence_type"] == "fundamental_ratio":
+                if field in _TRIVIA_FIELDS:
+                    continue
+                twin = _QUOTE_TWIN.get(field)
+                if (
+                    twin
+                    and twin in (quote_fields or ())
+                    and (field not in _CANONICAL_ALWAYS or field == "roe")
+                ):
+                    continue  # the quote already says it (and its ROE is the reported one)
             citation_key = field if field in CANONICAL_RATIO_KEYS else f"{ev['entity']}.{field}"
+            if ev["evidence_type"] == "fundamental_ratio" and field in _FIELD_LABELS:
+                claim = f"{ev['entity']} {_FIELD_LABELS[field][0]} = {_shown(field, value)}"
+            else:
+                claim = f"{ev['entity']} {field} = {value}"
             conclusions.append(
                 {
-                    "claim": f"{ev['entity']} {field} = {value}",
+                    "claim": claim,
                     "value": value,
                     "confidence": ev["confidence"],
                     "evidence_ids": [ev["id"]],
@@ -300,11 +407,12 @@ def conclusion_builder(state: GraphState) -> dict:
 
     conclusions: list[Conclusion] = []
     skipped = 0
+    twins = _quote_twins(evidence)
     for ev in evidence:
         if ev["id"] in flagged:
             skipped += 1
             continue
-        conclusions.extend(_conclusions_from_evidence(ev))
+        conclusions.extend(_conclusions_from_evidence(ev, twins.get(ev["entity"])))
 
     return {
         "conclusions": conclusions,

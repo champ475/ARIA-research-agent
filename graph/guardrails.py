@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from graph.advice_policy import CAUTION_NOTE, FOOTER_MARKER, FOOTERS, REFUSALS, REWRITE_NOTE
+from tools.analysis.fundamental import number_footnotes
 
 _I = re.IGNORECASE
 
@@ -193,4 +194,4 @@ def finalize(text: str, state: dict) -> str:
     kind = answer_kind(state, cleaned)
     if kind and FOOTER_MARKER not in cleaned:
         cleaned = cleaned.rstrip() + "\n\n---\n" + FOOTERS[kind]
-    return cleaned
+    return number_footnotes(cleaned)

@@ -193,7 +193,14 @@ def _fetch_news(entity: str, context: dict[str, Any]) -> list[dict]:
 
 
 def _compute_fundamentals(entity: str, context: dict[str, Any]) -> dict:
-    return compute_fundamental_ratios(context["fetch_info"], context["fetch_financials"])
+    info = context["fetch_info"]
+    fx = None
+    fin_cur, px_cur = (info or {}).get("financialCurrency"), (info or {}).get("currency")
+    if fin_cur and px_cur and fin_cur != px_cur:
+        from tools.data.fetcher import get_fx
+
+        fx = get_fx(fin_cur, px_cur)
+    return compute_fundamental_ratios(info, context["fetch_financials"], fx)
 
 
 def _compute_technicals(entity: str, context: dict[str, Any]) -> dict:

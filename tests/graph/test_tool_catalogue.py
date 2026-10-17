@@ -69,7 +69,7 @@ class TestToolAdapters:
             "graph.tool_catalogue.compute_fundamental_ratios", return_value={"pe": 24.3}
         ) as mock_compute:
             result = get_tool("compute_fundamentals").fn("RELIANCE", context)
-        mock_compute.assert_called_once_with({"a": 1}, {"b": 2})
+        mock_compute.assert_called_once_with({"a": 1}, {"b": 2}, None)
         assert result == {"pe": 24.3}
 
     def test_compute_technicals_reads_ohlcv_from_context(self):
