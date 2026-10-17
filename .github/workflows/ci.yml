@@ -32,6 +32,8 @@ jobs:
       - run: pip install "ruff==0.17.0"
       - run: ruff check . --output-format=github
       - run: ruff format --check .
+      - name: no unused or undeclared dependencies, no dead code (ARCH-07)
+        run: pip install "deptry==0.25.1" "vulture==2.16" -r requirements.txt && deptry . && vulture
       - name: lock files match requirements*.txt (SEC-14)
         run: pip install "uv==0.12.23" && python scripts/lock.py --check
 

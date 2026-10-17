@@ -48,6 +48,20 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["agents", "graph", "tools", "utils", "config", "app", "scripts", "tests"]
 
+[tool.deptry]
+# ARCH-07: every dependency is imported, and every import is declared. CI runs `deptry .`.
+extend_exclude = ["tests", "evals", "venv", "docs", "ops", "loadtests"]
+[tool.deptry.per_rule_ignores]
+DEP002 = ["pyarrow"]        # the Parquet engine pandas loads by name (cache, bhavcopy history)
+DEP003 = ["gradio_client"]  # scripts/load_test.py; installed and version-pinned by gradio
+
+[tool.vulture]
+# ARCH-07: `vulture` (CI) reports nothing at 80% confidence. Tests are skipped: fixtures and
+# patched arguments look unused to a static scan.
+paths = ["."]
+exclude = ["venv/", "tests/", "migrations/", "node_modules/", ".git/"]
+min_confidence = 80
+
 [tool.mypy]
 python_version = "3.11"
 files = ["graph", "utils", "agents", "web", "prompts", "tools/data/providers", "config.py", "server.py", "worker.py"]
