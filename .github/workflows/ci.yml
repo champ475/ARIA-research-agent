@@ -113,7 +113,7 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       - run: python -m pytest tests/e2e -q -p no:cacheprovider --tracing retain-on-failure --output test-results
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-traces
           path: test-results/
