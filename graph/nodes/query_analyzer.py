@@ -30,6 +30,7 @@ turn's ticker.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 
 import prompts
@@ -113,11 +114,29 @@ def _parse(raw: str) -> dict:
         return dict(_FALLBACK)
 
 
+_FUND_WORDS = re.compile(
+    r"\b(?:funds?|mutual|nav|sips?|elss|etfs?|amc|schemes?|flexi\s*cap|multi\s*cap|index\s+fund)\b",
+    re.IGNORECASE,
+)
+_REPORT_WORDS = re.compile(
+    r"\b(?:report|reports|memo|note|coverage|initiat\w*|deep\s+dive|summary|results|analysis|research|pdf|ic)\b",
+    re.IGNORECASE,
+)
+
+
 def _correct_intent(intent: str, query: str, entities: list[str]) -> str:
-    """A fast model sometimes calls "Compare HDFC Bank and ICICI Bank" a screen. A
-    screen filters the whole market by numbers; named companies and no filter in
-    the words is a company question."""
-    if intent == "screener" and entities and not screener_parse(query).filters:
+    """The fast model's label is noisy ("PE of Infosys" came back as mf, "How is TCS
+    doing?" as report). Named companies decide where the words cannot:
+    - screener: filters the whole market by numbers; companies and no filter is equity;
+    - mf: needs a fund word, else it is a company question;
+    - report: needs a report word, else it is a company question (a quote, not a PDF)."""
+    if not entities:
+        return intent
+    if intent == "screener" and not screener_parse(query).filters:
+        return "equity"
+    if intent == "mf" and not _FUND_WORDS.search(query):
+        return "equity"
+    if intent == "report" and not _REPORT_WORDS.search(query):
         return "equity"
     return intent
 

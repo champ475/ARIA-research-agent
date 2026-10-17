@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from graph.nodes.query_analyzer import build_query_analyzer_node
 
 
@@ -276,4 +278,42 @@ class TestIntentCorrection:
         assert self._run("IT stocks with PE under 25 and ROE above 15%")["intent"] == "screener"
 
     def test_other_intents_are_left_alone(self):
-        assert self._run("Compare HDFC Bank and ICICI Bank", intent="report")["intent"] == "report"
+        assert self._run("Compare HDFC Bank and ICICI Bank", intent="alert")["intent"] == "alert"
+
+
+class TestIntentCorrectionByWords:
+    """The 20b model labelled "PE of Infosys" mf and "How is TCS doing?" report (eval re-record 2026-10-18)."""
+
+    @staticmethod
+    def _run(query, intent):
+        stub = _StubClient(json.dumps({"intent": intent, "objective": "o", "complexity": "moderate"}))
+        return build_query_analyzer_node(stub)({"query": query, "history": []})["intent"]
+
+    @pytest.mark.parametrize(
+        "query", ["what's the PE of Infosys", "is Titan overvalued", "Bharti Airtel debt to equity"]
+    )
+    def test_company_question_labelled_mf_is_equity(self, query):
+        assert self._run(query, "mf") == "equity"
+
+    def test_a_real_fund_question_stays_mf(self):
+        assert self._run("NAV of HDFC Flexi Cap fund for TCS holders", "mf") == "mf"
+        assert (
+            self._run("Compare Parag Parikh Flexi Cap and HDFC Flexi Cap", "mf") == "mf"
+        )  # no company named
+
+    @pytest.mark.parametrize("query", ["How is TCS doing?", "latest news on ITC"])
+    def test_quote_question_labelled_report_is_equity(self, query):
+        assert self._run(query, "report") == "equity"
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "Give me an IC report on TCS",
+            "quarterly results summary for Wipro",
+            "research note Tata Steel",
+            "initiate coverage on HDFC Bank",
+            "deep dive on Bajaj Finance",
+        ],
+    )
+    def test_report_requests_stay_report(self, query):
+        assert self._run(query, "report") == "report"
