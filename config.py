@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     # ── Serving ───────────────────────────────────────────────────────────────
     CHAT_CONCURRENCY: int = Field(8, ge=1, le=256)
     QUEUE_MAX_SIZE: int = Field(100, ge=1)
+    # REL-07: the watchlist table's parallel fetch.
+    WATCHLIST_WORKERS: int = Field(8, ge=1, le=32)
+    WATCHLIST_BUDGET_SECONDS: float = Field(15.0, gt=0)
+    WATCHLIST_ROW_TTL_SECONDS: int = Field(60, ge=0)
     TRIAL_DAILY_LIMIT: int = Field(5, ge=0)
     # SEC-12: chat turns one user may start per minute (everyone, BYO or trial).
     TURNS_PER_MINUTE: int = Field(10, ge=1)
@@ -424,6 +428,9 @@ PROVIDER_ZERO_QUOTA_TTL_SECONDS = 3600
 # ── Serving / free trial ──────────────────────────────────────────────────────
 CHAT_CONCURRENCY = settings.CHAT_CONCURRENCY  # chat turns at once, server-wide
 QUEUE_MAX_SIZE = settings.QUEUE_MAX_SIZE
+WATCHLIST_WORKERS = settings.WATCHLIST_WORKERS
+WATCHLIST_BUDGET_SECONDS = settings.WATCHLIST_BUDGET_SECONDS
+WATCHLIST_ROW_TTL_SECONDS = settings.WATCHLIST_ROW_TTL_SECONDS
 HOST = settings.HOST
 PORT = settings.PORT
 COOKIE_SECURE = settings.cookie_secure

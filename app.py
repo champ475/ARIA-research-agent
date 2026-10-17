@@ -1303,56 +1303,13 @@ def _build_chat_tab(user_state: gr.State):
 
 
 def _fetch_watchlist_table(user_id: int) -> list[list]:
-    """Return rows for the watchlist dataframe: Symbol, Name, Price, Change%, RSI, 52W High, 52W Low."""
-    from tools.analysis.technical import compute_all, snapshot
-    from tools.data.fetcher import get_info, get_ohlcv
+    """Rows for the watchlist table: Symbol, Name, Price, Change%, RSI, 52W High, 52W Low
+    (fetched in parallel and cached per row, REL-07: services/watchlist.py)."""
+    from services.watchlist import watchlist_rows
     from utils.db import watchlist_all
 
     symbols = watchlist_all(user_id)
-    if not symbols:
-        return []
-
-    rows = []
-    for sym in symbols:
-        try:
-            info = get_info(sym)
-            price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
-            prev = info.get("previousClose") or price
-            chg = round(((price - prev) / prev) * 100, 2) if prev else 0.0
-            name = (info.get("shortName") or sym)[:22]
-            high52 = info.get("fiftyTwoWeekHigh", "N/A")
-            low52 = info.get("fiftyTwoWeekLow", "N/A")
-
-            # RSI from cached OHLCV (fast — usually already in Parquet cache).
-            # snapshot() always has the "RSI" key but its value is None when
-            # the underlying OHLCV history is too short/unavailable — a bare
-            # .get("RSI", "—") only covers a missing key, not a None value,
-            # so the table used to render the literal string "None".
-            rsi = "—"
-            try:
-                df = get_ohlcv(sym, "3mo", "1d")
-                if not df.empty:
-                    ta = snapshot(compute_all(df.copy()))
-                    rsi = ta.get("RSI")
-                    rsi = "N/A" if rsi is None else rsi
-            except Exception:
-                pass
-
-            arrow = "▲" if chg >= 0 else "▼"
-            rows.append(
-                [
-                    sym,
-                    name,
-                    f"₹{price:,.2f}",
-                    f"{arrow} {chg:+.2f}%",
-                    rsi,
-                    f"₹{high52:,.2f}" if isinstance(high52, float) else str(high52),
-                    f"₹{low52:,.2f}" if isinstance(low52, float) else str(low52),
-                ]
-            )
-        except Exception:
-            rows.append([sym, "—", "—", "—", "—", "—", "—"])
-    return rows
+    return watchlist_rows(symbols) if symbols else []
 
 
 def _watchlist_table_html(rows: list[list]) -> str:

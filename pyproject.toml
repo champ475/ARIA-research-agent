@@ -46,7 +46,7 @@ ignore = [
                                      # startup banner (tests/test_logging_setup.py forbids print elsewhere)
 
 [tool.ruff.lint.isort]
-known-first-party = ["agents", "graph", "tools", "utils", "config", "app", "scripts", "tests"]
+known-first-party = ["agents", "graph", "tools", "utils", "services", "config", "app", "scripts", "tests"]
 
 [tool.deptry]
 # ARCH-07: every dependency is imported, and every import is declared. CI runs `deptry .`.
@@ -64,7 +64,7 @@ min_confidence = 80
 
 [tool.mypy]
 python_version = "3.11"
-files = ["graph", "utils", "agents", "web", "prompts", "tools/data/providers", "config.py", "server.py", "worker.py"]
+files = ["graph", "utils", "agents", "services", "web", "prompts", "tools/data/providers", "config.py", "server.py", "worker.py"]
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = true
 check_untyped_defs = true
