@@ -49,7 +49,9 @@ _MANIPULATION = re.compile(
     _I,
 )
 _GUARANTEE = re.compile(
-    r"\bguarantee(?:d|s)?\s+(?:\d+\s*%\s*)?(?:returns?|profits?|gains?|income|money)"
+    r"\bguarantee(?:d|s)?\s+(?:(?:me|us|my|our|that)\s+)*(?:\d+\s*%\s*)?"
+    r"(?:(?:monthly|weekly|daily|yearly|annual|fixed|assured|steady)\s+)?(?:returns?|profits?|gains?|income|money)"
+    r"|\bguarantee\s+(?:that\s+)?(?:i|we|you)\b[^.?!]{0,30}\b(?:make|earn|get|receive|profit)\b"
     r"|\b(?:\d+\s*%\s*)guaranteed\b"
     r"|\bassured\s+(?:\d+\s*%\s*)?(?:returns?|profits?|gains?)"
     r"|\bsure[\s-]*shot\b|\bdouble\s+(?:my|our)\s+money\b|\bcan'?t\s+lose\b|\bno[\s-]+risk\s+(?:returns?|profits?)"
@@ -68,7 +70,11 @@ _PERSONAL_CALL = re.compile(
     r"|\bmulti[\s-]*baggers?\b|\bintraday\s+(?:calls?|tips?)\b"
     r"|\bwhich\s+(?:stocks?|shares?|funds?)\s+(?:should|to|can|do)\s+i\s+(?:buy|invest|pick)"
     r"|\bbest\s+(?:stocks?|shares?)\s+to\s+buy\b|\bgive\s+me\s+(?:a\s+)?(?:stock|tip|call|pick)s?\b"
-    r"|\bwill\s+[\w&.-]+(?:\s+[\w&.-]+)?\s+(?:go\s+up|go\s+down|rise|fall|crash|double)\b",
+    r"|\bwill\s+[\w&.-]+(?:\s+[\w&.-]+)?\s+(?:go\s+up|go\s+down|rise|fall|crash|double)\b"
+    r"|\bwhich\s+(?:stocks?|shares?|funds?)\s+(?:will|would|is\s+going\s+to|are\s+going\s+to)\s+"
+    r"(?:double|triple|multiply|go\s+up|rise|rally|zoom|jump)\b"
+    r"|\bis\s+[\w&.' -]{1,30}?\s+(?:a\s+)?(?:good\s+|great\s+|safe\s+)?(?:buy|sell)\b"
+    r"|\bis\s+it\s+(?:a\s+)?(?:good|right|safe)\s+(?:time|moment|day)\s+to\s+(?:buy|sell|invest|enter|exit)\b",
     _I,
 )
 _CAUTION = re.compile(

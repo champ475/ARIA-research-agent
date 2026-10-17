@@ -51,6 +51,7 @@ from graph.entity_resolution import (
 from graph.journal import log_decision
 from graph.schemas import QueryAnalysis
 from graph.state import GraphState
+from tools.screener_grammar import parse as screener_parse
 from utils.llm_json import ParseFailure, extract_json, json_reply
 
 log = logging.getLogger(__name__)
@@ -110,6 +111,15 @@ def _parse(raw: str) -> dict:
     except (ParseFailure, AttributeError, TypeError):
         log.warning("QueryAnalyzer: failed to parse LLM output as JSON: %r", raw)
         return dict(_FALLBACK)
+
+
+def _correct_intent(intent: str, query: str, entities: list[str]) -> str:
+    """A fast model sometimes calls "Compare HDFC Bank and ICICI Bank" a screen. A
+    screen filters the whole market by numbers; named companies and no filter in
+    the words is a company question."""
+    if intent == "screener" and entities and not screener_parse(query).filters:
+        return "equity"
+    return intent
 
 
 _MAX_REPLY_WORDS = 5  # longer messages are new questions, not answers to "which one?"
@@ -173,7 +183,8 @@ def build_query_analyzer_node(
             entities, ambiguous = history_carry(history)
             if ambiguous:  # LLM-10: "its RSI" after comparing two companies
                 unresolved.append(ambiguous_reference(ambiguous))
-        if not entities and not unresolved and lacks_company(query, classification["intent"]):
+        intent = _correct_intent(classification["intent"], query, entities)
+        if not entities and not unresolved and lacks_company(query, intent):
             # "what about its debt?" with nothing to refer to: ask, don't fetch for "market".
             unresolved.append(missing_company_entry())
         if len(entities) > MAX_ENTITIES_PER_TURN:
@@ -194,7 +205,7 @@ def build_query_analyzer_node(
             "entities": entities,
             "entity_resolutions": unresolved,
             "entity_notes": resolved.notes,
-            "intent": classification["intent"],
+            "intent": intent,
             "secondary_intents": classification["secondary_intents"],
             # Never empty: a failed analysis falls back to the user's own words, so the
             # planner and the judge always have something to work from.
@@ -202,7 +213,7 @@ def build_query_analyzer_node(
             "complexity": complexity,
             **log_decision(
                 "QueryAnalyzer",
-                f"intent={classification['intent']}, complexity={complexity}"
+                f"intent={intent}, complexity={complexity}"
                 + (f" (raised from simple: {raised})" if raised else ""),
                 f"entities={entities or 'none'}"
                 + (f", unresolved={[u['query'] for u in resolved.unresolved]}" if resolved.unresolved else "")

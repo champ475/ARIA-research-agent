@@ -256,3 +256,24 @@ class TestAskingWhichCompany:
         result = self._analyzer(intent="chat")({"query": "Tell me about Tata", "history": []})
         blocking = blocking_resolutions({**result, "intent": "chat"})
         assert blocking and {c["symbol"] for c in blocking[0]["candidates"]} >= {"TCS", "TATASTEEL"}
+
+
+class TestIntentCorrection:
+    """Smoke test 2026-10-17: the fast model called a two-bank comparison a screen."""
+
+    @staticmethod
+    def _run(query, intent="screener"):
+        stub = _StubClient(json.dumps({"intent": intent, "objective": "o", "complexity": "moderate"}))
+        return build_query_analyzer_node(stub)({"query": query, "history": []})
+
+    def test_named_companies_without_filters_is_equity(self):
+        assert self._run("Compare HDFC Bank and ICICI Bank")["intent"] == "equity"
+
+    def test_a_real_screen_with_a_named_company_stays_a_screen(self):
+        assert self._run("IT stocks like TCS with PE under 25")["intent"] == "screener"
+
+    def test_a_screen_naming_no_company_stays_a_screen(self):
+        assert self._run("IT stocks with PE under 25 and ROE above 15%")["intent"] == "screener"
+
+    def test_other_intents_are_left_alone(self):
+        assert self._run("Compare HDFC Bank and ICICI Bank", intent="report")["intent"] == "report"
