@@ -13,7 +13,7 @@ hypothesis>=6.100.0
 pyyaml>=6.0        # tests/edge_cases/matrix.yaml (TEST-03)
 responses>=0.25.0  # recorded HTTP responses for data-contract tests (TEST-05)
 pytest-playwright>=0.5.0  # end-to-end UI journeys (TEST-04); then: playwright install chromium
-testcontainers[postgres]>=4.8.0
+testcontainers[postgres]>=4.15.0
 pytest-xdist>=3.6.0   # optional: pytest -n auto
 
 # Security
