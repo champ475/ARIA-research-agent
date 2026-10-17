@@ -29,6 +29,7 @@ class TestCatalogueRegistry:
             "screener_to_markdown",
             "screener_save",
             "fetch_top_movers",
+            "fetch_market_overview",
             "fetch_bulk_deals",
             "fetch_block_deals",
             # UX-04

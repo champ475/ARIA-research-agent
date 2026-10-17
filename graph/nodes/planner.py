@@ -31,6 +31,7 @@ import prompts
 from agents.llm_client import LLMClient
 from config import TOKENS_AGENT
 from graph.analysis_tools import ANALYSIS_TOOLS, COMPANY_BOUND_TOOLS, ENTITYLESS, triggered_tools
+from graph.data_questions import MARKET_LEVEL
 from graph.entity_resolution import blocking_resolutions
 from graph.journal import log_decision
 from graph.schemas import ToolSelection
@@ -184,6 +185,12 @@ def build_planner_node(
         )
         selected = _parse_tool_selection(raw, hidden)
         selected += [t for t in triggered if t not in selected]
+        if (
+            not entities
+            and MARKET_LEVEL.search(state.get("query") or "")
+            and "fetch_market_overview" not in selected
+        ):
+            selected.append("fetch_market_overview")  # a market question is answered from the index levels
         tool_names = _with_transitive_deps(selected)
         tasks = _plan_tasks(tool_names, entities)
         plan: ResearchPlan = {"objective": objective, "tasks": tasks, "complexity": complexity}

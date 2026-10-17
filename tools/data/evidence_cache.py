@@ -31,6 +31,8 @@ TTL_SECONDS: dict[str, int] = {
     "macro": 3600,
     "pdf_extract": 604800,
     "risk_flag": 3600,
+    "market_overview": 900,
+    "top_movers": 900,
 }
 _DEFAULT_TTL_SECONDS = 900
 

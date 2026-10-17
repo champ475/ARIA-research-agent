@@ -186,6 +186,18 @@ def last_session(now: datetime | None = None) -> date:
     return day
 
 
+def last_close(now: datetime | None = None) -> datetime | None:
+    """When the most recent finished session closed (IST); None while a session
+    is open or hasn't finished yet today."""
+    now = _now(now)
+    if session_state(now).state == "open":
+        return None
+    day = last_session(now)
+    hours = _hours(day)
+    ts = IST.localize(datetime.combine(day, hours[1] if hours else CLOSE))
+    return ts if ts <= now else None
+
+
 def next_open(now: datetime | None = None) -> datetime:
     """When the next session starts (IST); `now` itself if the market is open."""
     now = _now(now)

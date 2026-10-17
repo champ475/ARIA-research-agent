@@ -55,6 +55,7 @@ _ANALYSIS_EVIDENCE_TYPES = {
     "news_sentiment",
     "backtest_result",
     "portfolio",
+    "market_overview",
 }
 
 # DataFrame payloads worth a match-count Conclusion, same idea as
@@ -67,6 +68,19 @@ _DATAFRAME_EVIDENCE_TYPES = {
     "bulk_deals": "bulk deal(s) on record",
     "block_deals": "block deal(s) on record",
 }
+
+
+_PCT_COLUMNS = ("perchange", "pchange", "pct_change", "pct", "change_pct")
+
+
+def _mover_leaders(df: pd.DataFrame, top: int = 3) -> str:
+    """ "TECHM +4.2%, TCS +3.9%, INFY +3.1%" from a movers table, or "" when it has no % column."""
+    lower = {str(c).lower(): c for c in df.columns}
+    pct_col = next((lower[c] for c in _PCT_COLUMNS if c in lower), None)
+    if pct_col is None or "symbol" not in lower:
+        return ""
+    rows = df.dropna(subset=[pct_col]).head(top)
+    return ", ".join(f"{r[lower['symbol']]} {float(r[pct_col]):+.2f}%" for _, r in rows.iterrows())
 
 
 def _numeric_fields(payload) -> dict[str, float]:
@@ -171,6 +185,18 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
                 "citation_key": f"{ev['entity']}.{ev['evidence_type']}",
             }
         )
+        if ev["evidence_type"] == "top_movers":
+            leaders = _mover_leaders(df)
+            if leaders:
+                conclusions.append(
+                    {
+                        "claim": f"{ev['entity']}: biggest moves are {leaders}",
+                        "value": leaders,
+                        "confidence": ev["confidence"],
+                        "evidence_ids": [ev["id"]],
+                        "citation_key": f"{ev['entity']}.movers_leaders",
+                    }
+                )
 
     elif ev["evidence_type"] == "screener_saved" and isinstance(ev["payload"], dict):
         p = ev["payload"]

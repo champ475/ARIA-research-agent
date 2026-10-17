@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -208,32 +209,47 @@ def _fetch_annual_report_text(entity: str, context: dict[str, Any]) -> str:
     return get_annual_report_text(entity)
 
 
+def _fund_names(entity: str, context: dict[str, Any]) -> list[str]:
+    """The fund(s) this task is about. Funds are not company mentions, so the
+    task's entity is the "market" sentinel and the names come from the user's
+    own words (smoke test 2026-10-17: the comparison searched for a fund called "market")."""
+    if entity and entity != NO_ENTITY_SENTINEL:
+        return [n.strip() for n in re.split(r"\s+vs\.?\s+|,", entity) if n.strip()][:4]
+    from graph.entity_resolution import extract_fund_names
+
+    return extract_fund_names(context.get("_query") or "")
+
+
+def _key_on_fund_names(entity: str, context: dict[str, Any]) -> dict[str, Any]:
+    """The funds are the input that changes the output (the entity is just "market")."""
+    return {"funds": [n.lower() for n in _fund_names(entity, context)]}
+
+
 def _fetch_nav(entity: str, context: dict[str, Any]) -> Any:
-    """`entity` here is a fund-name/search-string, not a stock ticker —
-    mirrors agents/mf_agent.py::_nav_query/_search, which both resolve a
-    free-text fund name against the full AMFI NAV table."""
-    return search_fund(entity, get_all_nav())
+    """Free-text fund name(s) resolved against the full AMFI NAV table."""
+    names = _fund_names(entity, context)
+    return search_fund(names[0] if names else entity, get_all_nav())
 
 
 def _fetch_category_funds(entity: str, context: dict[str, Any]) -> Any:
-    """`entity` is a category keyword (e.g. "large cap", "elss") — see
-    agents/mf_agent.py::_CATEGORY_KW for the vocabulary this expects."""
-    return get_category_funds(entity, top_n=10)
+    """A category keyword ("large cap", "elss"): the entity, else the user's words
+    ("best ELSS funds"), which tools/data/mf_data.py::category_for_query understands."""
+    keyword = context.get("_query") if entity == NO_ENTITY_SENTINEL else entity
+    return get_category_funds(keyword or entity, top_n=10)
 
 
 def _fetch_mf_comparison(entity: str, context: dict[str, Any]) -> str:
     """`entity` may be a single fund name or 2-4 names joined by " vs "/","
     (mirrors agents/mf_agent.py::_compare's candidate extraction)."""
-    import re as _re
-
-    names = [n.strip() for n in _re.split(r"\s+vs\.?\s+|,", entity) if n.strip()]
-    if len(names) < 2:
-        names = [entity]
-    return get_mf_comparison(names[:4])
+    names = _fund_names(entity, context)
+    if not names:
+        return "No fund names found in the question: name the funds to compare."
+    return get_mf_comparison(names)
 
 
 def _fetch_mf_news(entity: str, context: dict[str, Any]) -> list[dict]:
-    return google_news(f"India {entity} mutual fund", n=5)
+    names = _fund_names(entity, context)
+    return google_news(f"India {' '.join(names) or entity} mutual fund", n=5)
 
 
 # ── alert_create extraction (ported from the deleted agents/alert_agent.py) ──
@@ -496,6 +512,30 @@ def _fetch_top_movers(entity: str, context: dict[str, Any]) -> Any:
     return get_top_movers(_movers_direction(context))
 
 
+_INDEX_NAMES = ("Nifty 50", "Sensex", "Nifty Bank")
+
+
+def _fetch_market_overview(entity: str, context: dict[str, Any]) -> dict:
+    """Index levels and the day's change (Nifty 50, Sensex, Nifty Bank). Without
+    them "is the market up?" has nothing to be answered from."""
+    snapshot = market_data().macro()
+    rows: dict[str, dict[str, float]] = {}
+    claims: list[dict[str, Any]] = []
+    for name in _INDEX_NAMES:
+        row = snapshot.get(name) or {}
+        level, change = row.get("price"), row.get("change")
+        if isinstance(level, (int, float)) and isinstance(change, (int, float)):
+            rows[name] = {"level": level, "change_pct": change}
+            claims.append(
+                {
+                    "claim": f"{name} is at {level:,.2f}, {change:+.2f}% against the previous close",
+                    "value": level,
+                    "key": name.lower().replace(" ", "_"),
+                }
+            )
+    return {"indices": rows, "claims": claims}
+
+
 def _fetch_bulk_deals(entity: str, context: dict[str, Any]) -> Any:
     symbol = entity if entity and entity != NO_ENTITY_SENTINEL else None
     return get_bulk_deals(symbol)
@@ -629,6 +669,7 @@ _register(
 _register(
     ToolSpec(
         name="fetch_nav",
+        cache_key=_key_on_fund_names,
         evidence_type="mf_nav",
         depends_on=(),
         cost="medium",
@@ -639,6 +680,7 @@ _register(
 _register(
     ToolSpec(
         name="fetch_category_funds",
+        cache_key=_key_on_query,
         evidence_type="mf_category_funds",
         depends_on=(),
         cost="low",
@@ -649,6 +691,7 @@ _register(
 _register(
     ToolSpec(
         name="fetch_mf_comparison",
+        cache_key=_key_on_fund_names,
         evidence_type="mf_comparison",
         depends_on=(),
         cost="medium",
@@ -659,6 +702,7 @@ _register(
 _register(
     ToolSpec(
         name="fetch_mf_news",
+        cache_key=_key_on_fund_names,
         evidence_type="news_headline",
         depends_on=(),
         cost="low",
@@ -779,6 +823,16 @@ _register(
         fn=_fetch_top_movers,
         cache_key=_key_on_movers_direction,
         description="Fetch today's top gaining or losing stocks (NSE).",
+    )
+)
+_register(
+    ToolSpec(
+        name="fetch_market_overview",
+        evidence_type="market_overview",
+        depends_on=(),
+        cost="low",
+        fn=_fetch_market_overview,
+        description="Fetch Nifty 50, Sensex and Nifty Bank levels and the day's change; use for 'how is the market'.",
     )
 )
 _register(

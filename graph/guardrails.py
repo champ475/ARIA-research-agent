@@ -163,6 +163,10 @@ def answer_kind(state: dict, text: str) -> str | None:
         return "report"
     if intents & {"equity", "mf", "screener"}:
         return "research" if state.get("tasks") else None
+    # A market or general answer that was built from fetched data is research too
+    # (it carried no footer when the model had called the turn "chat").
+    if (state.get("tasks") or state.get("evidence")) and "alert" not in intents:
+        return "research"
     if _VIEW.search(text or ""):
         return "research"
     return None

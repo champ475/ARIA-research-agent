@@ -18,7 +18,10 @@ _PER_CALL_KEYS = ("_query", "_user_id", "_llm_config")
 
 def _reads_per_call_context(spec) -> list[str]:
     src = inspect.getsource(spec.fn)
-    return [k for k in _PER_CALL_KEYS if f'"{k}"' in src]
+    reads = [k for k in _PER_CALL_KEYS if f'"{k}"' in src]
+    if "_fund_names(" in src and "_query" not in reads:
+        reads.append("_query")  # the fund helper reads the user's words
+    return reads
 
 
 def test_no_side_effect_tool_is_cacheable():

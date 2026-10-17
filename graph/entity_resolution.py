@@ -467,3 +467,58 @@ def lacks_company(query: str, intent: str | None) -> bool:
 
 def missing_company_entry() -> dict:
     return {"query": "", "status": "missing_company", "candidates": []}
+
+
+# ── Fund names ("Compare Parag Parikh Flexi Cap and HDFC Flexi Cap") ───────────
+# Funds are not company mentions, so the analyzer returns none for them; the fund
+# tools read the names straight from the user's words instead of the "market" sentinel.
+
+_FUND_LEAD = re.compile(
+    r"^\s*(?:please\s+)?(?:compare|comparison\s+of|difference\s+between|show\s+me|tell\s+me\s+about|"
+    r"how\s+(?:is|are|do|does)|which\s+is\s+better|is|"
+    r"(?:what(?:'s|\s+is)\s+(?:the\s+)?)?(?:current\s+|latest\s+)?(?:nav|returns?|performance|cagr)\s+(?:of|for))[,:]?\s+(?:the\s+)?",
+    re.IGNORECASE,
+)
+_FUND_SPLIT = re.compile(r"\s+(?:vs\.?|versus|and|with|or|against)\s+|\s*,\s*", re.IGNORECASE)
+_FUND_TAIL_WORDS = frozenset(
+    [
+        "fund",
+        "funds",
+        "scheme",
+        "schemes",
+        "returns",
+        "return",
+        "performance",
+        "nav",
+        "cagr",
+        "comparison",
+        "compare",
+        "better",
+        "please",
+        "mutual",
+        "direct",
+        "growth",
+        "plan",
+        "doing",
+        "performing",
+        "today",
+        "now",
+        "latest",
+        "looking",
+    ]
+)
+
+
+def extract_fund_names(query: str) -> list[str]:
+    """The fund names a question compares or asks about, in the order written
+    ("Compare A and B" gives [A, B]); [] when it names none."""
+    text = _FUND_LEAD.sub("", (query or "").strip().rstrip("?.! "))
+    names: list[str] = []
+    for part in _FUND_SPLIT.split(text):
+        words = part.split()
+        while words and words[-1].lower().strip(".,") in _FUND_TAIL_WORDS:
+            words.pop()
+        name = " ".join(words).strip()
+        if len(name) >= 4 and name.lower() not in {n.lower() for n in names}:
+            names.append(name)
+    return names[:4]

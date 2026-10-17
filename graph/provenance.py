@@ -30,6 +30,7 @@ _SOURCES: tuple[tuple[str, str], ...] = (
     ("fetch_bulk_deals", "NSE India"),
     ("fetch_block_deals", "NSE India"),
     ("fetch_top_movers", "NSE India"),
+    ("fetch_market_overview", "Yahoo Finance index quotes"),
     ("fetch_quarterly_results", "NSE India filings"),
     ("fetch_annual_report_text", "NSE India filings"),
     ("screener_", "ARIA's nightly screener snapshot (Yahoo Finance data)"),

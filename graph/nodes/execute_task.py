@@ -136,14 +136,26 @@ def _blocked_evidence(task: Task, evidence_type: str, reason: str) -> Evidence:
     }
 
 
-def _as_of(payload: Any, fetched_at: datetime) -> datetime:
+# Market-wide lists and index levels have no exchange time of their own: while the
+# market is shut they are the last session's, not the moment we fetched them.
+_LAST_SESSION_EVIDENCE = frozenset({"top_movers", "market_overview", "bulk_deals", "block_deals"})
+
+
+def _as_of(payload: Any, fetched_at: datetime, evidence_type: str = "") -> datetime:
     """DATA-06: the quote's own exchange time (yfinance `regularMarketTime`,
-    epoch seconds) when present and not in the future, else the fetch time."""
+    epoch seconds) when present and not in the future; for market-wide data the
+    last session's close while the market is shut; else the fetch time."""
     if isinstance(payload, dict):
         t = payload.get("regularMarketTime")
         now = datetime.now(UTC)
         if isinstance(t, (int, float)) and not isinstance(t, bool) and 0 < t <= now.timestamp():
             return datetime.fromtimestamp(t, UTC)
+    if evidence_type in _LAST_SESSION_EVIDENCE:
+        from utils.market_clock import last_close
+
+        closed_at = last_close()
+        if closed_at is not None:
+            return closed_at.astimezone(UTC)
     return fetched_at
 
 
@@ -239,7 +251,7 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
         # module docstring. Callers needing the real object use from_cacheable().
         "payload": cacheable_payload,
         "timestamp": datetime.now(UTC),
-        "as_of": _as_of(cacheable_payload, fetched_at),
+        "as_of": _as_of(cacheable_payload, fetched_at, spec.evidence_type),
         "confidence": confidence,
         # Fine-grained per-ratio citation keys (matching fundamental.py's
         # [^pe]/[^roce] convention) are assigned by ConclusionBuilder (Phase 5),

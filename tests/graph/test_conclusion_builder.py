@@ -230,3 +230,58 @@ class TestConclusionBuilder:
         result = conclusion_builder({"evidence": evidence, "verification_issues": []})
         assert result["conclusions"][0]["claim"] == "Cancelled alert #5 on TCS"
         assert result["conclusions"][0]["citation_key"] == "RELIANCE.alert_cancel"
+
+
+def _plain_evidence(etype, payload, entity="market"):
+    from datetime import UTC, datetime
+
+    return {
+        "id": f"{etype}-1",
+        "source": "t",
+        "tool": "t",
+        "entity": entity,
+        "evidence_type": etype,
+        "payload": payload,
+        "timestamp": datetime.now(UTC),
+        "confidence": 1.0,
+        "citation_key": etype,
+    }
+
+
+def test_movers_conclusion_names_the_biggest_moves():
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"symbol": ["TECHM", "TCS", "INFY", "WIPRO"], "ltp": [1, 2, 3, 4], "perChange": [4.2, 3.9, 3.1, 2.0]}
+    )
+    claims = [
+        c["claim"]
+        for c in conclusion_builder({"evidence": [_plain_evidence("top_movers", df)]})["conclusions"]
+    ]
+    assert any("TECHM +4.20%, TCS +3.90%, INFY +3.10%" in c for c in claims)
+
+
+def test_movers_without_a_percent_column_only_get_the_count():
+    import pandas as pd
+
+    df = pd.DataFrame({"symbol": ["TECHM"], "ltp": [1790]})
+    claims = [
+        c["claim"]
+        for c in conclusion_builder({"evidence": [_plain_evidence("top_movers", df)]})["conclusions"]
+    ]
+    assert claims == ["market: 1 top mover(s) on record"]
+
+
+def test_market_overview_claims_become_conclusions():
+    payload = {
+        "indices": {},
+        "claims": [
+            {
+                "claim": "Nifty 50 is at 24,850.35, +0.42% against the previous close",
+                "value": 24850.35,
+                "key": "nifty_50",
+            }
+        ],
+    }
+    out = conclusion_builder({"evidence": [_plain_evidence("market_overview", payload)]})["conclusions"]
+    assert out[0]["claim"].startswith("Nifty 50 is at 24,850.35")
