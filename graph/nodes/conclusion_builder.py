@@ -380,6 +380,12 @@ def _alert_action_claim(p: dict) -> str:
     if result == "needs_confirmation":
         price = p.get("current_price")
         now = f" (it's at ₹{price:,.2f} now)" if isinstance(price, (int, float)) else ""
+        if p.get("reason") == "far_from_price":
+            return (
+                f"Did NOT create the alert on {symbol} yet — the level is far from today's price{now}, "
+                f"so it would almost never fire. If that is what you want, ask again and add 'anyway' "
+                f"(alert: {condition})"
+            )
         return (
             f"Did NOT create the alert on {symbol} yet — the condition is already true{now}, so it would "
             f"fire on the next check. To create it anyway, ask again and add 'anyway' "

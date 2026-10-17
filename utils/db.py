@@ -8,6 +8,7 @@ The schema itself lives in Alembic migrations (migrations/versions/, ARCH-01).
 import contextlib
 import json
 import logging
+import math
 import threading
 from datetime import UTC, date
 from typing import Any
@@ -23,6 +24,8 @@ from config import (
     DB_CONNECT_TIMEOUT,
     DB_POOL_ACQUIRE_TIMEOUT,
     DB_POOL_MAX,
+    DB_POOL_MAX_IDLE,
+    DB_POOL_MAX_LIFETIME,
     DB_POOL_MIN,
     DB_STATEMENT_TIMEOUT_MS,
     db_host,
@@ -86,6 +89,8 @@ def _get_pool() -> ConnectionPool:
                     min_size=min(DB_POOL_MIN, DB_POOL_MAX),
                     max_size=DB_POOL_MAX,
                     timeout=DB_POOL_ACQUIRE_TIMEOUT,
+                    max_idle=DB_POOL_MAX_IDLE,
+                    max_lifetime=DB_POOL_MAX_LIFETIME,
                     kwargs=connection_kwargs(),
                     # Neon drops idle connections server-side; check each one
                     # as it is handed out instead of failing the caller's query.
@@ -977,6 +982,18 @@ def evidence_cache_get(tool: str, args_hash: str) -> dict | None:
     )
 
 
+def _json_safe(value):
+    """The value with every NaN/Infinity replaced by None. Postgres jsonb rejects
+    the bare NaN that json.dumps writes, which made fetch_financials uncacheable."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def evidence_cache_put(
     tool: str, args_hash: str, entity: str, evidence_type: str, payload: dict, confidence: float = 1.0
 ) -> None:
@@ -985,7 +1002,14 @@ def evidence_cache_put(
         "VALUES (%s,%s,%s,%s,%s,%s) "
         "ON CONFLICT (tool, args_hash) DO UPDATE "
         "SET payload=EXCLUDED.payload, confidence=EXCLUDED.confidence, fetched_at=now()",
-        (tool, args_hash, entity, evidence_type, json.dumps(payload, default=str), confidence),
+        (
+            tool,
+            args_hash,
+            entity,
+            evidence_type,
+            json.dumps(_json_safe(payload), default=str, allow_nan=False),
+            confidence,
+        ),
         fetch=None,
         commit=True,
     )

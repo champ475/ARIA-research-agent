@@ -391,3 +391,11 @@ def test_watchlist_cap_and_duplicates(db, two_users):
         db.watchlist_add(a, "ONEMORE")
     assert len(db.watchlist_all(a)) == 50
     assert db.watchlist_add(b, "S0") is True  # the cap is per user
+
+
+def test_evidence_cache_put_survives_nan_and_infinity(db):
+    # Smoke test 2026-10-17: fetch_financials was never cached - Postgres jsonb rejects NaN.
+    payload = {"rev": 1.5, "nested": {"x": float("nan")}, "rows": [float("inf"), 2.0]}
+    db.evidence_cache_put("fetch_financials", "nan1", "INFY", "raw_financials", payload, 1.0)
+    row = db.evidence_cache_get("fetch_financials", "nan1")
+    assert row["payload"] == {"rev": 1.5, "nested": {"x": None}, "rows": [None, 2.0]}

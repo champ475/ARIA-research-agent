@@ -54,6 +54,7 @@ from graph.alert_spec import (  # noqa: E402  (after the db imports it depends o
     alert_id_in,
     already_true,
     confirms_anyway,
+    far_from_price,
     parse_alert,
     spec_from_llm,
 )
@@ -334,6 +335,14 @@ def _alert_create(entity: str, context: dict[str, Any]) -> dict:
             return {
                 **base,
                 "result": "needs_confirmation",
+                "condition": spec.describe(),
+                "current_price": price,
+            }
+        if far_from_price(spec, price):
+            return {
+                **base,
+                "result": "needs_confirmation",
+                "reason": "far_from_price",
                 "condition": spec.describe(),
                 "current_price": price,
             }

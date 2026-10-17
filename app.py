@@ -24,7 +24,7 @@ from ui.auth import identify_user  # noqa: E402
 from ui.chat import CHAT_DEFAULTS, build_chat_tab, queue_kwargs  # noqa: E402
 from ui.portfolio import build_portfolio_tab  # noqa: E402
 from ui.settings import build_settings_tab  # noqa: E402
-from ui.theme import FOOTER_HTML, HEADER_HTML, LOGOUT_JS, THEME_TOGGLE_JS  # noqa: E402
+from ui.theme import FOOTER_HTML, LOGOUT_JS, THEME_TOGGLE_JS, header_for, header_html  # noqa: E402
 from ui.watchlist import build_watchlist_tab  # noqa: E402
 from utils.db import ensure_schema  # noqa: E402
 from utils.helpers import now_ist  # noqa: E402
@@ -68,7 +68,7 @@ def build_ui() -> gr.Blocks:
         user_state = gr.State(None)
 
         with gr.Column(elem_id="main-app"):
-            gr.HTML(HEADER_HTML)
+            header = gr.HTML(header_html())
             with gr.Row(elem_id="top-actions"):
                 theme_btn = gr.Button("◐ Light / dark", size="sm", variant="secondary", elem_id="theme-btn")
                 logout_btn = gr.Button("Log out", size="sm", variant="secondary", elem_id="logout-btn")
@@ -109,6 +109,8 @@ def build_ui() -> gr.Blocks:
             [chat_chatbot, chat_chart, chat_sugg_state, chat_session],
             show_progress="hidden",
         )
+
+        user_state.change(header_for, [user_state], [header], show_progress="hidden")
 
         demo.load(identify_user, None, [user_state], show_progress="hidden")
 

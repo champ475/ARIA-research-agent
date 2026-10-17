@@ -154,8 +154,10 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     new_sugg = suggestions
     text = ""
     tab_used: str | None = None
+    marks = {"start": time.monotonic()}  # where the wall time goes, for the turn-end log
     try:
         orch = chat_svc.get_orchestrator(user_id, session_id)
+        marks["orchestrator"] = time.monotonic()
         tab_used = "equity"
         # Equity Q&A streams token-by-token; every other specialist yields
         # exactly once with its finished result, so this loop renders
@@ -193,7 +195,9 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
                 suggestions,
             ) + make_btn_updates(suggestions)
 
+        marks["answer"] = time.monotonic()
         new_sugg = orch.generate_suggestions(text, clean)
+        marks["suggestions"] = time.monotonic()
         text = chat_svc.routing_badge(tab_used) + text
         # OPS-02: links to /download/... routes, which any replica can serve.
         # Links live in the answer itself: a separate component's update raced
@@ -233,7 +237,8 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     ]
     chart_update = gr.update(value=chart_fig, visible=chart_fig is not None)
     btn_updates = make_btn_updates(new_sugg)
-    log.info(f"[respond] turn end ms={int((time.monotonic() - started) * 1000)}")
+    marks["end"] = time.monotonic()
+    log.info(f"[respond] turn end ms={int((marks['end'] - started) * 1000)}{_phase_ms(marks)}")
     yield (
         _INPUT_READY,
         _SEND_READY,
@@ -241,6 +246,24 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         chart_update,
         new_sugg,
     ) + btn_updates
+
+
+def _phase_ms(marks: dict[str, float]) -> str:
+    """ " orchestrator_ms=… answer_ms=… suggestions_ms=… persist_ms=…": how long each stage of the
+    turn took (set-up and history load, the graph and streamed answer, the follow-up chips,
+    saving the turn). Stages that did not run are left out."""
+    stages = ("start", "orchestrator", "answer", "suggestions", "end")
+    present = [s for s in stages if s in marks]
+    parts = []
+    for before, after in zip(present, present[1:], strict=False):
+        name = {
+            "orchestrator": "orchestrator",
+            "answer": "answer",
+            "suggestions": "suggestions",
+            "end": "persist",
+        }[after]
+        parts.append(f" {name}_ms={round((marks[after] - marks[before]) * 1000)}")
+    return "".join(parts)
 
 
 def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
@@ -729,7 +752,9 @@ def build_chat_tab(user_state: gr.State):
         # A click is the typed answer: fill the box, run the same turn path.
         btn.click(lambda a=answer: a, None, [msg_box]).then(
             _respond, chat_inputs, outputs, **chat_kwargs
-        ).then(_confirm_visible, [user_state, session_state], [confirm_row])
+        ).then(_confirm_visible, [user_state, session_state], [confirm_row]).then(
+            lambda: gr.update(value=""), None, [msg_box], show_progress="hidden"
+        )
     clear_btn.click(
         _clear,
         [user_state],

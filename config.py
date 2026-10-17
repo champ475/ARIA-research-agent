@@ -120,7 +120,11 @@ class Settings(BaseSettings):
     # REL-08: where scripts/backup_db.py writes dumps (copy them off the machine).
     BACKUP_DIR: str = "backups"
     DB_POOL_MAX: int = Field(20, ge=1, le=500)
-    DB_POOL_ACQUIRE_TIMEOUT: float = Field(10, gt=0)
+    # Neon wakes a suspended compute in a few seconds: wait longer than one connect attempt.
+    DB_POOL_ACQUIRE_TIMEOUT: float = Field(20, gt=0)
+    # Recycle idle connections before the server or pooler drops them (Neon: ~5 min idle).
+    DB_POOL_MAX_IDLE: float = Field(180, gt=0)
+    DB_POOL_MAX_LIFETIME: float = Field(1800, gt=0)
     DB_POOL_MIN: int = Field(2, ge=0)
     DB_CONNECT_TIMEOUT: int = Field(10, ge=1)
     # Server-side cap on one statement (REL-04); 0 disables it.
@@ -515,6 +519,8 @@ BACKUP_DIR = settings.BACKUP_DIR
 RUN_JOBS_IN_APP = settings.run_jobs_in_app
 DB_POOL_MAX = settings.DB_POOL_MAX
 DB_POOL_ACQUIRE_TIMEOUT = settings.DB_POOL_ACQUIRE_TIMEOUT
+DB_POOL_MAX_IDLE = settings.DB_POOL_MAX_IDLE
+DB_POOL_MAX_LIFETIME = settings.DB_POOL_MAX_LIFETIME
 DB_POOL_MIN = settings.DB_POOL_MIN
 DB_CONNECT_TIMEOUT = settings.DB_CONNECT_TIMEOUT
 DB_STATEMENT_TIMEOUT_MS = settings.DB_STATEMENT_TIMEOUT_MS

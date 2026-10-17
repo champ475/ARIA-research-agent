@@ -7,6 +7,8 @@ checked by tests/test_a11y_tokens.py). APP_CSS is its text.
 
 from pathlib import Path
 
+import gradio as gr
+
 APP_CSS = (Path(__file__).with_name("theme.css")).read_text(encoding="utf-8")
 
 # UX-03: light or dark follows the visitor's stored choice, else their OS
@@ -68,15 +70,33 @@ APP_JS = """(() => {
 
 THEME_TOGGLE_JS = "() => { window.ariaToggleTheme && window.ariaToggleTheme(); }"
 
-HEADER_HTML = """
+_HEADER_TEMPLATE = """
 <header id='aria-header'>
   <div>
     <span class='aria-brand'>⚡ ARIA</span>
     <span class='aria-tagline'>Autonomous Research &amp; Investment Analyst · NSE · BSE · v2</span>
   </div>
-  <div class='aria-pill'>Free trial · bring your own key for unlimited use (Settings)</div>
+  <div class='aria-pill'>{pill}</div>
 </header>
 """
+
+
+def header_html(pill: str = "Free trial · bring your own key for unlimited use (Settings)") -> str:
+    """The page header; the pill says what limits the signed-in account."""
+    import html
+
+    return _HEADER_TEMPLATE.format(pill=html.escape(pill))
+
+
+HEADER_HTML = header_html()
+
+
+def header_for(user_id: int | None):
+    """The header for whoever just signed in (an update, or no change while unknown)."""
+    from services.settings import header_pill
+
+    return header_html(header_pill(user_id)) if user_id else gr.update()
+
 
 FOOTER_HTML = """
 <div class='aria-footer'>
