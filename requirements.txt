@@ -4,7 +4,7 @@ google-genai>=1.0.0
 openai>=1.0.0
 
 # ── Crypto (encrypting user-supplied LLM API keys, utils/crypto.py) ──────────
-cryptography>=50.0.0
+cryptography>=50.0.2
 
 # ── Agentic research graph ────────────────────────────────────────────────────
 langgraph>=0.2.0
