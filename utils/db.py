@@ -27,6 +27,7 @@ from config import (
     DB_STATEMENT_TIMEOUT_MS,
     db_host,
 )
+from utils.money import tidy, to_db
 
 log = logging.getLogger(__name__)
 
@@ -559,6 +560,7 @@ MAX_ACTIVE_ALERTS = 50
 
 
 def _existing_alert_id(user_id: int, symbol: str, alert_type: str, threshold, direction) -> int | None:
+    threshold = to_db(threshold)
     row = _query(
         "SELECT id FROM alerts WHERE user_id=%s AND symbol=%s AND alert_type=%s AND active "
         "AND COALESCE(threshold, -1) = COALESCE(%s, -1) AND COALESCE(direction, '') = COALESCE(%s, '')",
@@ -582,6 +584,7 @@ def alert_add(
     AlertLimitReached once the user has MAX_ACTIVE_ALERTS active alerts.
     The cap is checked in the INSERT itself, so a burst can't overshoot it
     by more than its own concurrency (and per-user turns run one at a time)."""
+    threshold = to_db(threshold)  # NUMERIC(18,4): exact, never a float round-trip
     try:
         row = _query(
             "INSERT INTO alerts (user_id, symbol, alert_type, condition, threshold, recurring, cooldown_hours, "
@@ -616,7 +619,10 @@ def alert_list(user_id: int, active_only: bool = False) -> list[dict]:
     if active_only:
         sql += " AND active=TRUE"
     sql += " ORDER BY created_at DESC"
-    return _query(sql, (user_id,), fetch="all")
+    rows = _query(sql, (user_id,), fetch="all")
+    for r in rows:
+        r["threshold"] = tidy(r.get("threshold"))
+    return rows
 
 
 def alert_remove(user_id: int, alert_id: int) -> bool:

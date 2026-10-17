@@ -112,3 +112,31 @@ def test_portfolio_pnl_alert_fires(db, two_users):
             assert ca.evaluate(conn, alert, ca.RunCache()) is None
     finally:
         db.release_conn(conn)
+
+
+def test_alert_threshold_round_trips_exactly(db, two_users):
+    """DATA-09: 12345678.9012 survives storage (a float4 REAL could not hold it)."""
+    a, _ = two_users
+    db.alert_add(a, "TCS", "price_above", "price above", 12345678.9012)
+    [alert] = db.alert_list(a)
+    assert alert["threshold"] == D("12345678.9012")
+    db.alert_add(a, "INFY", "rsi_cross_above", "rsi", 70.0)
+    assert {x["symbol"]: x["threshold"] for x in db.alert_list(a)}["INFY"] == D(70)
+
+
+def test_duplicate_alert_detected_on_decimal_threshold(db, two_users):
+    a, _ = two_users
+    db.alert_add(a, "TCS", "price_above", "c", 100.1)
+    with pytest.raises(db.DuplicateAlert):
+        db.alert_add(a, "TCS", "price_above", "c", D("100.1000"))
+
+
+def test_price_alert_decides_on_decimals(db, two_users):
+    """A quote of 1234.5678 against a stored 1234.5678 is not 'above' it."""
+    a, _ = two_users
+    db.alert_add(a, "TCS", "price_above", "c", D("1234.5678"))
+    row = db._query("SELECT * FROM alerts WHERE user_id=%s", (a,), fetch="one")
+    with patch.object(ca.RunCache, "info", lambda self, sym: {"currentPrice": 1234.5678}):
+        assert ca.evaluate(None, row) is None
+    with patch.object(ca.RunCache, "info", lambda self, sym: {"currentPrice": 1234.5679}):
+        assert "above" in ca.evaluate(None, row)
