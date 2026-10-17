@@ -3,17 +3,18 @@
 
 # Lint, format, types
 ruff==0.17.0          # pinned: formatter output must match CI and pre-commit
-mypy>=1.11.0
+mypy>=2.4.0
 types-pytz
 types-requests
 
-# Tests
+# Tests (test tools live here, not in the runtime requirements.txt)
+pytest>=8.0.0
 pytest-cov>=5.0.0
-hypothesis>=6.100.0
+hypothesis>=6.169.1
 pyyaml>=6.0        # tests/edge_cases/matrix.yaml (TEST-03)
 responses>=0.25.0  # recorded HTTP responses for data-contract tests (TEST-05)
 pytest-playwright>=0.5.0  # end-to-end UI journeys (TEST-04); then: playwright install chromium
-testcontainers[postgres]>=4.8.0
+testcontainers[postgres]>=4.15.0
 pytest-xdist>=3.6.0   # optional: pytest -n auto
 
 # Security

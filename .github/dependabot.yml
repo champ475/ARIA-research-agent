@@ -1,6 +1,7 @@
 # Dependency update PRs (PRD SEC-14). Python updates arrive as edits to
 # requirements*.txt; regenerate the hashed locks on the PR branch with
-# `python scripts/lock.py` (CI's lock-check fails until you do).
+# `python scripts/lock.py --upgrade <package>` (CI's lock-check fails until
+# you do, whenever the new floor is above the locked pin).
 version: 2
 updates:
   - package-ecosystem: pip

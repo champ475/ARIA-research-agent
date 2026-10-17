@@ -4,7 +4,7 @@ google-genai>=1.0.0
 openai>=1.0.0
 
 # ── Crypto (encrypting user-supplied LLM API keys, utils/crypto.py) ──────────
-cryptography>=50.0.0
+cryptography>=50.0.2
 
 # ── Agentic research graph ────────────────────────────────────────────────────
 langgraph>=0.2.0
@@ -52,7 +52,3 @@ pydantic-settings>=2.6.0         # typed, validated configuration (ARCH-03)
 cachetools>=5.5.0                # bounded TTL caches: sessions (SEC-04), orchestrators (REL-03)
 prometheus-client>=0.20.0        # /metrics for dashboards and alerts (OBS-03)
 pytz>=2024.1
-
-# ── Testing ───────────────────────────────────────────────────────────────────
-pytest>=8.0.0
-pytest-asyncio>=0.24.0
