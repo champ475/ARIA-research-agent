@@ -130,3 +130,29 @@ def test_pool_settings_are_typed_and_sane():
 
     assert config.DB_POOL_ACQUIRE_TIMEOUT >= config.DB_CONNECT_TIMEOUT
     assert 0 < config.DB_POOL_MAX_IDLE < 300  # shorter than Neon's idle drop
+
+
+class TestPolish:
+    def test_equity_chips_need_a_company(self):
+        from agents.graph_orchestrator import _DEFAULT_SUGGESTIONS, suggestions_for
+
+        assert suggestions_for("equity", "what about its debt?") == list(_DEFAULT_SUGGESTIONS)
+        chips = suggestions_for("equity", "How is TCS doing?")
+        assert chips[0] == "TCS technicals" and len(chips) == 4
+
+    def test_other_domains_keep_their_chips(self):
+        from agents.graph_orchestrator import suggestions_for
+
+        assert suggestions_for("mf", "best funds")[0] == "Compare two funds"
+
+    def test_the_empty_chat_says_what_to_ask(self):
+        from ui.chat import WELCOME_MD
+
+        assert "How is Reliance doing?" in WELCOME_MD and "Compare HDFC Bank and ICICI Bank" in WELCOME_MD
+
+    def test_reframe_prompt_does_not_open_with_a_refusal(self):
+        import prompts
+
+        text = str(prompts.get("advice.reframe"))
+        assert prompts.get("advice.reframe").id.endswith("@v2")
+        assert "Do not open with a refusal" in text and "Do NOT tell them to buy, sell or hold" in text

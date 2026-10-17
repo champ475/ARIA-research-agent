@@ -298,7 +298,9 @@ def suggestions_for(domain: str, last_query: str) -> list[str]:
     user just asked about when there is one."""
     chips = list(_SUGGESTIONS.get(domain, _DEFAULT_SUGGESTIONS))
     m = _TICKER_RE.search(last_query or "")
-    if domain == "equity" and m:
+    if domain == "equity":
+        if not m:  # "Show the technicals" of what? Offer starting points instead.
+            return list(_DEFAULT_SUGGESTIONS)
         sym = m.group(0)
         chips = [f"{sym} technicals", f"Compare {sym} with peers", f"{sym} latest news", f"Alert me on {sym}"]
     return chips

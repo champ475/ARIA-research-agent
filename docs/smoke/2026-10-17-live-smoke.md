@@ -132,3 +132,34 @@ Non-admin trial limit (needs a second account); 375 px layout (the browser windo
 3. P0-4 and P0-5 (no-company handling, fund names).
 4. P1-7 (guardrail cases), P1-8 (NaN), P1-9 (textbox), P1-10 (pool), P1-12 (admin badge).
 5. Re-run this document's table with a real analyzer, then `make eval` and the judge calibration.
+
+## Fix status (branch `smoke-test-fixes`)
+
+Each fix is one commit with unit tests; none of it has been re-run against the live app yet (see "Re-test plan").
+
+| Finding | Commit | What changed |
+|---|---|---|
+| P0-1 analyzer empty replies | WP1 | gpt-oss gets low reasoning effort plus 512 tokens of headroom; an empty reply with `finish_reason=length` is retried at double the budget, then raises `EmptyReply` (next provider); `aria_llm_empty_replies` metric; the objective falls back to the user's words |
+| P0-2 gate over-fires, cryptic text | WP2 | judge issues are soft (answer plus a note), only hard faults ask and the question names the claim; no gate when nothing was collected; an unusable judge reply is "unavailable", never "clean" |
+| P0-3 fabricated market answer | WP4 | `fetch_market_overview` (Nifty 50, Sensex, Nifty Bank) always planned for market questions; the real cause was a movers table with no % column (NSE's `perChange` was dropped), now shown and summarised; market-wide data is dated by the last close; research footer on every data answer |
+| P0-4 no-company / concept questions | WP3 | "which company?" is asked before any tool runs; company-bound tools never run on "market"; concept questions use a new direct prompt; group names (Tata, Adani, ...) are asked about; replies to "Which X?" re-run the original question |
+| P0-5 MF names | WP5 | fund names are read from the question; the MF tools are cached per fund |
+| P1-4 intent labels | WP6 | a screener label with named companies and no filter becomes equity |
+| P1-7 guardrail gaps | WP7 | "guarantee me ...", "which stock will double", "is X a buy", "good time to buy" |
+| P1-3, P1-5, P1-6 answer quality | WP8 | Infosys was reported in USD against an INR market cap (P/S 231.7): statements are converted at the FX rate; implausible multiples are not shown; amounts in crore, labelled ratios, one ROE, lender rows hidden, numbered footnotes; the comparison prompt asks for one table |
+| P1-8 NaN cache | WP9 | NaN/Infinity cleaned before the jsonb write |
+| P1-10 idle pool | WP9 | idle 180 s / lifetime 1800 s / acquire 20 s, one retry in the session lookup, RUNBOOK entry |
+| P1-9 leftover "yes" | WP9 | defensive clear after the gate buttons; **the cause was not reproduced** |
+| P1-12 admin shown as trial | WP9 | header and Settings say Admin or "your own key" |
+| P1-13 alert far from price | WP9 | a level below 20% or above 3x of today's price needs "anyway" |
+| P1-11 time outside the graph | WP9 | the turn-end log line now splits the wall time (`orchestrator_ms`, `answer_ms`, `suggestions_ms`, `persist_ms`); no fix until a live run shows where it goes |
+| P2 welcome, chips, reframe tone | WP10 | welcome text in the empty chat; equity chips only when a company is named; reframe prompt v2 |
+
+**Not done:** screener sector tagging for Emmvee (Yahoo calls it Technology; needs an industry rule), the screener "as of" using the snapshot date and row count, the empty-portfolio "market closed" line, planning asking for the retirement age, and the layout at 375 px (browser window could not be resized).
+
+**Prompts changed (eval fixtures need re-recording, in your terminal):** `communication.system` v2, `communication.direct` v1 (new), `advice.reframe` v2. `python evals/runner.py --replay --compare evals/baseline.json` is green (255 cases, 12 of them smoke-test cases), but the recorded LLM calls for the old prompt versions are stale. Then: `python evals/runner.py --record`, `make eval-baseline`, `python evals/judge_calibration.py`.
+
+## Re-test plan
+
+1. Same rig as this run (Chrome, LangSmith, Neon, no code patches), at most 20 chat turns. Pass: analyzer empty rate 0; at most one gate in 11 research turns; turns 2, 3, 4, 5b, 8, 9, 11, 14 answered correctly; the answer to turn 9 cites index levels; INFY P/S and EV/EBITDA sane; no "pre-verified conclusions" in any trace.
+2. Then the tests that were not run: non-admin trial limit, 375/768/1280 px, Hinglish and typo prompts live, prompt injection live, chat rename/search/export, thumbs feedback, PDF/Markdown downloads, "Show me cheap stocks", "Which sectors are doing well this month?", dark/light, two quick sends, "SBI share price", "INFY", "500325", "Adani stock", "alert me if Reliance falls a lot", "TCS below 3000" (must not write), "report on Wipro and alert me if it drops 5%", "Add 10 Reliance at 2500 to my portfolio", "show my reports".

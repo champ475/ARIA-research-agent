@@ -132,7 +132,7 @@ def test_screener_and_csv(page: Page, base_url, email):
 # 9 ─────────────────────────────────────────────────────────────────────────────
 def test_create_list_and_cancel_an_alert(page: Page, base_url, email, db):
     new_user(page, base_url, email)
-    ask(page, "Alert me if TCS goes above 99999")
+    ask(page, "Alert me if TCS goes above 99999 anyway")
     assert ERROR not in wait_answer(page)
     uid = _user_id(db, email)
     rows = db.execute("SELECT id, symbol, threshold FROM alerts WHERE user_id=%s", (uid,)).fetchall()
@@ -148,7 +148,7 @@ def test_create_list_and_cancel_an_alert(page: Page, base_url, email, db):
 def test_alerts_tab_create_in_chat_then_edit_and_delete(page: Page, base_url, email, db):
     """UX-06: an alert made in chat shows in the Alerts tab, can be paused, edited and deleted."""
     new_user(page, base_url, email)
-    ask(page, "Alert me if TCS goes above 99999")
+    ask(page, "Alert me if TCS goes above 99999 anyway")
     assert ERROR not in wait_answer(page)
     uid = _user_id(db, email)
     aid = db.execute("SELECT id FROM alerts WHERE user_id=%s", (uid,)).fetchone()["id"]

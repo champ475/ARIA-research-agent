@@ -70,6 +70,17 @@ CAPABILITIES_MD = """
 - cover markets outside India, derivatives strategies, crypto, or tax filing;
 - be right every time: numbers come with their sources — check what matters before acting.
 """
+# Shown in the empty chat window (Gradio's Chatbot placeholder): what to ask, in the user's words.
+WELCOME_MD = (
+    "### Ask ARIA about Indian stocks and funds\n"
+    "Try one of these, or type your own:\n\n"
+    "- *How is Reliance doing?*\n"
+    "- *Compare HDFC Bank and ICICI Bank*\n"
+    "- *IT stocks with PE under 25 and ROE above 15%*\n"
+    "- *Compare Parag Parikh Flexi Cap and HDFC Flexi Cap*\n"
+    "- *What does a high P/E ratio mean?*\n\n"
+    "Name the company or fund you mean; I'll ask if it could be more than one."
+)
 CHAT_PLACEHOLDER = (
     "Ask anything — stock analysis, IC/result-update reports, mutual funds, "
     "screening, portfolio, market overview…"
@@ -581,6 +592,7 @@ def build_chat_tab(user_state: gr.State):
                 # SEC-10: stated explicitly so a Gradio default change can't
                 # turn off sanitising of LLM- and user-supplied markup.
                 sanitize_html=True,
+                placeholder=WELCOME_MD,
                 height=480,
                 render_markdown=True,
                 elem_id=f"chatbot-{tab_id}",
