@@ -37,7 +37,7 @@ jobs:
       image: ${{ steps.name.outputs.image }}
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.VERSION }}
       - id: name
@@ -84,7 +84,7 @@ jobs:
       E2E_BASE_URL: http://localhost:7870
       E2E_DATABASE_URL: postgresql://aria:aria@localhost:55433/aria_e2e
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.VERSION }}
       - uses: docker/login-action@v3
