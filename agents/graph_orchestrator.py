@@ -606,7 +606,11 @@ class GraphOrchestrator:
                 rec.status = "gated"
                 self._awaiting_confirmation = True
                 self._set_pending(self._thread_id)
-                prompt = result["__interrupt__"][0].value.get("message", "Proceed?")
+                gate = result["__interrupt__"][0].value
+                from utils import metrics
+
+                metrics.observe_gate(gate.get("type", "unknown"))
+                prompt = gate.get("message", "Proceed?")
                 reply = f"{prompt} (reply yes/no, or use the buttons)"
                 self._memory.add_assistant(reply)
                 yield reply, None, None, None, None, "equity"

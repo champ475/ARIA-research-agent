@@ -30,7 +30,7 @@ from collections.abc import Callable
 
 import prompts
 from agents.llm_client import LLMClient, LLMProvidersExhausted
-from config import EVIDENCE_PROMPT_CHAR_BUDGET, TOKENS_AGENT
+from config import EVIDENCE_PROMPT_CHAR_BUDGET, TOKENS_AGENT, VERIFICATION_STRONG_JUDGE
 from graph.deadline import past_research_cutoff
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
@@ -218,11 +218,34 @@ def _build_judge_prompt(objective: str, evidence_summary: dict) -> str:
     return f"Objective: {objective}\n\nEvidence summary:\n{wrap_untrusted('evidence', evidence_json)}"
 
 
+def run_judge(client, objective: str, evidence_summary: dict) -> list[VerificationIssue]:
+    """Stage 3 on its own (LLM-13): the issues the judge raises for one
+    objective + evidence summary. The calibration set scores exactly this.
+    Raises LLMProvidersExhausted."""
+    raw = json_reply(
+        client,
+        VerificationResult,
+        "verification",
+        _build_judge_prompt(objective, evidence_summary),
+        max_tokens=TOKENS_AGENT,
+        temperature=0.0,
+    )
+    return _parse_llm_issues(raw)
+
+
 def build_verification_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
     client = client or LLMClient(_SYSTEM, provider_config, node="verification")
+    strong: list[LLMClient] = []  # built on first complex turn (LLM-13)
+
+    def _judge_client(state: GraphState) -> LLMClient:
+        if VERIFICATION_STRONG_JUDGE and state.get("complexity") == "complex":
+            if not strong:
+                strong.append(LLMClient(_SYSTEM, provider_config, node="verification_complex"))
+            return strong[0]
+        return client
 
     def verification(state: GraphState) -> dict:
         evidence = state.get("evidence", [])
@@ -260,13 +283,8 @@ def build_verification_node(
 
         max_loops = state.get("max_loops", 2)
         try:
-            raw = json_reply(
-                client,
-                VerificationResult,
-                "verification",
-                _build_judge_prompt(state.get("objective", ""), state.get("evidence_summary", {})),
-                max_tokens=TOKENS_AGENT,
-                temperature=0.0,
+            stage3_issues = run_judge(
+                _judge_client(state), state.get("objective", ""), state.get("evidence_summary", {})
             )
         except LLMProvidersExhausted as e:
             # Honest terminal state instead of silently looking clean — an
@@ -289,7 +307,6 @@ def build_verification_node(
                     "Verification", "llm_judge skipped — all providers exhausted", type(e).__name__
                 ),
             }
-        stage3_issues = _parse_llm_issues(raw)
         # loop_count is a shared budget incremented by whichever side (Reflection
         # or Verification) is asking for another pass — this is what keeps a
         # Reflection<->Verification ping-pong (Verification flags something

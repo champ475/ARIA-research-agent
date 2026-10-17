@@ -22,3 +22,4 @@
 {"sha256": "77fb4c56cc7c4aac08040fa22abed9b7042b0c19390d0fc6c6a3da0587a55dec", "node": "Planner", "response": "{\"tools\": [\"fetch_info\"]}"}
 {"sha256": "4da9d8e3933dfd2d1b8b7048a5c27357acbebf89cc430699b3a088af593abe41", "node": "QueryAnalyzer", "response": "{\"intent\": \"mf\", \"secondary_intents\": [], \"objective\": \"get the debt to equity ratio of Bharti Airtel\", \"complexity\": \"moderate\", \"companies\": [\"BHARTIARTL\"], \"complexity\": \"moderate\"}"}
 {"sha256": "04fe24866ab998e08134cd374dece3e8c3c1e1aefdb071e862afd868fab521d0", "node": "Planner", "response": "{\"tools\": [\"fetch_info\", \"compute_fundamentals\"]}"}
+{"sha256": "177d67accf38a57e36206072c14e6534b27607686cca094e6c17bc96c04e46f5", "node": "verification", "response": "{\"issues\": []}"}

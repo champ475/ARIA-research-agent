@@ -175,6 +175,8 @@ class Settings(BaseSettings):
     SMTP_STARTTLS: bool = True
     # Block the app until the email address is verified; unset = on except dev/test.
     REQUIRE_EMAIL_VERIFICATION: bool | None = None
+    # LLM-13: judge complex turns with the synthesis-class model instead of the fast one.
+    VERIFICATION_STRONG_JUDGE: bool = False
     # SEC-15: who may frame the app (CSP frame-ancestors); none unless it is embedded.
     FRAME_ANCESTORS: str = "'none'"
     # SEC-15: send Strict-Transport-Security; unset = on except dev/test (plain http there).
@@ -434,6 +436,7 @@ SMTP_PASSWORD = settings.SMTP_PASSWORD
 SMTP_FROM = settings.SMTP_FROM
 SMTP_STARTTLS = settings.SMTP_STARTTLS
 REQUIRE_EMAIL_VERIFICATION = settings.require_email_verification
+VERIFICATION_STRONG_JUDGE = settings.VERIFICATION_STRONG_JUDGE
 FRAME_ANCESTORS = settings.FRAME_ANCESTORS.strip() or "'none'"
 HSTS_ENABLED = settings.hsts_enabled
 TRUSTED_PROXIES = [p.strip() for p in settings.TRUSTED_PROXIES.split(",") if p.strip()]
@@ -694,6 +697,7 @@ NODE_MODEL_CLASS: dict[str, str] = {
     "planner": "fast",
     "reflection": "fast",
     "verification": "fast",
+    "verification_complex": "synthesis",
     "suggestions": "fast",
     "summary": "fast",
     "extract": "fast",
