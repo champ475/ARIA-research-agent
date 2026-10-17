@@ -1,16 +1,24 @@
-# Mirrors the CI quality gates (PRD TEST-01). Install once:  pre-commit install
+# Mirrors the CI quality gates (PRD TEST-01). Install once, with the venv's Python:
+#   .\venv\Scripts\python.exe -m pre_commit install      (Windows)
+#   ./venv/bin/python -m pre_commit install              (macOS/Linux)
+# Check everything:  <same python> -m pre_commit run --all-files
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.17.0
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
       - id: ruff-format
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
+      # Not on bytes that must stay as written: prompt files (their hash keys the
+      # recorded eval fixtures), recorded/fake HTTP data, vendored JS, eval
+      # results and generated drill records.
       - id: trailing-whitespace
+        exclude: &verbatim ^(prompts/|data/|tests/fixtures/|tests/e2e/vendor/|evals/(baseline\.json|fixtures/|results/)|docs/drills/)
       - id: end-of-file-fixer
+        exclude: *verbatim
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
@@ -23,9 +31,11 @@ repos:
       - id: gitleaks
   - repo: local
     hooks:
+      # The project venv's mypy (scripts/in_venv.py): the pydantic plugin needs the
+      # project's packages, and a bare `mypy` may be a global install.
       - id: mypy
         name: mypy
-        entry: mypy
-        language: system
+        entry: python scripts/in_venv.py mypy
+        language: python
         pass_filenames: false
         types: [python]
