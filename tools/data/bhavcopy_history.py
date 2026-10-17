@@ -12,11 +12,18 @@ yfinance outage degrades technicals over days instead of leaving them blank
 forever. This can't backfill days that passed before it started running —
 it only ever has what's accumulated since first deployed — so it's a
 slow-building safety net, not an instant fix.
+
+DATA-10: the window is kept in Postgres (`bhavcopy_bars`), so it survives a
+container restart and is shared by every replica. The local Parquet files are
+only the fallback for an unreachable database.
 """
 
+import logging
 import os
 import pandas as pd
 from config import DATA_DIR
+
+log = logging.getLogger(__name__)
 
 _HISTORY_DIR = os.path.join(DATA_DIR, "bhavcopy_history")
 _MAX_ROWS = 300  # ~14 months of trading days — plenty for any indicator in use
@@ -35,6 +42,17 @@ def record_row(symbol: str, row: dict):
     parsed = pd.to_datetime(date_str, format="%d-%b-%Y", errors="coerce")
     day = parsed if pd.notna(parsed) else pd.Timestamp.now().normalize()
 
+    try:
+        from utils import db
+
+        db.bhavcopy_bar_put(symbol, day.date(), row["open"], row["high"], row["low"], row["close"])
+        return
+    except Exception:
+        log.debug("bhavcopy history: database write failed, using disk", exc_info=True)
+    _disk_record(symbol, day, row)
+
+
+def _disk_record(symbol: str, day: pd.Timestamp, row: dict):
     p = _path(symbol)
     try:
         existing = pd.read_parquet(p) if os.path.exists(p) else pd.DataFrame()
@@ -60,6 +78,31 @@ def record_row(symbol: str, row: dict):
         pass  # best-effort — a failed write just means no history gained today
 
 
+def _db_history(symbol: str) -> pd.DataFrame | None:
+    """The stored window as an OHLCV frame; None if the database can't be reached."""
+    try:
+        from utils import db
+
+        bars = db.bhavcopy_bars_get(symbol)
+    except Exception:
+        log.debug("bhavcopy history: database read failed, using disk", exc_info=True)
+        return None
+    if not bars:
+        return pd.DataFrame()
+    df = pd.DataFrame(bars)
+    out = pd.DataFrame(
+        {
+            "Open": df["open"].astype(float),
+            "High": df["high"].astype(float),
+            "Low": df["low"].astype(float),
+            "Close": df["close"].astype(float),
+            "Volume": 0,
+        }
+    )
+    out.index = pd.DatetimeIndex(pd.to_datetime(df["day"]))
+    return out
+
+
 def read_history(symbol: str, adjust: bool = True) -> pd.DataFrame:
     """Whatever rolling window has accumulated for `symbol` so far. Empty
     DataFrame if none has been recorded yet.
@@ -67,13 +110,15 @@ def read_history(symbol: str, adjust: bool = True) -> pd.DataFrame:
     Rows are stored as traded; with `adjust` (the default) bars before a split
     or bonus ex-date are rescaled from NSE's corporate-actions feed so the
     series is continuous (DATA-07)."""
-    p = _path(symbol)
-    if not os.path.exists(p):
-        return pd.DataFrame()
-    try:
-        df = pd.read_parquet(p)
-    except Exception:
-        return pd.DataFrame()
+    df = _db_history(symbol)
+    if df is None:  # database unreachable: whatever this machine's disk has
+        p = _path(symbol)
+        if not os.path.exists(p):
+            return pd.DataFrame()
+        try:
+            df = pd.read_parquet(p)
+        except Exception:
+            return pd.DataFrame()
     if adjust and not df.empty:
         from tools.data.adjustments import adjust_ohlcv, corporate_factors
 

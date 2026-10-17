@@ -755,6 +755,141 @@ def profile_upsert(user_id: int, updates: dict) -> dict:
     return current
 
 
+# ── Shared market-data caches (DATA-10; no user_id: shared, not tenant data) ──
+
+
+def ohlcv_cache_get(symbol: str, period: str, interval: str, max_age_hours: float) -> bytes | None:
+    """Parquet bytes of a cached OHLCV frame younger than `max_age_hours`, else None."""
+    row = _query(
+        "SELECT data FROM ohlcv_cache WHERE symbol=%s AND period=%s AND interval=%s "
+        "AND fetched_at > now() - make_interval(secs => %s)",
+        (symbol, period, interval, max_age_hours * 3600),
+        fetch="one",
+    )
+    return bytes(row["data"]) if row else None
+
+
+def ohlcv_cache_put(symbol: str, period: str, interval: str, data: bytes) -> None:
+    _query(
+        "INSERT INTO ohlcv_cache (symbol, period, interval, data) VALUES (%s,%s,%s,%s) "
+        "ON CONFLICT (symbol, period, interval) DO UPDATE SET data=EXCLUDED.data, fetched_at=now()",
+        (symbol, period, interval, data),
+        fetch=None,
+        commit=True,
+    )
+
+
+def ohlcv_cache_clear(symbol: str | None = None) -> int:
+    if symbol is None:
+        rows = _query("DELETE FROM ohlcv_cache RETURNING 1", fetch="all", commit=True)
+    else:
+        rows = _query(
+            "DELETE FROM ohlcv_cache WHERE symbol=%s RETURNING 1", (symbol,), fetch="all", commit=True
+        )
+    return len(rows or [])
+
+
+BHAVCOPY_MAX_BARS = 300  # ~14 months of sessions per symbol
+
+
+def bhavcopy_bar_put(symbol: str, day: date, open_, high, low, close) -> None:
+    """One session's unadjusted bar; a repeat of the same day is ignored. Keeps the
+    newest BHAVCOPY_MAX_BARS per symbol."""
+    _query(
+        "INSERT INTO bhavcopy_bars (symbol, day, open, high, low, close) VALUES (%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (symbol, day) DO NOTHING",
+        (symbol, day, to_db(open_), to_db(high), to_db(low), to_db(close)),
+        fetch=None,
+        commit=True,
+    )
+    _query(
+        "DELETE FROM bhavcopy_bars WHERE symbol=%s AND day < "
+        "(SELECT day FROM bhavcopy_bars WHERE symbol=%s ORDER BY day DESC OFFSET %s LIMIT 1)",
+        (symbol, symbol, BHAVCOPY_MAX_BARS - 1),
+        fetch=None,
+        commit=True,
+    )
+
+
+def bhavcopy_bars_get(symbol: str) -> list[dict]:
+    return _query(
+        "SELECT day, open, high, low, close FROM bhavcopy_bars WHERE symbol=%s ORDER BY day",
+        (symbol,),
+        fetch="all",
+    )
+
+
+# ── Retention purges (DATA-10, COMP-06; see utils/retention.py) ──────────────
+
+_PURGE_BATCH = 5000
+
+
+def purge_older_than(table: str, column: str, cutoff, extra_where: str = "") -> int:
+    """Delete up to _PURGE_BATCH rows of one of the allow-listed retention
+    tables whose `column` is before `cutoff`; returns the number deleted (call
+    again until it returns less than a batch)."""
+    if (table, column) not in _PURGEABLE:
+        raise ValueError(f"{table}.{column} is not a retention target")
+    where = f"{column} < %s" + (f" AND ({extra_where})" if extra_where else "")
+    rows = _query(
+        f"DELETE FROM {table} WHERE ctid IN (SELECT ctid FROM {table} WHERE {where} LIMIT {_PURGE_BATCH}) "  # noqa: S608  # nosec B608
+        "RETURNING 1",
+        (cutoff,),
+        fetch="all",
+        commit=True,
+    )
+    return len(rows or [])
+
+
+def oldest_row(table: str, column: str, extra_where: str = ""):
+    if (table, column) not in _PURGEABLE:
+        raise ValueError(f"{table}.{column} is not a retention target")
+    where = f" WHERE {extra_where}" if extra_where else ""
+    row = _query(f"SELECT min({column}) AS oldest FROM {table}{where}", fetch="one")  # noqa: S608  # nosec B608
+    return row["oldest"] if row else None
+
+
+# (table, timestamp column) pairs the retention job may purge — never user input.
+_PURGEABLE = {
+    ("evidence_cache", "fetched_at"),
+    ("pdf_cache", "fetched_at"),
+    ("ohlcv_cache", "fetched_at"),
+    ("auth_attempts", "attempted_at"),
+    ("telegram_link_codes", "created_at"),
+}
+
+
+def checkpoints_purge(older_than, batch: int = 200) -> int:
+    """Delete LangGraph threads whose newest checkpoint is older than `older_than`,
+    except a thread a chat is paused on (pending_thread_id: its human-in-the-loop
+    answer is still awaited). Returns threads removed."""
+    rows = _query(
+        "SELECT thread_id FROM checkpoints GROUP BY thread_id "
+        "HAVING max((checkpoint->>'ts')::timestamptz) < %s "
+        "AND thread_id NOT IN (SELECT pending_thread_id FROM chat_sessions WHERE pending_thread_id IS NOT NULL) "
+        "LIMIT %s",
+        (older_than, batch),
+        fetch="all",
+    )
+    ids = [r["thread_id"] for r in rows or []]
+    if not ids:
+        return 0
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+            cur.execute(f"DELETE FROM {table} WHERE thread_id = ANY(%s)", (ids,))  # noqa: S608  # nosec B608
+        conn.commit()
+    finally:
+        release_conn(conn)
+    return len(ids)
+
+
+def checkpoints_oldest():
+    row = _query("SELECT min((checkpoint->>'ts')::timestamptz) AS oldest FROM checkpoints", fetch="one")
+    return row["oldest"] if row else None
+
+
 # ── Evidence cache helpers (research graph, see tools/data/evidence_cache.py) ─
 
 

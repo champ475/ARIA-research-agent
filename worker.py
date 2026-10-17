@@ -13,6 +13,7 @@ safe alongside a separate worker.
 Jobs (IST):
   alert_check            every 5 min while the NSE market is open
   housekeeping           hourly — expired sessions, auth attempts/tokens, link codes
+  retention              02:30 daily — caches, checkpoints and other data past its retention period
   fundamentals_snapshot  19:30 on trading days — the screener's nightly snapshot
   mf_refresh             23:30 daily — mutual fund metrics after AMFI publishes
   ops_watchdog           every 5 min — pages the operator (utils/watchdog.py, OBS-04)
@@ -56,6 +57,12 @@ def _housekeeping() -> None:
     run_housekeeping()
 
 
+def _retention() -> None:
+    from utils.retention import run_retention
+
+    run_retention()
+
+
 def _fundamentals_snapshot() -> None:
     from scripts.refresh_fundamentals import main
 
@@ -96,6 +103,7 @@ def _trading_day(now: datetime) -> bool:
 JOBS: list[Job] = [
     Job("alert_check", _alert_check, every=timedelta(minutes=5), when=_market_open),
     Job("housekeeping", _housekeeping, every=timedelta(hours=1)),
+    Job("retention", _retention, daily_at=dtime(2, 30)),
     Job("fundamentals_snapshot", _fundamentals_snapshot, daily_at=dtime(19, 30), when=_trading_day),
     Job("mf_refresh", _mf_refresh, daily_at=dtime(23, 30)),
     Job("ops_watchdog", _ops_watchdog, every=timedelta(minutes=5)),
