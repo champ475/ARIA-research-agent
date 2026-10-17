@@ -1500,7 +1500,7 @@ def fundamentals_upsert(rows: list[dict], *, keep_existing: bool = False) -> int
     cols = ", ".join(FUNDAMENTALS_COLUMNS)
     placeholders = ", ".join(f"%({c})s" for c in FUNDAMENTALS_COLUMNS)
     updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in FUNDAMENTALS_COLUMNS if c != "symbol")
-    on_conflict = "DO NOTHING" if keep_existing else f"DO UPDATE SET {updates}, as_of=now()"
+    on_conflict = "DO NOTHING" if keep_existing else f"DO UPDATE SET {updates}, as_of=now()"  # nosec B608 - fixed column list
     sql = (
         f"INSERT INTO fundamentals_snapshot ({cols}) VALUES ({placeholders}) "  # noqa: S608 (fixed column list)  # nosec B608
         f"ON CONFLICT (symbol) {on_conflict}"

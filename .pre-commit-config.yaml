@@ -39,3 +39,10 @@ repos:
         language: python
         pass_filenames: false
         types: [python]
+      # Same scope and config as CI's security job.
+      - id: bandit
+        name: bandit
+        entry: python scripts/in_venv.py bandit -c pyproject.toml -r agents graph tools utils web app.py server.py scripts -q
+        language: python
+        pass_filenames: false
+        types: [python]
