@@ -1,6 +1,7 @@
 import json
 from unittest.mock import patch
 
+import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -214,7 +215,10 @@ class TestReflectionVerificationLoop:
             )
             return graph.invoke({"query": query, "max_loops": 2})
 
-    def test_reflection_requesting_more_data_loops_back_to_research_executor(self):
+    def test_reflection_requesting_more_data_loops_back_to_research_executor(self, monkeypatch):
+        # LLM-11 skips Reflection's call when a moderate plan fully succeeded;
+        # this test is about the loop itself, so make Reflection always run.
+        monkeypatch.setattr("graph.nodes.reflection.REFLECTION_SKIP_WHEN_COMPLETE", False)
         # Always claims fetch_financials is missing — reflection_client
         # returns the same canned response every call, so this alone would
         # loop forever without max_loops.
@@ -313,6 +317,12 @@ class TestHumanInTheLoopGates:
     """Covers Phase 6: ResearchConfirmation and VerificationGate actually
     pause the graph (via a real checkpointer) and resume correctly — both
     the approve and decline paths."""
+
+    @pytest.fixture(autouse=True)
+    def _allow_six_companies(self, monkeypatch):
+        # These use 6 companies to build a >5-task plan; VAL-03 would
+        # otherwise stop at its 5-company cap before the gate is reached.
+        monkeypatch.setattr("graph.nodes.query_analyzer.MAX_ENTITIES_PER_TURN", 10)
 
     def _build_with_many_tasks(self):
         qa = _StubClient(
@@ -425,8 +435,8 @@ class TestProviderExhaustionTermination:
 
 class TestReportDomainEndToEnd:
     """Phase 7.1: report intent flows through the same graph, selecting
-    fetch_quarterly_results (a report-only tool) and producing pdf_path/
-    md_path in the terminal state via CommunicationLayer's report branch."""
+    fetch_quarterly_results (a report-only tool) and producing pdf_url/
+    md_url in the terminal state via CommunicationLayer's report branch."""
 
     def _run(self):
         qa = _StubClient(
@@ -446,10 +456,7 @@ class TestReportDomainEndToEnd:
             patch("graph.tool_catalogue.get_latest_quarterly_results", return_value="Revenue up 10% YoY."),
             patch("tools.data.evidence_cache.evidence_cache_get", return_value=None),
             patch("tools.data.evidence_cache.evidence_cache_put", return_value=None),
-            patch(
-                "graph.nodes.communication_layer.render_report", return_value=("/tmp/r.md", "/tmp/r.pdf")
-            ) as mock_save,
-            patch("graph.nodes.communication_layer.report_save") as mock_persist,
+            patch("graph.nodes.communication_layer.report_save", return_value=4) as mock_persist,
         ):
             graph = build_graph(
                 query_analyzer_client=qa,
@@ -465,26 +472,25 @@ class TestReportDomainEndToEnd:
                     "user_id": 7,
                 }
             )
-        return result, mock_save, mock_persist
+        return result, mock_persist
 
     def test_report_query_selects_report_only_tool(self):
-        result, _, _ = self._run()
+        result, _ = self._run()
         assert any(t["tool"] == "fetch_quarterly_results" for t in result["tasks"])
         assert all(t["status"] == "done" for t in result["tasks"])
 
-    def test_report_query_produces_file_paths(self):
-        result, mock_save, _ = self._run()
-        mock_save.assert_called_once()
-        assert result["md_path"] == "/tmp/r.md"
-        assert result["pdf_path"] == "/tmp/r.pdf"
+    def test_report_query_links_downloads(self):
+        result, _ = self._run()
+        assert result["md_url"] == "/download/report/4.md"
+        assert result["pdf_url"] == "/download/report/4.pdf"
 
     def test_report_query_persists_to_reports_table(self):
-        _, _, mock_persist = self._run()
+        _, mock_persist = self._run()
         mock_persist.assert_called_once()
         assert mock_persist.call_args[0][0] == 7  # user_id threaded through GraphState
 
     def test_report_query_final_report_from_stub(self):
-        result, _, _ = self._run()
+        result, _ = self._run()
         assert result["final_report"].startswith("Full IC report body.")
         assert "not a SEBI-registered research analyst" in result["final_report"]
 
@@ -594,7 +600,7 @@ class TestScreenerDomainEndToEnd:
             patch("graph.tool_catalogue.screener_parse_query", return_value={"max_pe": 25}),
             patch("graph.tool_catalogue.run_screener", return_value=[{"symbol": "TCS"}, {"symbol": "INFY"}]),
             patch("graph.tool_catalogue.screener_to_markdown", return_value="| TCS |\n| INFY |"),
-            patch("graph.nodes.communication_layer.save_screener_csv", return_value="/tmp/s.csv"),
+            patch("graph.nodes.communication_layer.download_put", return_value="S" * 32),
             patch("tools.data.evidence_cache.evidence_cache_get", return_value=None),
             patch("tools.data.evidence_cache.evidence_cache_put", return_value=None),
         ):
@@ -605,11 +611,13 @@ class TestScreenerDomainEndToEnd:
                 verification_client=verification,
                 communication_client=communication,
             )
-            result = graph.invoke({"query": "screen IT stocks with PE below 25", "max_loops": 2})
+            result = graph.invoke(
+                {"query": "screen IT stocks with PE below 25", "max_loops": 2, "user_id": 1}
+            )
         assert all(t["entity"] == "market" for t in result["tasks"])
         assert all(t["status"] == "done" for t in result["tasks"])
         assert any(c["citation_key"] == "market.screener_to_markdown" for c in result["conclusions"])
-        assert result["csv_path"] == "/tmp/s.csv"
+        assert result["csv_url"] == "/download/file/" + "S" * 32
         assert result["final_report"] == "Here are 2 IT stocks under PE 25."
 
 
@@ -721,8 +729,7 @@ class TestMultiIntentEndToEnd:
             patch("graph.tool_catalogue.get_latest_quarterly_results", return_value="Revenue up 10%."),
             patch("tools.data.evidence_cache.evidence_cache_get", return_value=None),
             patch("tools.data.evidence_cache.evidence_cache_put", return_value=None),
-            patch("graph.nodes.communication_layer.render_report", return_value=("/tmp/r.md", "/tmp/r.pdf")),
-            patch("graph.nodes.communication_layer.report_save"),
+            patch("graph.nodes.communication_layer.report_save", return_value=4),
         ):
             graph = build_graph(
                 query_analyzer_client=qa,
@@ -740,7 +747,7 @@ class TestMultiIntentEndToEnd:
             )
         assert result["intent"] == "report"
         assert result["secondary_intents"] == ["alert"]
-        assert result["md_path"] == "/tmp/r.md"
+        assert result["md_url"] == "/download/report/4.md"
         assert result["final_report"].startswith("Report + alert note.")
 
 

@@ -47,7 +47,14 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"gAAAAA[A-Za-z0-9_\-=]{20,}"), "gAAAAA***"),  # Fernet token
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"), "Bearer ***"),
     (re.compile(r"(?i)((?:api[_-]?key|token|secret|password)\s*[=:]\s*)['\"]?[^\s'\",}]+"), r"\1***"),
+    # Telegram bot token inside an API URL (api.telegram.org/bot<token>/...):
+    # "bot123" has no word boundary between "t" and "1", so the bare-token
+    # rule below can't see it (SEC-11).
+    (re.compile(r"bot\d{5,}:[A-Za-z0-9_\-]{20,}"), "bot***"),
     (re.compile(r"\b\d{8,10}:[A-Za-z0-9_\-]{30,}\b"), "***telegram-bot-token***"),
+    # COMP-03 data minimisation: no email addresses in logs (the domain is
+    # kept — it helps debug delivery problems without identifying anyone).
+    (re.compile(r"\b[A-Za-z0-9._%+\-]+@([A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+)\b"), r"***@\1"),
 ]
 
 
@@ -73,6 +80,32 @@ def pseudonymise_user(user_id: Any) -> str:
     return digest[:12]
 
 
+class RedactingFilter(logging.Filter):
+    """SEC-11: mask secrets in every record before any handler formats it.
+
+    Installed on the handlers configure_logging() creates (a filter on the root
+    *logger* would not see records propagated from child loggers). Bakes the
+    formatted message and exception text into the record, redacted, so no
+    formatter — ours or a third party's — can render the raw values."""
+
+    _exc_formatter = logging.Formatter()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # a bad %-format must not lose the record
+            message = str(record.msg)
+        record.msg = redact(message)
+        record.args = None
+        if record.exc_info and not record.exc_text:
+            record.exc_text = self._exc_formatter.formatException(record.exc_info)
+        if record.exc_text:
+            record.exc_text = redact(record.exc_text)
+        if record.stack_info:
+            record.stack_info = redact(record.stack_info)
+        return True
+
+
 class JsonFormatter(logging.Formatter):
     """One JSON object per record, with turn context and secrets redacted."""
 
@@ -88,7 +121,9 @@ class JsonFormatter(logging.Formatter):
             "user": user_var.get(),
             "session_id": session_id_var.get(),
         }
-        if record.exc_info:
+        if record.exc_text:
+            payload["exc"] = redact(record.exc_text)
+        elif record.exc_info:
             payload["exc"] = redact(self.formatException(record.exc_info))
         return json.dumps(payload, ensure_ascii=False, default=str)
 
@@ -108,6 +143,7 @@ def configure_logging(level: str | None = None, stream: Any = None) -> None:
         root.removeHandler(h)
     handler = logging.StreamHandler(stream or sys.stderr)
     handler.setFormatter(JsonFormatter())
+    handler.addFilter(RedactingFilter())
     root.addHandler(handler)
     root.setLevel((level or os.getenv("LOG_LEVEL") or "INFO").upper())
     # Third-party chatter that would drown the app's own lines at INFO.

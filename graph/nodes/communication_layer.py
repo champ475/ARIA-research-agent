@@ -7,23 +7,19 @@ deterministically from each Conclusion's own confidence, not asked of the
 LLM) and renders the price chart via tools/charts/builder.py (reused as-is)
 when OHLCV evidence for the primary entity is present.
 
-`chart_html` currently holds the raw Plotly Figure object returned by
-candlestick() — gr.Plot (app.py) consumes Figure objects directly, not an
-HTML string. The field name follows the RFC's schema (Sec5); the actual
-UI-facing serialization is a Phase 6 integration decision, not this node's.
+`chart_html` holds the candlestick() figure as Plotly JSON: graph state is
+checkpointed, and a live Figure object isn't serialisable (TEST-04).
+GraphOrchestrator turns it back into a Figure for gr.Plot.
 
 Report-domain file output (Phase 7.1): PDF/MD generation is deliberately done
 HERE, not in ConclusionBuilder, even though the graph-expansion plan's first
 draft assumed ConclusionBuilder — `final_report` (the actual markdown text)
 doesn't exist until this node's LLM call completes, so ConclusionBuilder
 never has a report body to save. Rendering immediately after the LLM call
-keeps the "only CommunicationLayer calls the model" contract intact —
-render_report() itself is a pure, deterministic I/O side effect, not a
-second model call. The rendered files are TEMPORARY (utils/report_files.py)
-— durable storage is `reports.content` in Postgres (report_save() below);
-re-downloading an older report re-renders from that stored text via the
-same render_report() call (see _handle_report_management below), not from
-a file that might not exist anymore.
+keeps the "only CommunicationLayer calls the model" contract intact. OPS-02:
+nothing is rendered here — the report is saved to `reports.content` and the
+answer carries /download/report/<id>.pdf|.md links, which any replica serves
+by re-rendering the stored text (web/download_routes.py).
 
 Report list/re-download (Phase 3 of the open-source restructure):
 `_handle_report_management` bypasses the Evidence/Conclusion pipeline
@@ -31,11 +27,9 @@ entirely for "show my reports" / "download report #N" style queries — same
 reasoning as the planning bypass below, there's no tool-selection/evidence-
 gathering step useful here, just a DB read and (for a download) a render.
 
-Screener-domain CSV export (Phase 7.3) follows the same pattern: `csv_path`
-is populated from the raw `screener_run` evidence (not a Conclusion — the
-full row-level CSV is genuinely raw tool output, not a decided fact), which
-is fine because it's a side-effect file write, not something CommunicationLayer
-reasons about or cites in the LLM prompt.
+Screener-domain CSV export (Phase 7.3): `csv_url` points at the raw
+`screener_run` rows (not a Conclusion — row-level output, not a decided
+fact), stored for a day in the `downloads` table (OPS-02).
 
 Planning domain (Phase 7.3) bypasses the Evidence/Conclusion pipeline
 entirely — it's handled here, at the top of communication_layer, before the
@@ -60,6 +54,7 @@ from collections.abc import Callable
 
 import pandas as pd
 
+import prompts
 from agents.llm_client import LLMClient
 from config import SYNTHESIS_EVIDENCE_CHAR_BUDGET, TOKENS_SYNTHESIS
 from graph.advice_policy import REFRAME_INSTRUCTION
@@ -71,12 +66,23 @@ from graph.grounding import check as grounding_check
 from graph.grounding import record as record_grounding
 from graph.guardrails import finalize
 from graph.journal import log_decision
+from graph.nodes.conclusion_builder import CANONICAL_RATIO_KEYS
 from graph.nodes.execute_task import from_cacheable
-from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
+from graph.prompt_safety import wrap_untrusted
 from graph.state import Conclusion, GraphState
 from tools.analysis.fundamental import cited_footnotes
 from tools.charts.builder import candlestick
-from utils.db import profile_clear, profile_get, profile_upsert, report_get, report_list, report_save
+from utils.audit import audit
+from utils.db import (
+    download_put,
+    profile_clear,
+    profile_get,
+    profile_upsert,
+    report_get,
+    report_list,
+    report_save,
+)
+from utils.escaping import md_cell
 from utils.financial_profile import is_complete as _profile_complete
 from utils.financial_profile import profile_summary as _profile_summary
 from utils.financial_profile import sanitize_profile as _sanitize_profile
@@ -88,8 +94,7 @@ from utils.planning_logic import (
 from utils.planning_logic import (
     intake_turn as _planning_intake_turn,
 )
-from utils.report_files import render_report
-from utils.screener_files import save_screener_csv
+from utils.screener_files import screener_csv_bytes
 
 _PLANNING_SHOW_KW = ["show my profile", "my financial profile", "what do you know about me"]
 _PLANNING_RESET_KW = [
@@ -100,23 +105,10 @@ _PLANNING_RESET_KW = [
     "clear my profile",
 ]
 
-_CANONICAL_RATIO_KEYS = {"pe", "pb", "roce", "de", "cr"}
 
 log = logging.getLogger(__name__)
 
-_SYSTEM = (
-    "You are ARIA, an autonomous financial research engine for Indian equity "
-    "markets (NSE/BSE). You are given a list of pre-verified conclusions — "
-    "facts already decided and checked, not raw data. Write a clear, direct "
-    "answer to the user's objective using ONLY these conclusions. State each "
-    "ratio using its exact [^key] marker where one is given, right after the "
-    'number (e.g. "P/E of 24.3 [^pe]") — never invent a marker, never attach '
-    "one to a value that has none. Do not introduce any number that isn't in "
-    "the conclusions list or the evidence data. You may quote names, rows and "
-    "headlines from the evidence data section; never invent a fund, company, "
-    "headline or figure that isn't there. If the conclusions and evidence don't "
-    "fully cover the objective, say so plainly rather than filling the gap." + UNTRUSTED_NOTICE
-)
+_SYSTEM = prompts.get("communication.system") + prompts.get("safety.untrusted_notice")
 
 
 _HISTORY_TURNS_IN_PROMPT = 6  # last N history messages included verbatim, same budget as query_analyzer.py
@@ -141,7 +133,7 @@ def _build_prompt(
 ) -> str:
     lines = [_render_history(history), f"Objective: {objective}", "", "Verified conclusions:"]
     for c in conclusions:
-        marker = f" [^{c['citation_key']}]" if c["citation_key"] in _CANONICAL_RATIO_KEYS else ""
+        marker = f" [^{c['citation_key']}]" if c["citation_key"] in CANONICAL_RATIO_KEYS else ""
         lines.append(f"- {c['claim']}{marker} (confidence: {c['confidence']:.2f})")
     if evidence_block:
         # LLM-02: the actual rows, headlines and passages behind the conclusions.
@@ -211,15 +203,20 @@ def _intents(state: GraphState) -> set[str]:
     return {state.get("intent")} | set(state.get("secondary_intents") or [])
 
 
+def report_urls(report_id: int) -> dict[str, str]:
+    """OPS-02: download links any replica can serve (web/download_routes.py)."""
+    return {"pdf_url": f"/download/report/{report_id}.pdf", "md_url": f"/download/report/{report_id}.md"}
+
+
 def _empty_result(final_report: str, decision: str, reason: str) -> dict:
     return {
         "final_report": final_report,
         "pending_synthesis_prompt": None,
         "pending_fundamental_payload": None,
         "chart_html": None,
-        "pdf_path": None,
-        "md_path": None,
-        "csv_path": None,
+        "pdf_url": None,
+        "md_url": None,
+        "csv_url": None,
         "confidence_summary": {},
         **log_decision("CommunicationLayer", decision, reason),
     }
@@ -245,7 +242,8 @@ _REPORT_LIST_KW = [
     "show my reports",
 ]
 _REPORT_DOWNLOAD_KW = ["download", "regenerate", "resend", "re-download", "redownload"]
-_REPORT_ID_RE = re.compile(r"#?(\d+)")
+# VAL-08: only "report #12" / "report 12" names an id — "report for 2024" doesn't.
+_REPORT_ID_RE = re.compile(r"\breport\s*(?:#|no\.?|number)?\s*(\d+)\b", re.IGNORECASE)
 
 
 def _handle_report_management(state: GraphState) -> dict | None:
@@ -273,7 +271,8 @@ def _handle_report_management(state: GraphState) -> dict | None:
             lines = ["## Your Reports\n", "| # | Type | Title | Date |", "|---|------|-------|------|"]
             for r in reports:
                 lines.append(
-                    f"| {r['id']} | {r['report_type']} | {r['title']} | {r['created_at'].strftime('%Y-%m-%d')} |"
+                    f"| {r['id']} | {md_cell(r['report_type'])} | {md_cell(r['title'])} | "
+                    f"{r['created_at'].strftime('%Y-%m-%d')} |"
                 )
             lines.append('\nSay "download report #<id>" to get the PDF/Markdown again.')
             text = "\n".join(lines)
@@ -291,17 +290,13 @@ def _handle_report_management(state: GraphState) -> dict | None:
                 "report: download target not found",
                 f"user_id={user_id}, report_id={report_id}",
             )
-        # Re-renders from the durably stored text (reports.content) — the
-        # file from whenever this report was first generated is long gone
-        # on an ephemeral host, but the text never depended on it surviving.
-        md_path, pdf_path = render_report(row["symbol"] or "report", row["report_type"], row["content"])
+        # OPS-02: the link re-renders from reports.content on download.
         result = _empty_result(
             f"Here's report #{report_id} — **{row['title']}**.",
             "report: regenerated from history",
             f"user_id={user_id}, report_id={report_id}",
         )
-        result["md_path"] = md_path
-        result["pdf_path"] = pdf_path
+        result.update(report_urls(report_id))
         return result
 
     return None
@@ -353,6 +348,7 @@ def _handle_planning(client: LLMClient, state: GraphState) -> dict:
 
     if _wants_build(query):
         strategy = _planning_build_strategy(client, profile)
+        audit("plan.generate", actor_user_id=user_id, details={"fields": sorted(profile)})
         return _empty_result(strategy, "planning: built strategy", f"user_id={user_id}")
 
     # Complete but not asked for: show exactly what was saved first (the
@@ -368,7 +364,7 @@ def build_communication_layer_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
-    client = client or LLMClient(_SYSTEM, provider_config)
+    client = client or LLMClient(_SYSTEM, provider_config, node="communication")
 
     def communication_layer(state: GraphState) -> dict:
         blocking = blocking_resolutions(state)
@@ -458,7 +454,8 @@ def build_communication_layer_node(
         if primary_entity:
             ohlcv = _find_ohlcv_evidence(evidence, primary_entity)
             if isinstance(ohlcv, pd.DataFrame) and not ohlcv.empty:
-                chart = candlestick(ohlcv, primary_entity)
+                fig = candlestick(ohlcv, primary_entity)
+                chart = fig.to_json() if fig is not None else None
 
         if _is_streamable(intent, intents):
             # Chart doesn't depend on the LLM call, so it's still available
@@ -471,9 +468,9 @@ def build_communication_layer_node(
                 + advice,
                 "pending_fundamental_payload": fundamental_payload or None,
                 "chart_html": chart,
-                "pdf_path": None,
-                "md_path": None,
-                "csv_path": None,
+                "pdf_url": None,
+                "md_url": None,
+                "csv_url": None,
                 "confidence_summary": _confidence_summary(conclusions),
                 **log_decision(
                     "CommunicationLayer", "deferred to streaming", f"{len(conclusions)} conclusion(s)"
@@ -486,42 +483,56 @@ def build_communication_layer_node(
         if fundamental_payload:
             report = report + cited_footnotes(report, fundamental_payload)
 
-        pdf_path = md_path = None
+        urls: dict[str, str | None] = {"pdf_url": None, "md_url": None, "csv_url": None}
         if "report" in intents and primary_entity:
             rtype = detect_report_type((query or objective).lower())
             # LLM-09: the saved/downloaded report carries the same checks and
             # footer as the chat answer (finalize() is idempotent).
             report = finalize(report, state)
-            md_path, pdf_path = render_report(primary_entity, rtype, report)
             user_id = state.get("user_id")
             if user_id is not None:
                 try:
-                    report_save(user_id, primary_entity, rtype, f"{rtype} — {primary_entity}", report)
+                    report_id = report_save(
+                        user_id, primary_entity, rtype, f"{rtype} — {primary_entity}", report
+                    )
+                    urls.update(report_urls(report_id))
+                    audit(
+                        "report.generate",
+                        actor_user_id=user_id,
+                        target=primary_entity,
+                        details={"type": rtype},
+                    )
                 except Exception as e:
                     # Persistence failure shouldn't block returning the report itself.
                     log.warning(f"[CommunicationLayer] report_save failed: {e}")
 
-        csv_path = None
-        if "screener" in intents:
+        if "screener" in intents and state.get("user_id") is not None:
             screener_results = _find_screener_results(evidence)
             if screener_results:
-                csv_path = save_screener_csv(screener_results)
+                try:
+                    token = download_put(
+                        state["user_id"],
+                        "aria_screener_results.csv",
+                        "text/csv",
+                        screener_csv_bytes(screener_results),
+                    )
+                    urls["csv_url"] = f"/download/file/{token}"
+                except Exception as e:
+                    log.warning("[CommunicationLayer] screener CSV not stored: %s", type(e).__name__)
 
         return {
             "final_report": report,
             "pending_synthesis_prompt": None,
             "pending_fundamental_payload": None,
             "chart_html": chart,
-            "pdf_path": pdf_path,
-            "md_path": md_path,
-            "csv_path": csv_path,
+            **urls,
             "confidence_summary": _confidence_summary(conclusions),
             **log_decision(
                 "CommunicationLayer",
                 f"synthesized report from {len(conclusions)} conclusion(s)",
                 f"chart={'rendered' if chart is not None else 'none'}"
-                + (f", files=({md_path},{pdf_path})" if "report" in intents else "")
-                + (f", csv={csv_path}" if "screener" in intents else ""),
+                + (f", report={urls['pdf_url']}" if "report" in intents else "")
+                + (f", csv={'yes' if urls['csv_url'] else 'no'}" if "screener" in intents else ""),
             ),
         }
 

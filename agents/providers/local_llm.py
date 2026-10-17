@@ -31,6 +31,7 @@ def local_llm_configured() -> bool:
 
 
 class LocalLLMProvider(OpenAICompatibleProvider):
+    _stream_usage = False  # not every local server accepts stream_options
     # A CPU model can take longer than the cloud stream cap just to process the
     # prompt, so both waits use the local budget instead (REL-02).
     _request_timeout = LOCAL_LLM_TIMEOUT_SECONDS

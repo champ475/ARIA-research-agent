@@ -25,10 +25,14 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from utils.errors import UserInputError
 
-class UnsafeURLError(ValueError):
+
+class UnsafeURLError(UserInputError):
     """The URL is not allowed as an outbound endpoint. The message is safe to
-    show to the user."""
+    show to the user (SEC-08: `user_message`)."""
+
+    default_message = "That base URL isn't allowed."
 
 
 def allow_private_hosts() -> bool:

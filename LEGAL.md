@@ -1,5 +1,7 @@
 # ARIA — Terms of Use & Privacy Notice
 
+**Version:** 2026-10-15 · **Effective:** 15 October 2026
+
 ARIA is open-source software. This document is a template covering the
 software's built-in behavior — whoever runs a given instance of it (the
 "operator") is the one actually offering it to you, and is responsible for
@@ -95,10 +97,15 @@ practices differ.)
 
 ## 9. Deletion
 
-To request deletion of your account and associated data, contact this
-instance's operator directly. Data shared with a third-party LLM provider
-under §5 is subject to that provider's own retention policy, not this
-instance's.
+You can delete your account yourself: **Settings → Signed-in devices →
+delete my account**. After you re-enter your password, your account and
+everything stored with it — chats, alerts, watchlist, portfolio, saved
+screens, reports, financial profile and any saved API key — are deleted at
+once. A minimal security log of account actions (e.g. "account deleted",
+with your numeric account id and no chat content) is kept, as are the
+operator's encrypted backups until they expire. Data shared with a
+third-party LLM provider under §5 is subject to that provider's own
+retention policy, not this instance's.
 
 ## 10. Governing law
 
@@ -109,5 +116,9 @@ markets (NSE/BSE).
 ## 11. Changes
 
 This document may be updated as the software or an operator's practices
-change. Continued use after an update constitutes acceptance of the
-revised terms.
+change. Every version is numbered (the date at the top). When a change is
+material — it affects what data is collected, who it is shared with, your
+rights, or what ARIA does for you — you will be asked to read and accept the
+new version before you can keep using ARIA; your acceptance and the version
+you accepted are recorded. Minor changes (wording, typos, contact details)
+take effect without a new acceptance.

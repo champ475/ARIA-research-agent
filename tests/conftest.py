@@ -6,6 +6,19 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
+from hypothesis import settings
+
+# Tests never send traces anywhere: a developer's .env may switch on LangChain
+# auto-tracing (LANGSMITH_TRACING=true); load_dotenv() doesn't override these.
+for _var in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING"):
+    os.environ[_var] = "false"
+os.environ.setdefault("ARIA_TRACING", "")
+
+# TEST-03: property tests run 500 examples each in CI, 100 locally (override
+# with HYPOTHESIS_PROFILE=ci). Tests that pin max_examples keep their own.
+settings.register_profile("ci", max_examples=500, deadline=None)
+settings.register_profile("dev", max_examples=100, deadline=None)
+settings.load_profile(os.getenv("HYPOTHESIS_PROFILE") or ("ci" if os.getenv("CI") else "dev"))
 
 
 def import_app_without_side_effects():
@@ -14,7 +27,7 @@ def import_app_without_side_effects():
     thread. Unit tests must never touch a real database."""
     if "app" in sys.modules:
         return sys.modules["app"]
-    with patch("utils.db.ensure_schema"), patch("utils.telegram_link.start_polling_thread"):
+    with patch("utils.db.ensure_schema"):
         import app
     return app
 
@@ -24,9 +37,9 @@ def _no_real_database(request, monkeypatch):
     """Unit tests must never open a Postgres connection: locally .env's
     DATABASE_URL is the production database, and in CI there is none. Only
     tests under tests/integration/ (which point utils.db at a throwaway
-    database) may connect. psycopg2's pools connect via psycopg2.connect, so
-    this also covers utils.db.get_conn()."""
-    if "integration" in request.node.nodeid.split("::")[0].replace("\\", "/").split("/"):
+    database) may connect. psycopg_pool opens connections through
+    psycopg.Connection.connect, so this also covers utils.db.get_conn()."""
+    if {"integration", "e2e"} & set(request.node.nodeid.split("::")[0].replace("\\", "/").split("/")):
         return
 
     def _refuse(*args, **kwargs):
@@ -35,7 +48,13 @@ def _no_real_database(request, monkeypatch):
             "mock the utils.db call, or move the test to tests/integration/"
         )
 
-    monkeypatch.setattr("psycopg2.connect", _refuse)
+    monkeypatch.setattr("psycopg.connect", _refuse)
+    monkeypatch.setattr("psycopg.Connection.connect", _refuse)
+    # Fail fast at the pool too: a refused connect inside psycopg_pool's
+    # background worker would otherwise surface as a PoolTimeout only after
+    # DB_POOL_ACQUIRE_TIMEOUT seconds (code that swallows DB errors, like
+    # turn persistence, would make every such test that slow).
+    monkeypatch.setattr("utils.db._get_pool", _refuse)
 
 
 @pytest.fixture(autouse=True)
@@ -98,3 +117,26 @@ def sample_task() -> dict:
         "status": "pending",
         "result_evidence_ids": [],
     }
+
+
+@pytest.fixture(autouse=True)
+def _not_draining():
+    """A TestClient leaving its `with` block runs the app's shutdown, which
+    puts the process-wide lifecycle into draining (OPS-04). Every test starts
+    from a serving state."""
+    from utils import lifecycle
+
+    lifecycle.reset()
+    yield
+    lifecycle.reset()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_graph_cache():
+    """Compiled graphs are cached per provider config (REL-03); a test that
+    patches build_graph must not get another test's cached graph."""
+    from agents.graph_orchestrator import clear_graph_cache
+
+    clear_graph_cache()
+    yield
+    clear_graph_cache()

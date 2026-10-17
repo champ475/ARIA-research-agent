@@ -5,16 +5,12 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from utils import db
-
 
 def _fake_orch(on_stream=None):
     orch = MagicMock()
     orch.classify.return_value = "chat"
 
-    def stream(_msg):
+    def stream(_msg, progress=False):
         if on_stream:
             on_stream()
         yield ("answer", None, None, None, None, "chat")
@@ -33,7 +29,7 @@ def test_queue_is_configured_for_concurrent_turns(app_module):
 def test_chat_events_share_one_concurrent_pool(app_module):
     demo = app_module.build_ui()
     chat_fns = [fn for fn in demo.fns.values() if getattr(fn, "concurrency_id", None) == "chat"]
-    assert len(chat_fns) == 2  # Enter and the Send button
+    assert len(chat_fns) == 4  # Enter, the Send button, and the Yes/No confirmation buttons
     assert all(fn.concurrency_limit == app_module.CHAT_CONCURRENCY for fn in chat_fns)
 
 
@@ -62,12 +58,12 @@ def test_lock_is_released_after_turn_and_after_cancel(app_module):
         patch.object(app_module, "_persist_turn"),
     ):
         list(app_module.respond_exclusive(102, "a", [], [], 1, "1M"))
-        assert not app_module._user_turn_lock(102).locked()
+        assert not app_module._user_turn_lock(102, 1).locked()
         gen = app_module.respond_exclusive(102, "b", [], [], 1, "1M")
         next(gen)  # loading frame — lock held
-        assert app_module._user_turn_lock(102).locked()
+        assert app_module._user_turn_lock(102, 1).locked()
         gen.close()  # client disconnected
-        assert not app_module._user_turn_lock(102).locked()
+        assert not app_module._user_turn_lock(102, 1).locked()
 
 
 def test_different_users_run_in_parallel(app_module):
@@ -98,60 +94,20 @@ def test_get_orchestrator_builds_one_instance_under_contention(app_module):
     built = []
 
     class _Slow:
-        def __init__(self, uid):
+        def __init__(self, uid, session_id=None):
             time.sleep(0.05)
             built.append(uid)
 
-    app_module._orchestrators.pop(303, None)
+    app_module._orchestrators.pop((303, None), None)
     with patch("agents.graph_orchestrator.GraphOrchestrator", _Slow):
         threads = [threading.Thread(target=app_module.get_orchestrator, args=(303,)) for _ in range(8)]
         for t in threads:
             t.start()
         for t in threads:
             t.join(5)
-    app_module._orchestrators.pop(303, None)
+    app_module._orchestrators.pop((303, None), None)
     assert built == [303]
 
 
-class _FakePool:
-    def __init__(self):
-        self.out = 0
-
-    def getconn(self):
-        self.out += 1
-        conn = MagicMock()
-        conn.closed = False
-        return conn
-
-    def putconn(self, conn, close=False):
-        self.out -= 1
-
-
-@pytest.fixture
-def tiny_pool(monkeypatch):
-    fake = _FakePool()
-    monkeypatch.setattr(db, "_get_pool", lambda: fake)
-    monkeypatch.setattr(db, "_pool_slots", threading.BoundedSemaphore(1))
-    monkeypatch.setattr(db, "DB_POOL_ACQUIRE_TIMEOUT", 0.3)
-    return fake
-
-
-def test_get_conn_waits_for_a_free_connection_instead_of_failing(tiny_pool):
-    first = db.get_conn()
-    threading.Timer(0.1, lambda: db.release_conn(first)).start()
-    second = db.get_conn()  # blocks ~0.1s, then succeeds
-    db.release_conn(second)
-    assert tiny_pool.out == 0
-
-
-def test_get_conn_times_out_cleanly_when_pool_stays_full(tiny_pool):
-    held = db.get_conn()
-    with pytest.raises(db.PoolTimeout):
-        db.get_conn()
-    db.release_conn(held)
-    db.release_conn(db.get_conn())  # slot was not leaked by the timeout
-
-
-def test_discarded_connection_frees_its_slot(tiny_pool):
-    db.release_conn(db.get_conn(), discard=True)
-    db.release_conn(db.get_conn())
+# Pool waiting / timeout / discard behaviour runs against a real Postgres:
+# tests/integration/test_db_pool.py (REL-04).

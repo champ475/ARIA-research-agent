@@ -51,13 +51,14 @@ class TestQueryAnalyzer:
         result = node({"query": "compare two mutual funds"})
         assert result["intent"] == "mf"
 
-    def test_routes_through_fast_model(self):
-        from config import GROQ_MODEL_FAST
+    def test_routes_through_its_node_model_route(self):
+        """LLM-08: the node's client is built for its own model route (the
+        fast class) instead of passing a Groq-only model name per call."""
+        from unittest.mock import patch
 
-        stub = _StubClient(json.dumps({"intent": "chat", "objective": "", "complexity": "simple"}))
-        node = build_query_analyzer_node(stub)
-        node({"query": "hi"})
-        assert stub.last_call_kwargs["model"] == GROQ_MODEL_FAST
+        with patch("graph.nodes.query_analyzer.LLMClient") as client_cls:
+            build_query_analyzer_node(None, provider_config=None)
+        assert client_cls.call_args.kwargs["node"] == "query_analyzer"
 
     def test_writes_journal_entry(self):
         stub = _StubClient(json.dumps({"intent": "equity", "objective": "x", "complexity": "moderate"}))

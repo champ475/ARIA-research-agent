@@ -8,7 +8,9 @@ import logging
 import threading
 import time
 
-from agents.conversation_memory import ConversationMemory
+import prompts
+from agents.conversation_memory import SUMMARY_PROMPT, ConversationMemory
+from agents.providers.usage import ThreadLocalUsage, stream_event_usage
 from config import (
     GEMINI_API_KEY,
     GEMINI_MODEL,
@@ -19,23 +21,19 @@ from config import (
     LLM_TEMPERATURE,
     LLM_TIMEOUT_SECONDS,
     MAX_RETRIES,
-    PREFERRED_PROVIDER,
     PROVIDER_ZERO_QUOTA_TTL_SECONDS,
     TOKENS_FAST,
     TOKENS_SYNTHESIS,
 )
 from utils import tracing
+from utils.errors import ConfigurationError
 from utils.tracing import usage_from_response
 
-_SUMMARY_PROMPT = (
-    "Existing summary of earlier conversation (may be empty):\n{old}\n\n"
-    "New older messages to fold in:\n{chunk}\n\n"
-    "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
-    "tickers, and decisions mentioned, so later replies stay consistent with this history. "
-    "Return only the summary text."
-)
-
 log = logging.getLogger(__name__)
+
+# SEC-08: what a user sees when this server has no trial provider configured.
+_NO_TRIAL_MESSAGE = "The free trial isn't available on this server right now."
+_NO_TRIAL_HINT = "Add your own LLM API key in the Settings tab (any OpenAI-compatible provider works)."
 
 # ── Thread-safe Groq key rotator ─────────────────────────────────────────────
 
@@ -79,6 +77,17 @@ _TOO_LARGE_MARKERS = (
 )
 _ZERO_QUOTA_MARKERS = ('"limit": "0"', "limit: 0", "limit=0")
 _RATE_LIMIT_MARKERS = ("429", "rate", "quota")
+# LLM-08: the provider no longer serves this model (retired / renamed).
+_MODEL_GONE_MARKERS = (
+    "decommissioned",
+    "model_decommissioned",
+    "model_not_found",
+    "does not exist",
+    "is not found",
+    "not found for api version",
+    "no longer supported",
+    "has been deprecated",
+)
 
 
 def _classify_error(e: Exception) -> str:
@@ -93,6 +102,8 @@ def _classify_error(e: Exception) -> str:
         return "too_large"
     if any(m in msg for m in _ZERO_QUOTA_MARKERS):
         return "zero_quota"
+    if any(m in msg for m in _MODEL_GONE_MARKERS):
+        return "model_gone"
     if any(m in msg for m in _RATE_LIMIT_MARKERS):
         return "rate_limited"
     return "other"
@@ -122,6 +133,13 @@ class _ProviderHealthCache:
 
 
 _provider_health = _ProviderHealthCache(ttl_seconds=PROVIDER_ZERO_QUOTA_TTL_SECONDS)
+
+
+def _hkey(provider: object) -> str:
+    """Health is tracked per provider *and model* (LLM-08): a retired model
+    must not take the provider's other models down with it."""
+    key = getattr(provider, "health_key", None)
+    return key if isinstance(key, str) and key else str(getattr(provider, "name", "?"))
 
 
 class LLMProvidersExhausted(RuntimeError):
@@ -211,6 +229,9 @@ def format_exhausted_message(exc: LLMProvidersExhausted) -> str:
             "⚠️ That request is too long for the model.\n\n"
             "Try a shorter message, or ask about fewer companies at once."
         )
+    if exc.is_byo and kind == "auth":
+        # UX-02: the fix, not just the fault.
+        return "⚠️ Your API key was rejected by your provider. Update it in **⚙️ Settings**, then ask again."
     if exc.is_byo:
         return (
             f"⚠️ Your configured LLM provider failed: {_ERROR_CLASS_TEXT[kind]}\n\n"
@@ -237,15 +258,15 @@ def format_exhausted_message(exc: LLMProvidersExhausted) -> str:
 # ── Provider wrappers ─────────────────────────────────────────────────────────
 
 
-class _GroqProvider:
+class _GroqProvider(ThreadLocalUsage):
     name = "Groq"
 
-    def __init__(self, system: str):
+    def __init__(self, system: str, model: str | None = None):
         if not _groq_rotator.available():
-            raise ValueError(
-                "No GROQ_API_KEY found.\n"
-                "Add GROQ_API_KEY_1 (and optionally _2, _3) to your .env.\n"
-                "Free keys at https://console.groq.com"
+            raise ConfigurationError(
+                _NO_TRIAL_MESSAGE,
+                fix_hint=_NO_TRIAL_HINT,
+                detail="No GROQ_API_KEY found: add GROQ_API_KEY_1 to .env (free at console.groq.com).",
             )
         try:
             from groq import Groq as _Groq
@@ -253,6 +274,8 @@ class _GroqProvider:
             self._Groq = _Groq
         except ImportError as e:
             raise ImportError("Run: pip install groq") from e
+        self.model = model or GROQ_MODEL
+        self.health_key = f"groq:{self.model}"
         self._system = system
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
 
@@ -263,7 +286,7 @@ class _GroqProvider:
         return self._Groq(api_key=_groq_rotator.next(), timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
 
     def _summarize(self, old_summary: str, chunk_text: str) -> str:
-        prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
+        prompt = SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         r = self._client().chat.completions.create(
             model=GROQ_MODEL_FAST,
             messages=[{"role": "user", "content": prompt}],
@@ -282,7 +305,7 @@ class _GroqProvider:
     ) -> str:
         msgs = [{"role": "system", "content": self._system}, {"role": "user", "content": prompt}]
         r = self._client().chat.completions.create(
-            model=model or GROQ_MODEL,
+            model=model or self.model,
             messages=msgs,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -300,7 +323,7 @@ class _GroqProvider:
         self._memory.add_user(msg)
         msgs = [{"role": "system", "content": self._system}] + self._memory.context()
         r = self._client().chat.completions.create(
-            model=model or GROQ_MODEL,
+            model=model or self.model,
             messages=msgs,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -322,7 +345,7 @@ class _GroqProvider:
         chunks: list[str] = []
         try:
             events = self._client().chat.completions.create(
-                model=model or GROQ_MODEL,
+                model=model or self.model,
                 messages=msgs,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -331,7 +354,10 @@ class _GroqProvider:
                 timeout=LLM_STREAM_TIMEOUT_SECONDS,
             )
             for event in events:
-                delta = event.choices[0].delta.content
+                usage = stream_event_usage(event)
+                if usage is not None:
+                    self.last_usage = usage
+                delta = event.choices[0].delta.content if event.choices else None
                 if delta:
                     chunks.append(delta)
                     yield delta
@@ -348,13 +374,15 @@ class _GroqProvider:
         self._memory.load(messages)
 
 
-class _GeminiProvider:
+class _GeminiProvider(ThreadLocalUsage):
     name = "Gemini"
 
-    def __init__(self, system: str):
+    def __init__(self, system: str, model: str | None = None):
         if not GEMINI_API_KEY:
-            raise ValueError(
-                "No GEMINI_API_KEY found.\nAdd it to your .env — free at https://aistudio.google.com/apikey"
+            raise ConfigurationError(
+                _NO_TRIAL_MESSAGE,
+                fix_hint=_NO_TRIAL_HINT,
+                detail="No GEMINI_API_KEY found: add it to .env (free at aistudio.google.com/apikey).",
             )
         try:
             from google import genai
@@ -368,13 +396,15 @@ class _GeminiProvider:
             self._types = gt
         except ImportError as e:
             raise ImportError("Run: pip install google-genai") from e
+        self.model = model or GEMINI_MODEL
+        self.health_key = f"gemini:{self.model}"
         self._system = system
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
 
     def _summarize(self, old_summary: str, chunk_text: str) -> str:
-        prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
+        prompt = SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         cfg = self._types.GenerateContentConfig(temperature=0.2, max_output_tokens=TOKENS_FAST)
-        r = self._client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=cfg)
+        r = self._client.models.generate_content(model=self.model, contents=prompt, config=cfg)
         self.last_usage = usage_from_response(r)
         return r.text.strip()
 
@@ -386,14 +416,14 @@ class _GeminiProvider:
         model: str | None = None,
     ) -> str:
         # model override is a Groq-only concept (fast vs primary model) — Gemini
-        # is already the fallback tier, so it always uses GEMINI_MODEL.
+        # is already the fallback tier, so it always uses its configured model.
         cfg = self._types.GenerateContentConfig(
             system_instruction=self._system,
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
         r = self._client.models.generate_content(
-            model=GEMINI_MODEL,
+            model=self.model,
             contents=prompt,
             config=cfg,
         )
@@ -434,7 +464,7 @@ class _GeminiProvider:
             max_output_tokens=max_tokens,
         )
         r = self._client.models.generate_content(
-            model=GEMINI_MODEL,
+            model=self.model,
             contents=contents,
             config=cfg,
         )
@@ -460,10 +490,13 @@ class _GeminiProvider:
         chunks: list[str] = []
         try:
             for event in self._client.models.generate_content_stream(
-                model=GEMINI_MODEL,
+                model=self.model,
                 contents=contents,
                 config=cfg,
             ):
+                usage = stream_event_usage(event)
+                if usage is not None:
+                    self.last_usage = usage
                 delta = event.text
                 if delta:
                     chunks.append(delta)
@@ -483,10 +516,7 @@ class _GeminiProvider:
 
 # ── Unified client ────────────────────────────────────────────────────────────
 
-_DEFAULT_SYSTEM = (
-    "You are ARIA, an expert institutional equity research analyst for Indian markets (NSE/BSE). "
-    "Always respond with precise, data-grounded analysis. Format in clean Markdown."
-)
+_DEFAULT_SYSTEM = prompts.get("llm.default_system")
 
 
 class LLMClient:
@@ -510,28 +540,79 @@ class LLMClient:
 
     _local = None  # class default: tests build bare instances via __new__
     _prompt_version = ""
+    _extra: tuple | list = ()  # route entries after primary/secondary (LLM-08)
+    _node: str | None = None
 
-    def _record_llm_call(self, provider, prompt: str, output: str, streamed: bool = False) -> None:
-        """OBS-02: count this call on the current turn's record (tokens from
-        the provider's usage when it reported any, else estimated)."""
+    def _observe(self, provider, model: str | None, tokens_in: int, tokens_out: int, cost: float) -> None:
+        """OBS-03 counters; a call served by other than the first choice is a fallback."""
+        from utils import metrics
+
+        try:
+            first = self._chain()[0]
+        except Exception:
+            first = provider
+        metrics.observe_llm_call(
+            self._node, str(provider.name), model, tokens_in, tokens_out, cost, provider is not first
+        )
+
+    def _record_llm_call(
+        self, provider, prompt: str, output: str, streamed: bool = False, ms: int = 0
+    ) -> None:
+        """OBS-02/LLM-11: count this call on the current turn's record —
+        tokens from the provider's usage report (also for streams that sent
+        one), else estimated; plus node, model, latency and rupee cost."""
         rec = tracing.current()
-        if rec is None:
-            return
-        usage = None if streamed else getattr(provider, "last_usage", None)
+        usage = getattr(provider, "last_usage", None)
         if isinstance(usage, tuple):
             tokens_in, tokens_out, estimated = usage[0], usage[1], False
         else:
             tokens_in = tracing.estimate_tokens(getattr(self, "_system", "") + prompt)
             tokens_out, estimated = tracing.estimate_tokens(output), True
-        rec.add_llm_call(str(provider.name), self._prompt_version, tokens_in, tokens_out, estimated)
+        from config import call_cost_inr
 
-    def __init__(self, system_prompt: str = "", provider_config: dict | None = None):
+        model = getattr(provider, "model", None)
+        model = model if isinstance(model, str) else None
+        if rec is None:
+            # Outside a turn (startup probe, worker job): metrics only.
+            self._observe(provider, model, tokens_in, tokens_out, 0.0)
+            return
+        cost = 0.0 if self._is_byo else call_cost_inr(model, tokens_in, tokens_out)
+        self._observe(provider, model, tokens_in, tokens_out, cost)
+        rec.add_llm_call(
+            str(provider.name),
+            self._prompt_version,
+            tokens_in,
+            tokens_out,
+            estimated,
+            node=self._node,
+            model=model,
+            ms=ms,
+            cost_inr=cost,
+        )
+
+    def __init__(self, system_prompt: str = "", provider_config: dict | None = None, node: str | None = None):
+        # LLM-08: `node` picks the model route (config.model_route) on the
+        # trial path; a BYO user's own configured model is always used.
+        self._node = node
+        self._extra = []
         self._system = system_prompt or _DEFAULT_SYSTEM
-        self._prompt_version = tracing.prompt_version(self._system)
+        # LLM-07: a registry prompt records its id ("planner.system@v1");
+        # anything else (ad-hoc system text) falls back to a content hash.
+        self._prompt_version = getattr(self._system, "id", None) or tracing.prompt_version(self._system)
         self._primary = None
         self._secondary = None
         self._active = "none"
         self._is_byo = bool(provider_config)
+        from config import ARIA_FAKE_LLM
+
+        if ARIA_FAKE_LLM:
+            # TEST-04: deterministic answers for e2e tests and demos; no network.
+            from agents.providers.fake_llm import FakeLLMProvider
+
+            self._local = None
+            self._primary = FakeLLMProvider(self._system, node)
+            self._active = self._primary.name
+            return
         self._local = self._init_local()
         if provider_config:
             self._init_byo(provider_config)
@@ -561,36 +642,36 @@ class LLMClient:
         self._active = self._primary.name
 
     def _init_trial(self):
-        PriCls, SecCls = (
-            (_GroqProvider, _GeminiProvider)
-            if PREFERRED_PROVIDER != "gemini"
-            else (_GeminiProvider, _GroqProvider)
-        )
-        try:
-            self._primary = PriCls(self._system)
-            self._active = self._primary.name
-        except (ValueError, ImportError) as e:
-            log.warning(f"Primary ({PriCls.name}) init failed: {e}")
-        try:
-            self._secondary = SecCls(self._system)
-        except (ValueError, ImportError) as e:
-            log.warning(f"Secondary ({SecCls.name}) init failed: {e}")
+        """Providers in the node's route order (LLM-08), skipping models
+        already known to be unavailable and providers without a key."""
+        from config import model_route
 
-        if self._primary is None and self._secondary is None:
+        classes = {"groq": _GroqProvider, "gemini": _GeminiProvider}
+        chain: list = []
+        for provider_name, model in model_route(self._node):
+            if _provider_health.is_unavailable(f"{provider_name}:{model}"):
+                continue
+            try:
+                chain.append(classes[provider_name](self._system, model=model))
+            except (ValueError, ImportError) as e:
+                log.debug("trial provider %s:%s not usable: %s", provider_name, model, type(e).__name__)
+        if not chain:
             if self._local is not None:
                 self._active = self._local.name
                 return
-            raise ValueError(
-                "No LLM provider configured.\nAdd GROQ_API_KEY_1 or GEMINI_API_KEY to your .env file."
+            raise ConfigurationError(
+                _NO_TRIAL_MESSAGE,
+                fix_hint=_NO_TRIAL_HINT,
+                detail="No LLM provider configured: add GROQ_API_KEY_1 or GEMINI_API_KEY to .env.",
             )
-        if self._primary is None:
-            self._primary = self._secondary
-            self._secondary = None
-            self._active = self._primary.name
+        self._primary = chain[0]
+        self._secondary = chain[1] if len(chain) > 1 else None
+        self._extra = chain[2:]
+        self._active = self._primary.name
 
     def _chain(self) -> list:
         """Providers in fallback order: primary, secondary, then local."""
-        return [p for p in (self._primary, self._secondary, self._local) if p is not None]
+        return [p for p in (self._primary, self._secondary, *self._extra, self._local) if p is not None]
 
     @property
     def provider(self) -> str:
@@ -632,11 +713,14 @@ class LLMClient:
         last_err = None
         attempted = too_large = 0
         for provider in self._chain():
-            if _provider_health.is_unavailable(provider.name):
+            if _provider_health.is_unavailable(_hkey(provider)):
                 continue
             attempted += 1
             started = False
             streamed: list[str] = []
+            t0 = time.monotonic()
+            if hasattr(provider, "last_usage"):
+                provider.last_usage = None
             try:
                 with tracing.span(
                     f"llm {provider.name}",
@@ -650,14 +734,16 @@ class LLMClient:
                         streamed.append(chunk)
                         yield chunk
                     span_out["output"] = "".join(streamed)
-                self._record_llm_call(provider, prompt, "".join(streamed), streamed=True)
+                self._record_llm_call(
+                    provider, prompt, "".join(streamed), streamed=True, ms=int((time.monotonic() - t0) * 1000)
+                )
                 return
             except Exception as e:
                 last_err = e
                 kind = _classify_error(e)
                 log.warning(f"[LLMClient] {provider.name} stream failed ({kind}): {e}")
-                if kind == "zero_quota":
-                    _provider_health.mark_unavailable(provider.name)
+                if kind in ("zero_quota", "model_gone"):
+                    _provider_health.mark_unavailable(_hkey(provider))
                 elif kind == "too_large":
                     too_large += 1
                 if started:
@@ -695,9 +781,10 @@ class LLMClient:
                     if local_tried:
                         continue
                     local_tried = True
-                if _provider_health.is_unavailable(provider.name):
+                if _provider_health.is_unavailable(_hkey(provider)):
                     continue
                 try:
+                    t0 = time.monotonic()
                     with tracing.span(
                         f"llm {provider.name}",
                         "llm",
@@ -707,7 +794,7 @@ class LLMClient:
                         result = getattr(provider, method)(prompt, temperature, max_tokens, model)
                         span_out["output"] = result
                     self._active = provider.name
-                    self._record_llm_call(provider, prompt, result)
+                    self._record_llm_call(provider, prompt, result, ms=int((time.monotonic() - t0) * 1000))
                     return result
                 except Exception as e:
                     last_err = e
@@ -724,8 +811,10 @@ class LLMClient:
                         # provider needs another chance. Never sleep, never
                         # retry this provider again within this call.
                         too_large_providers.add(provider.name)
-                    elif kind == "zero_quota":
-                        _provider_health.mark_unavailable(provider.name)
+                    elif kind in ("zero_quota", "model_gone"):
+                        # LLM-08: a retired model or a never-provisioned quota
+                        # won't recover within this call — skip it from now on.
+                        _provider_health.mark_unavailable(_hkey(provider))
             if providers and too_large_providers >= {p.name for p in providers}:
                 break  # every provider already rejected this exact prompt — stop burning the retry budget
         raise LLMProvidersExhausted(last_err, is_byo=self._is_byo, too_large=bool(too_large_providers))

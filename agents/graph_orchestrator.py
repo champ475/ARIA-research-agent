@@ -61,35 +61,44 @@ way), and needs no cross-process counter coordination.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
+import threading
 import uuid
+from collections import OrderedDict
+from typing import Any
 
 from langgraph.types import Command
 
-from agents.conversation_memory import ConversationMemory
+import prompts
+from agents.conversation_memory import ConversationMemory, strip_badge
 from agents.llm_client import LLMProvidersExhausted
-from config import TOKENS_SYNTHESIS
+from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT, TRIAL_DAILY_TOKENS
+from graph.analysis_tools import analysis_notes
 from graph.checkpointer import get_postgres_checkpointer
-from graph.deadline import data_gaps_note, new_deadline
+from graph.confirmation import REASK_TEXT as CONFIRM_REPROMPT
+from graph.confirmation import classify_reply
+from graph.deadline import CUT_OFF_NOTE, data_gaps_note, new_deadline
 from graph.entity_resolution import entity_notes_text
+from graph.freshness import closed_today_header, freshness_note
 from graph.graph import build_graph
 from graph.grounding import check as grounding_check
 from graph.grounding import record as record_grounding
 from graph.grounding import unverified_note
 from graph.guardrails import check_input, finalize
+from graph.progress import ProgressUpdate, run_with_progress
 
 log = logging.getLogger(__name__)
 
-_APPROVE_WORDS = {"y", "yes", "approve", "approved", "proceed", "confirm", "ok", "okay"}
 _DEFAULT_MAX_LOOPS = 2
-_FREE_TRIAL_DAILY_LIMIT = 5
 
 _TRIAL_EXHAUSTED_MESSAGE = (
-    "You've used today's 5 free messages. Add your own LLM API key in "
+    f"You've used today's {TRIAL_DAILY_LIMIT} free messages. Add your own LLM API key in "
     "Settings to keep chatting — any OpenAI-compatible provider works "
     "(OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...), or come "
-    "back tomorrow for another 5 free."
+    f"back tomorrow for another {TRIAL_DAILY_LIMIT} free."
 )
 
 # ── Cheap keyword pre-check for classify() (ported from the deleted
@@ -237,9 +246,85 @@ def _keyword_route(message: str) -> str:
     return best_tab if scores[best_tab] > 0 else "equity"
 
 
+# REL-03: one compiled graph per provider configuration, shared by every
+# conversation that uses it (all trial users share one). Node LLM clients are
+# stateless (`ask`), and per-call token usage is thread-local, so concurrent
+# turns on one graph don't interfere; each turn has its own thread_id.
+_GRAPH_CACHE_SIZE = 64
+_graphs: OrderedDict[str, Any] = OrderedDict()
+_graphs_lock = threading.Lock()
+
+
+def _config_fingerprint(provider_config: dict | None) -> str:
+    blob = json.dumps(provider_config or {}, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def shared_graph(provider_config: dict | None) -> Any:
+    key = _config_fingerprint(provider_config)
+    with _graphs_lock:
+        graph = _graphs.get(key)
+        if graph is not None:
+            _graphs.move_to_end(key)
+            return graph
+        graph = build_graph(checkpointer=get_postgres_checkpointer(), provider_config=provider_config)
+        _graphs[key] = graph
+        while len(_graphs) > _GRAPH_CACHE_SIZE:
+            _graphs.popitem(last=False)
+        return graph
+
+
+def clear_graph_cache() -> None:
+    with _graphs_lock:
+        _graphs.clear()
+
+
+_SUGGESTIONS: dict[str, list[str]] = {
+    "equity": ["Show the technicals", "Compare with peers", "Latest news", "Set a price alert"],
+    "report": ["Show my saved reports", "Quick note instead", "Key risks", "Compare with a peer"],
+    "mf": ["Compare two funds", "Best large cap funds", "Show NAV history", "ELSS funds"],
+    "screener": ["Save this screen", "Add ROE above 15%", "Large caps only", "Top gainers today"],
+    "alert": ["Show my alerts", "Pause an alert", "Alert on RSI", "Connect Telegram"],
+    "planning": ["Show my profile", "Build my plan", "Change my risk tolerance", "Start over"],
+}
+_DEFAULT_SUGGESTIONS = ["Analyse a stock", "Compare mutual funds", "Top gainers today", "Set a price alert"]
+_TICKER_RE = re.compile(r"\b[A-Z][A-Z&]{2,14}\b")
+
+
+def suggestions_for(domain: str, last_query: str) -> list[str]:
+    """Follow-up chips without an LLM call (LLM-11), naming the company the
+    user just asked about when there is one."""
+    chips = list(_SUGGESTIONS.get(domain, _DEFAULT_SUGGESTIONS))
+    m = _TICKER_RE.search(last_query or "")
+    if domain == "equity" and m:
+        sym = m.group(0)
+        chips = [f"{sym} technicals", f"Compare {sym} with peers", f"{sym} latest news", f"Alert me on {sym}"]
+    return chips
+
+
+def _figure(chart: Any) -> Any:
+    """chart_html travels through checkpointed state as Plotly JSON; gr.Plot wants a Figure."""
+    if isinstance(chart, str) and chart.startswith("{"):
+        import plotly.io as pio
+
+        return pio.from_json(chart)
+    return chart
+
+
+def _chart_note(chart: Any) -> str:
+    """UX-03: the price chart in words, so the answer carries a text alternative."""
+    from tools.charts.builder import chart_text_summary
+
+    text = chart_text_summary(chart) if chart is not None else ""
+    return f"\n\n{text}" if text else ""
+
+
 class GraphOrchestrator:
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, session_id: int | None = None):
         self._user_id = user_id
+        # VAL-10: state belongs to one chat session, not to the user — two
+        # tabs on two chats never share memory or a pending confirmation.
+        self._session_id = session_id
         self._turn = 0
         self._thread_id = self._new_thread_id()
         # BYO key resolved once per session (not re-checked every message) —
@@ -249,9 +334,7 @@ class GraphOrchestrator:
         # existed, rather than rebuilding it (and re-binding every node's
         # LLMClient) on every single turn for a value that rarely changes.
         self._provider_config = self._resolve_byo_config()
-        self._graph = build_graph(
-            checkpointer=get_postgres_checkpointer(), provider_config=self._provider_config
-        )
+        self._graph = shared_graph(self._provider_config)
         self._awaiting_confirmation = False
         # Cross-turn conversation memory the graph itself has none of (each
         # turn mints a fresh thread_id — see module docstring). Owned here,
@@ -260,6 +343,38 @@ class GraphOrchestrator:
         # cap + overflow-summarization behavior every specialist agent's own
         # LLMClient used to give via this exact class.
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize_history)
+        if session_id is not None:
+            self._restore_session()
+
+    def _restore_session(self) -> None:
+        """REL-03/VAL-10: an orchestrator rebuilt after eviction, a restart or
+        on another replica picks the chat up where it was — transcript from
+        chat_history, and a pending confirmation from the session row (the
+        paused graph state itself is in the Postgres checkpointer)."""
+        from utils.db import chat_load, session_pending_get
+
+        try:
+            rows = chat_load(self._user_id, self._session_id)
+            if rows:
+                self._memory.load([{"role": m["role"], "content": strip_badge(m["content"])} for m in rows])
+            pending = session_pending_get(self._user_id, self._session_id)
+        except Exception:
+            log.warning("[GraphOrchestrator] could not restore session state", exc_info=True)
+            return
+        if pending:
+            self._thread_id = pending
+            self._awaiting_confirmation = True
+
+    def _set_pending(self, thread_id: str | None) -> None:
+        """Persist (or clear) the paused thread on the session row."""
+        if self._session_id is None:
+            return
+        from utils.db import session_pending_set
+
+        try:
+            session_pending_set(self._user_id, self._session_id, thread_id)
+        except Exception:
+            log.warning("[GraphOrchestrator] could not save the pending confirmation", exc_info=True)
 
     def _new_thread_id(self) -> str:
         return f"user-{self._user_id}-{uuid.uuid4().hex[:16]}"
@@ -304,30 +419,45 @@ class GraphOrchestrator:
         from utils.db import trial_quota_check_and_increment
         from utils.helpers import IST
 
-        allowed = trial_quota_check_and_increment(
-            self._user_id,
-            _FREE_TRIAL_DAILY_LIMIT,
-            datetime.now(IST).date(),
-        )
+        today = datetime.now(IST).date()
+        # LLM-11/SEC-12: a message can cost 5-9 model calls, so the daily
+        # token budget is checked too (before spending a message).
+        if TRIAL_DAILY_TOKENS:
+            from utils.db import trial_tokens_used
+
+            if trial_tokens_used(self._user_id, today) >= TRIAL_DAILY_TOKENS:
+                return True
+        allowed = trial_quota_check_and_increment(self._user_id, TRIAL_DAILY_LIMIT, today)
         return not allowed
+
+    def _charge_trial_tokens(self, rec) -> None:
+        """Add this turn's tokens to the trial user's daily budget (LLM-11)."""
+        if self._provider_config is not None or not (rec.tokens_in or rec.tokens_out):
+            return
+        from datetime import datetime
+
+        from utils.db import trial_tokens_add
+        from utils.helpers import IST
+
+        try:
+            trial_tokens_add(self._user_id, rec.tokens_in + rec.tokens_out, datetime.now(IST).date())
+        except Exception:
+            log.warning("[GraphOrchestrator] could not record trial token use", exc_info=True)
 
     def _summarize_history(self, old_summary: str, chunk_text: str) -> str:
         """ConversationMemory's overflow summarizer — uses whichever
         provider this turn resolved (BYO or trial), never a separate
         hardcoded client, so a BYO user's summarization also runs on their
         own key/cost, not the app's trial quota."""
+        from agents.conversation_memory import SUMMARY_PROMPT
         from agents.llm_client import LLMClient
         from config import TOKENS_FAST
 
-        prompt = (
-            f"Existing summary of earlier conversation (may be empty):\n{old_summary or '(none)'}\n\n"
-            f"New older messages to fold in:\n{chunk_text}\n\n"
-            "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
-            "tickers, and decisions mentioned, so later replies stay consistent with this history. "
-            "Return only the summary text."
-        )
+        prompt = SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         client = LLMClient(
-            system_prompt="Summarize conversation history concisely.", provider_config=self._provider_config
+            system_prompt=prompts.get("orchestrator.summary_system"),
+            provider_config=self._provider_config,
+            node="summary",
         )
         return client.ask(prompt, temperature=0.2, max_tokens=TOKENS_FAST)
 
@@ -346,24 +476,40 @@ class GraphOrchestrator:
         return _keyword_route(message)
 
     def process(self, message: str) -> tuple[str, object, str | None, str | None, str | None, str]:
-        """Returns (text, chart, pdf_path, md_path, csv_path, tab_used) — the final result of process_stream()."""
+        """Returns (text, chart, pdf_url, md_url, csv_url, tab_used) — the final result of process_stream()."""
         result = None
         for result in self.process_stream(message):  # noqa: B007 — keep only the final yield
             pass
         return result
 
-    def process_stream(self, message: str):
+    _progress = False
+
+    def _run_graph(self, payload: Any, config: dict):
+        """The graph run for this turn: streamed with step progress when the
+        caller asked for it (UX-02), else a plain invoke."""
+        if self._progress:
+            return (yield from run_with_progress(self._graph, payload, config))
+        return self._graph.invoke(payload, config=config)
+
+    def process_stream(self, message: str, progress: bool = False):
         """OBS-02 wrapper: runs the turn inside a utils/tracing TurnRecord
         (one `turns` row per turn, plus a LangSmith trace when enabled). The
         turn's id comes from the logging context app.py's run_in_turn set, so
-        log lines, the turns row and the user-facing error ID all agree."""
+        log lines, the turns row and the user-facing error ID all agree.
+
+        UX-02: with progress=True, ProgressUpdate items (one per research
+        step) are yielded before the answer's tuples."""
         from utils import tracing
         from utils.logging_setup import session_id_var, turn_id_var
 
         turn_id = turn_id_var.get() or uuid.uuid4().hex
         with tracing.turn(turn_id, self._user_id, session_id_var.get() or None, message) as rec:
             try:
+                self._progress = progress
                 for out in self._process_stream(message, rec):
+                    if isinstance(out, ProgressUpdate):
+                        yield out
+                        continue
                     if out[0]:
                         rec.first_output()
                     yield out
@@ -373,9 +519,11 @@ class GraphOrchestrator:
             except Exception:
                 rec.status = "error"
                 raise
+            finally:
+                self._charge_trial_tokens(rec)
 
     def _process_stream(self, message: str, rec):
-        """Yields (text, chart, pdf_path, md_path, csv_path, tab_used), text
+        """Yields (text, chart, pdf_url, md_url, csv_url, tab_used), text
         growing on each yield for equity/chat turns (CommunicationLayer
         deferred its LLM call to `pending_synthesis_prompt` — see that
         module's `_is_streamable`), or exactly once for every other domain,
@@ -391,14 +539,28 @@ class GraphOrchestrator:
         than duplicated in every caller."""
         try:
             if self._awaiting_confirmation:
+                # VAL-08: a lenient yes/no; a fresh question cancels the
+                # pending step and runs as its own turn (never a silent "no").
+                kind = classify_reply(message)
+                if kind == "unclear":
+                    rec.status = "gated"
+                    self._memory.add_user(message)
+                    self._memory.add_assistant(CONFIRM_REPROMPT)
+                    yield CONFIRM_REPROMPT, None, None, None, None, "equity"
+                    return
+                if kind == "new_question":
+                    log.info("[orchestrator] new question while a confirmation was pending; cancelling it")
+                    self._awaiting_confirmation = False
+                    self._set_pending(None)
+            if self._awaiting_confirmation:
                 # Must resume on the SAME thread the interrupt paused on — the
                 # config resolved for the turn that raised this interrupt is
                 # still current in self._provider_config, no need to re-resolve.
                 config = {"configurable": {"thread_id": self._thread_id}}
-                approved = message.strip().lower() in _APPROVE_WORDS
+                approved = kind == "yes"
                 # A fresh deadline: the user's think time at the gate mustn't
                 # count against the research budget (REL-02).
-                result = self._graph.invoke(Command(resume=approved, update=new_deadline()), config=config)
+                result = yield from self._run_graph(Command(resume=approved, update=new_deadline()), config)
             else:
                 # LLM-09: refused requests get a fixed reply — no research, no
                 # LLM call, and no trial quota spent.
@@ -424,7 +586,7 @@ class GraphOrchestrator:
                 self._thread_id = self._new_thread_id()
                 config = {"configurable": {"thread_id": self._thread_id}}
                 self._memory.add_user(message)
-                result = self._graph.invoke(
+                result = yield from self._run_graph(
                     {
                         "query": message,
                         "max_loops": _DEFAULT_MAX_LOOPS,
@@ -435,7 +597,7 @@ class GraphOrchestrator:
                         "advice_caution": verdict.caution,
                         **new_deadline(),
                     },
-                    config=config,
+                    config,
                 )
 
             rec.intent = result.get("intent") or rec.intent
@@ -443,17 +605,20 @@ class GraphOrchestrator:
             if result.get("__interrupt__"):
                 rec.status = "gated"
                 self._awaiting_confirmation = True
+                self._set_pending(self._thread_id)
                 prompt = result["__interrupt__"][0].value.get("message", "Proceed?")
-                reply = f"{prompt} (reply yes/no)"
+                reply = f"{prompt} (reply yes/no, or use the buttons)"
                 self._memory.add_assistant(reply)
                 yield reply, None, None, None, None, "equity"
                 return
 
+            if self._awaiting_confirmation:
+                self._set_pending(None)
             self._awaiting_confirmation = False
-            chart = result.get("chart_html")
-            pdf_path = result.get("pdf_path")
-            md_path = result.get("md_path")
-            csv_path = result.get("csv_path")
+            chart = _figure(result.get("chart_html"))
+            pdf_url = result.get("pdf_url")
+            md_url = result.get("md_url")
+            csv_url = result.get("csv_url")
             # tab_used: primary intent, plus any secondary ones QueryAnalyzer
             # detected (Phase 7.4 multi-intent support), joined with "+" — still
             # a single string, so app.py's existing (text, chart, pdf, md, csv,
@@ -465,6 +630,10 @@ class GraphOrchestrator:
             tab_used = "+".join([intent] + [s for s in secondary if s != intent])
 
             gaps_note = entity_notes_text(result) + data_gaps_note(result.get("tasks"))
+            # DATA-06: market figures say when they're from (and, on a closed
+            # day, that they're the last session's).
+            header = closed_today_header(result)
+            as_of_note = analysis_notes(result) + freshness_note(result) + _chart_note(chart)
             rec.data_gaps = sum(
                 1 for t in result.get("tasks") or [] if t.get("status") in ("failed", "skipped")
             )
@@ -476,13 +645,26 @@ class GraphOrchestrator:
                 from tools.analysis.fundamental import cited_footnotes
 
                 synthesis_client = LLMClient(
-                    system_prompt=_COMM_SYSTEM, provider_config=self._provider_config
+                    system_prompt=_COMM_SYSTEM, provider_config=self._provider_config, node="communication"
                 )
                 chunks: list[str] = []
-                for delta in synthesis_client.stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
-                    chunks.append(delta)
-                    yield "".join(chunks), chart, None, None, None, tab_used
+                cut_off = False
+                try:
+                    for delta in synthesis_client.stream(pending_prompt, max_tokens=TOKENS_SYNTHESIS):
+                        chunks.append(delta)
+                        yield header + "".join(chunks), chart, None, None, None, tab_used
+                except Exception:
+                    # REL-06: a stream that dies mid-answer keeps what arrived,
+                    # plus a plain note; nothing streamed yet -> the normal
+                    # error boundary (LLMProvidersExhausted / render_error).
+                    if not chunks:
+                        raise
+                    log.warning("[GraphOrchestrator] synthesis stream broke mid-answer", exc_info=True)
+                    rec.status = "partial"
+                    cut_off = True
                 text = "".join(chunks)
+                if cut_off:
+                    text += CUT_OFF_NOTE
                 # LLM-03, streamed path: checked once the stream ends; anything
                 # unsupported gets a note in the final text.
                 grounded = grounding_check(text, pending_prompt)
@@ -492,14 +674,15 @@ class GraphOrchestrator:
                 fundamental_payload = result.get("pending_fundamental_payload")
                 if fundamental_payload:
                     text = text + cited_footnotes(text, fundamental_payload)
-                text = finalize(text, result) + gaps_note
+                text = header + finalize(text + as_of_note, result) + gaps_note
                 self._memory.add_assistant(text)
-                yield text, chart, pdf_path, md_path, csv_path, tab_used
+                yield text, chart, pdf_url, md_url, csv_url, tab_used
                 return
 
-            text = finalize(result.get("final_report", "") or "", result) + gaps_note
+            report = result.get("final_report", "") or ""
+            text = (header + finalize(report + as_of_note, result) if report else "") + gaps_note
             self._memory.add_assistant(text)
-            yield text, chart, pdf_path, md_path, csv_path, tab_used
+            yield text, chart, pdf_url, md_url, csv_url, tab_used
         except LLMProvidersExhausted as e:
             from agents.llm_client import format_exhausted_message
 
@@ -515,35 +698,35 @@ class GraphOrchestrator:
         it's a UI concern of the orchestrator, not any one domain. Uses
         whichever provider the last-resolved turn used (BYO or trial) —
         never a separate hardcoded client."""
-        import json
 
         # VAL-05: a planning reply waiting for an explicit build gets a real
         # "Build my plan" button (suggestion chips are buttons) — no LLM call.
         if "say **build my plan**" in (last_response or ""):
             return ["Build my plan", "Show my profile", "Start over", "Change my risk tolerance"]
 
-        from agents.llm_client import LLMClient
-        from config import GROQ_MODEL_FAST, TOKENS_FAST
+        # LLM-11: on the operator's trial keys, chips come from the domain —
+        # no model call. A BYO user's own model still writes tailored ones.
+        if self._provider_config is None:
+            return suggestions_for(self.classify(last_query or ""), last_query or "")
 
-        prompt = (
-            f'User asked: "{last_query[:80]}". Response was about Indian stocks/funds/'
-            f"reports/alerts/planning.\n"
-            f"Return a JSON array of exactly 4 short follow-up questions (max 7 words each) "
-            f"a user would ask next. Only the JSON array, nothing else."
-        )
+        from agents.llm_client import LLMClient
+        from config import TOKENS_FAST
+
+        prompt = prompts.get("orchestrator.suggestions").format(query=last_query[:80])
         try:
             client = LLMClient(
-                system_prompt="Generate short follow-up question suggestions.",
+                system_prompt=prompts.get("orchestrator.suggestions_system"),
+                node="suggestions",
                 provider_config=self._provider_config,
             )
-            # GROQ_MODEL_FAST is a Groq-only concept (see LLMClient providers'
-            # own model-override handling) — only meaningful on the trial path.
-            model_override = GROQ_MODEL_FAST if self._provider_config is None else None
-            raw = client.ask(prompt, model=model_override, temperature=0.8, max_tokens=TOKENS_FAST)
-            from utils.helpers import strip_code_fence
+            raw = client.ask(prompt, temperature=0.8, max_tokens=TOKENS_FAST)
+            from utils.llm_json import ParseFailure, extract_json, record_parse_failure
 
-            raw = strip_code_fence(raw)
-            sug = json.loads(raw)
+            try:
+                sug = extract_json(raw)
+            except ParseFailure as e:
+                record_parse_failure("suggestions", str(e))
+                sug = None
             if isinstance(sug, list):
                 return [str(s) for s in sug[:4]]
         except Exception:
@@ -551,6 +734,8 @@ class GraphOrchestrator:
         return ["Analyse a stock", "Compare mutual funds", "Top gainers today", "Set a price alert"]
 
     def reset(self):
+        if self._awaiting_confirmation:
+            self._set_pending(None)
         self._awaiting_confirmation = False
         self._turn = 0
         self._thread_id = self._new_thread_id()

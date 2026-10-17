@@ -1,0 +1,58 @@
+{
+ "amfi": {
+  "file": "amfi_navall.txt",
+  "recorded_at": "2026-10-16T08:01:32+00:00",
+  "status": 200,
+  "url": "https://portal.amfiindia.com/spages/NAVAll.txt"
+ },
+ "bse_filings": {
+  "file": "bse_filings_532540.json",
+  "kept_old": true,
+  "recorded_at": "2026-10-16T08:01:35+00:00",
+  "status": 403,
+  "synthetic": "403 from BSE's CDN; shape from BSE's documented response",
+  "url": "https://api.bseindia.com/BseIndiaAPI/api/AnnualReport/w?scripcode=532540&type=Quarterly"
+ },
+ "google_news": {
+  "file": "google_news_TCS.xml",
+  "recorded_at": "2026-10-16T08:01:34+00:00",
+  "status": 200,
+  "url": "https://news.google.com/rss/search?q=TCS%20share&hl=en-IN&gl=IN&ceid=IN:en"
+ },
+ "mfapi": {
+  "file": "mfapi_122639.json",
+  "recorded_at": "2026-10-16T08:01:33+00:00",
+  "status": 200,
+  "url": "https://api.mfapi.in/mf/122639"
+ },
+ "nse_bhavcopy": {
+  "file": "nse_bhavcopy.csv",
+  "recorded_at": "2026-10-16T08:01:31+00:00",
+  "status": 200,
+  "url": "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_15102026.csv"
+ },
+ "nse_corporate_actions": {
+  "file": "nse_corporate_actions_TCS.json",
+  "recorded_at": "2026-10-16T08:01:30+00:00",
+  "status": 200,
+  "url": "https://www.nseindia.com/api/corporates-corporateActions?index=equities&symbol=TCS"
+ },
+ "nse_gainers": {
+  "file": "nse_gainers.json",
+  "recorded_at": "2026-10-16T08:01:28+00:00",
+  "status": 200,
+  "url": "https://www.nseindia.com/api/live-analysis-variations?index=gainers"
+ },
+ "nse_large_deals": {
+  "file": "nse_large_deals.json",
+  "recorded_at": "2026-10-16T08:02:59+00:00",
+  "status": 200,
+  "url": "https://www.nseindia.com/api/snapshot-capital-market-largedeal"
+ },
+ "rss_economic_times": {
+  "file": "rss_economic_times.xml",
+  "recorded_at": "2026-10-16T08:01:34+00:00",
+  "status": 200,
+  "url": "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
+ }
+}

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import re
 
+import prompts
+
 _I = re.IGNORECASE
 
 DATA_WORDS = re.compile(
@@ -36,11 +38,7 @@ DEFINITIONAL = re.compile(
     _I,
 )
 
-NO_LIVE_DATA_INSTRUCTION = (
-    "You have no live market data in this answer. Do not state any current or recent price, ratio, "
-    "return, NAV or index level, and don't estimate one from memory. If the user needs a figure, offer "
-    "to look it up (e.g. 'ask me for TCS's current P/E and I'll fetch it').\n\n"
-)
+NO_LIVE_DATA_INSTRUCTION = prompts.get("data.no_live_data")
 
 _ORDER = {"simple": 0, "moderate": 1, "complex": 2}
 

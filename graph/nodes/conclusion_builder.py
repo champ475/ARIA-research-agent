@@ -23,11 +23,12 @@ import pandas as pd
 
 from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
+from graph.quote_fields import display_value, quote_rows
 from graph.state import Conclusion, Evidence, GraphState
 from utils.helpers import trim_text
 
 # Matches tools/analysis/fundamental.py's _CITATION_FIELDS keys exactly.
-_CANONICAL_RATIO_KEYS = {"pe", "pb", "roce", "de", "cr"}
+CANONICAL_RATIO_KEYS = {"pe", "pb", "roce", "de", "cr"}
 
 # Evidence types whose numeric payload fields are worth a Conclusion each.
 _NUMERIC_EVIDENCE_TYPES = {"fundamental_ratio", "quote_info", "technical_indicator"}
@@ -46,6 +47,15 @@ _NUMERIC_EVIDENCE_TYPES = {"fundamental_ratio", "quote_info", "technical_indicat
 # NO_ENTITY_SENTINEL, and the tool itself returns every matching row at once.
 _TEXT_EVIDENCE_TYPES = {"pdf_extract", "mf_comparison", "screener_table"}
 _NOT_AVAILABLE_MARKERS = ("no ",)  # tools/data/pdf_scraper.py's "not found" convention
+
+# UX-04/UX-05 analysis tools (graph/analysis_tools.py): payload["claims"].
+_ANALYSIS_EVIDENCE_TYPES = {
+    "peer_comparison",
+    "risk_profile",
+    "news_sentiment",
+    "backtest_result",
+    "portfolio",
+}
 
 # DataFrame payloads worth a match-count Conclusion, same idea as
 # news_headline's count-based Conclusion — covers mf (NAV search/category
@@ -79,9 +89,23 @@ def _flagged_evidence_ids(verification_issues: list[dict]) -> set[str]:
 def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
     conclusions: list[Conclusion] = []
 
-    if ev["evidence_type"] in _NUMERIC_EVIDENCE_TYPES:
+    if ev["evidence_type"] == "quote_info":
+        # LLM-04: only the ~20 allowlisted quote fields, labelled, in ₹/₹ crore/%.
+        for field, label, value, unit in quote_rows(ev["payload"]):
+            shown = display_value(value, unit)
+            conclusions.append(
+                {
+                    "claim": f"{ev['entity']} {label} = {shown}",
+                    "value": value,
+                    "confidence": ev["confidence"],
+                    "evidence_ids": [ev["id"]],
+                    "citation_key": f"{ev['entity']}.{field}",
+                }
+            )
+
+    elif ev["evidence_type"] in _NUMERIC_EVIDENCE_TYPES:
         for field, value in _numeric_fields(ev["payload"]).items():
-            citation_key = field if field in _CANONICAL_RATIO_KEYS else f"{ev['entity']}.{field}"
+            citation_key = field if field in CANONICAL_RATIO_KEYS else f"{ev['entity']}.{field}"
             conclusions.append(
                 {
                     "claim": f"{ev['entity']} {field} = {value}",
@@ -89,6 +113,19 @@ def _conclusions_from_evidence(ev: Evidence) -> list[Conclusion]:
                     "confidence": ev["confidence"],
                     "evidence_ids": [ev["id"]],
                     "citation_key": citation_key,
+                }
+            )
+
+    elif ev["evidence_type"] in _ANALYSIS_EVIDENCE_TYPES and isinstance(ev["payload"], dict):
+        # UX-04: the analysis tools write their own deterministic claims.
+        for c in ev["payload"].get("claims") or []:
+            conclusions.append(
+                {
+                    "claim": c["claim"],
+                    "value": c.get("value"),
+                    "confidence": ev["confidence"],
+                    "evidence_ids": [ev["id"]],
+                    "citation_key": f"{ev['entity']}.{c.get('key') or ev['tool']}",
                 }
             )
 

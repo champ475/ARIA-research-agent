@@ -1,0 +1,62 @@
+# OBS-04: the same rules the ops watchdog (utils/watchdog.py) evaluates from
+# the database, for setups that run Prometheus + Alertmanager instead. Each
+# alert links its section in docs/RUNBOOK.md.
+groups:
+  - name: aria
+    rules:
+      - alert: AriaErrorRate
+        expr: |
+          sum(rate(aria_turns_total{status=~"error|llm_unavailable"}[10m]))
+            / clamp_min(sum(rate(aria_turns_total[10m])), 1e-9) > 0.05
+          and sum(increase(aria_turns_total[10m])) >= 10
+        labels: {severity: page}
+        annotations:
+          summary: "More than 5% of chat turns failed over 10 minutes"
+          runbook_url: "https://github.com/champ475/ARIA-research-agent/blob/main/docs/RUNBOOK.md#error-rate"
+
+      - alert: AriaEquityLatency
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(aria_turn_ttft_seconds_bucket{intent="equity"}[15m]))) > 30
+        labels: {severity: page}
+        annotations:
+          summary: "Equity p95 time to first output above 2x the 15 s SLO"
+          runbook_url: "https://github.com/champ475/ARIA-research-agent/blob/main/docs/RUNBOOK.md#latency"
+
+      - alert: AriaAlertCheckStale
+        # Gate on market hours in Alertmanager (time_intervals: Mon-Fri 09:30-15:30 IST).
+        expr: aria_job_last_ok_age_seconds{job="alert_check"} > 900
+        labels: {severity: page}
+        annotations:
+          summary: "No successful alert check for 15 minutes"
+          runbook_url: "https://github.com/champ475/ARIA-research-agent/blob/main/docs/RUNBOOK.md#heartbeat-stale"
+
+      - alert: AriaJobFailing
+        expr: aria_job_failing == 1
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Background job {{ $labels.job }} is failing"
+          runbook_url: "https://github.com/champ475/ARIA-research-agent/blob/main/docs/RUNBOOK.md#job-failing"
+
+      - alert: AriaLlmExhausted
+        expr: increase(aria_llm_exhausted_total[15m]) >= 3
+        labels: {severity: page}
+        annotations:
+          summary: "Turns failing because every LLM provider is unavailable"
+          runbook_url: "https://github.com/champ475/ARIA-research-agent/blob/main/docs/RUNBOOK.md#llm-exhausted"
+
+      - alert: AriaDbPoolSaturated
+        expr: aria_db_pool_connections{state="in_use"} / aria_db_pool_connections{state="max"} > 0.8
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "App database pool above 80%"
+          runbook_url: "https://github.com/champ475/ARIA-research-agent/blob/main/docs/RUNBOOK.md#db-connections"
+
+      - alert: AriaDataSourceDown
+        expr: aria_data_source_up == 0
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Data source {{ $labels.source }} has been skipped for 10 minutes"
+          runbook_url: "https://github.com/champ475/ARIA-research-agent/blob/main/docs/RUNBOOK.md#canary-failing"

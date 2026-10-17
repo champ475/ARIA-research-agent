@@ -7,7 +7,12 @@ Uses headers to avoid bot detection.
 import requests
 import pandas as pd
 
+from typing import Any
+
 from utils import http
+from utils.errors import SourceUnavailable
+from utils.market_clock import is_trading_day
+from utils.resilience import CircuitOpen
 from datetime import datetime, timedelta
 from io import StringIO
 import logging
@@ -48,7 +53,7 @@ def get_bhavcopy(date: datetime = None) -> pd.DataFrame:
 
     for delta in range(5):
         d = date - timedelta(days=delta)
-        if d.weekday() >= 5:
+        if not is_trading_day(d.date()):
             continue
         date_str = d.strftime("%d%m%Y")
         url = f"https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{date_str}.csv"
@@ -64,59 +69,108 @@ def get_bhavcopy(date: datetime = None) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def get_bulk_deals(symbol: str = None) -> pd.DataFrame:
-    """Fetch bulk deal data from NSE (last available)."""
+def api_json(url: str) -> Any:
+    """DATA-02 strict fetch: the parsed JSON, or SourceUnavailable("nse") when
+    NSE refuses or fails (blocked, 5xx, not JSON). CircuitOpen passes through
+    so the answer can say the source is being skipped. 404 = no data (None)."""
     try:
-        s   = _session()
-        url = "https://www.nseindia.com/api/bulk-deal-data"
-        r   = s.get(url, timeout=10)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        data = r.json()
-        if not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data)
-        if symbol and not df.empty and "symbol" in df.columns:
-            df = df[df["symbol"].str.upper() == symbol.upper()]
-        return df
+        r = _session().get(url, timeout=10)
+    except CircuitOpen:
+        raise
     except Exception as e:
-        log.warning(f"Bulk deals fetch failed: {e}")
+        raise SourceUnavailable("nse", detail=type(e).__name__) from e
+    if r.status_code == 404:
+        return None
+    if r.status_code != 200:
+        raise SourceUnavailable("nse", detail=f"HTTP {r.status_code}")
+    try:
+        return r.json()
+    except ValueError as e:
+        raise SourceUnavailable("nse", detail="not JSON (likely a block page)") from e
+
+
+def _quiet(fetch, *args, what: str):
+    """Legacy callers expect an empty frame on failure, never an exception."""
+    try:
+        return fetch(*args)
+    except Exception as e:
+        log.warning(f"{what} fetch failed: {type(e).__name__}")
         return pd.DataFrame()
+
+
+LARGE_DEALS_URL = "https://www.nseindia.com/api/snapshot-capital-market-largedeal"
+# TEST-05: NSE retired /api/bulk-deal-data and /api/block-deal-data (404, which
+# read as "no deals"); one snapshot now carries both lists. Columns are
+# renamed to the names the rest of the app uses.
+_DEAL_COLUMNS = {"qty": "quantity", "watp": "price", "buySell": "buySell", "clientName": "clientName"}
+
+
+def _deals(kind: str, symbol: str | None) -> pd.DataFrame:
+    from tools.data.contracts import NseLargeDeals
+
+    from pydantic import ValidationError
+
+    data = api_json(LARGE_DEALS_URL)
+    if not data:
+        return pd.DataFrame()
+    try:
+        snapshot = NseLargeDeals.model_validate(data)
+    except ValidationError as e:  # TEST-05: drift is an outage, not an empty table
+        raise SourceUnavailable("nse", detail="large-deals schema changed") from e
+    rows = snapshot.bulk if kind == "bulk" else snapshot.block
+    df = pd.DataFrame([r.model_dump() for r in rows])
+    if df.empty:
+        return df
+    df = df.rename(columns=_DEAL_COLUMNS)
+    for col in ("quantity", "price"):
+        df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors="coerce")
+    if symbol:
+        df = df[df["symbol"].str.upper() == symbol.upper()]
+    return df.reset_index(drop=True)
+
+
+def fetch_bulk_deals(symbol: str | None = None) -> pd.DataFrame:
+    return _deals("bulk", symbol)
+
+
+def fetch_block_deals(symbol: str | None = None) -> pd.DataFrame:
+    return _deals("block", symbol)
+
+
+def fetch_corporate_actions(symbol: str) -> pd.DataFrame:
+    data = api_json(f"https://www.nseindia.com/api/corporates-corporateActions?index=equities&symbol={symbol}")
+    return pd.DataFrame(data) if data else pd.DataFrame()
+
+
+def fetch_top_movers(category: str = "gainers") -> pd.DataFrame:
+    index = "loosers" if category == "losers" else "gainers"  # NSE spells it "loosers"
+    from pydantic import ValidationError
+
+    from tools.data.contracts import NseMovers
+
+    data = api_json(f"https://www.nseindia.com/api/live-analysis-variations?index={index}")
+    if data is None:
+        return pd.DataFrame()
+    try:
+        NseMovers.model_validate(data)  # TEST-05: drift is an outage, not "no movers"
+    except ValidationError as e:
+        raise SourceUnavailable("nse", detail="movers schema changed") from e
+    return pd.DataFrame(data["NIFTY"]["data"])
+
+
+def get_bulk_deals(symbol: str = None) -> pd.DataFrame:
+    """Fetch bulk deal data from NSE (last available); empty on failure."""
+    return _quiet(fetch_bulk_deals, symbol, what="Bulk deals")
 
 
 def get_block_deals(symbol: str = None) -> pd.DataFrame:
-    """Fetch block deal data from NSE."""
-    try:
-        s   = _session()
-        url = "https://www.nseindia.com/api/block-deal-data"
-        r   = s.get(url, timeout=10)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        data = r.json()
-        if not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data)
-        if symbol and not df.empty and "symbol" in df.columns:
-            df = df[df["symbol"].str.upper() == symbol.upper()]
-        return df
-    except Exception as e:
-        log.warning(f"Block deals fetch failed: {e}")
-        return pd.DataFrame()
+    """Fetch block deal data from NSE; empty on failure."""
+    return _quiet(fetch_block_deals, symbol, what="Block deals")
 
 
 def get_corporate_actions(symbol: str) -> pd.DataFrame:
-    """Fetch corporate actions (dividends, splits, bonuses) from NSE."""
-    try:
-        s   = _session()
-        url = f"https://www.nseindia.com/api/corporates-corporateActions?index=equities&symbol={symbol}"
-        r   = s.get(url, timeout=10)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        data = r.json()
-        return pd.DataFrame(data) if data else pd.DataFrame()
-    except Exception as e:
-        log.warning(f"Corporate actions for {symbol} failed: {e}")
-        return pd.DataFrame()
+    """Fetch corporate actions (dividends, splits, bonuses) from NSE; empty on failure."""
+    return _quiet(fetch_corporate_actions, symbol, what=f"Corporate actions for {symbol}")
 
 
 def get_shareholding_pattern(symbol: str) -> dict:
@@ -134,31 +188,15 @@ def get_shareholding_pattern(symbol: str) -> dict:
 
 
 def get_top_movers(category: str = "gainers") -> pd.DataFrame:
-    """
-    Fetch top gainers or losers from NSE.
-    category: 'gainers' | 'losers'
-    """
-    try:
-        s   = _session()
-        url = f"https://www.nseindia.com/api/live-analysis-variations?index=gainers"
-        if category == "losers":
-            url = "https://www.nseindia.com/api/live-analysis-variations?index=loosers"
-        r   = s.get(url, timeout=10)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        data = r.json()
-        records = data.get("NIFTY", {}).get("data", []) or []
-        return pd.DataFrame(records)
-    except Exception as e:
-        log.warning(f"Top movers fetch failed: {e}")
-        return pd.DataFrame()
+    """Top gainers ('gainers') or losers ('losers') from NSE; empty on failure."""
+    return _quiet(fetch_top_movers, category, what="Top movers")
 
 
 def format_bulk_deals(df: pd.DataFrame, symbol: str) -> str:
     """Format bulk/block deal data as markdown."""
     if df.empty:
         return f"No recent bulk/block deals found for {symbol}."
-    cols = [c for c in ["dealDate", "clientName", "buyOrSell", "quantity", "tradePrice"] if c in df.columns]
+    cols = [c for c in ["date", "clientName", "buySell", "quantity", "price"] if c in df.columns]
     if not cols:
         cols = df.columns.tolist()[:5]
     subset = df[cols].head(10)

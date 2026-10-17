@@ -24,6 +24,10 @@ from graph.state import Evidence, GraphState
 _MAX_KEYS_PER_ENTRY = 40  # bounds one entry's own summary dict (e.g. get_info()'s 100+ fields)
 
 
+def _frame_shape(df: pd.DataFrame) -> dict:
+    return {"rows": len(df), "columns": [str(c) for c in df.columns]}
+
+
 def _summarize_payload(payload) -> dict:
     # Evidence.payload is kept in checkpoint-safe form in GraphState (see
     # graph/nodes/execute_task.py's module docstring) — reconstruct here so
@@ -32,9 +36,11 @@ def _summarize_payload(payload) -> dict:
     # (exactly the payload bloat this module exists to prevent).
     payload = from_cacheable(payload)
     if isinstance(payload, pd.DataFrame):
-        return {"rows": len(payload), "columns": list(payload.columns)}
+        return _frame_shape(payload)
     if isinstance(payload, dict):
-        return payload
+        # Nested frames (fetch_financials' statements) are summarised too:
+        # the summary lives in checkpointed state (TEST-04).
+        return {k: _frame_shape(v) if isinstance(v, pd.DataFrame) else v for k, v in payload.items()}
     if isinstance(payload, list):
         return {"count": len(payload)}
     return {"value": payload}

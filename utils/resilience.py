@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import contextvars
 import logging
-import os
 import threading
 import time
 from collections import deque
@@ -29,13 +28,17 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, TypeVar
 
+from config import (
+    BREAKER_COOLDOWN_SECONDS,
+    BREAKER_FAILURES,
+    BREAKER_WINDOW_SECONDS,
+    IO_POOL_WORKERS,
+    TOOL_POOL_WORKERS,
+)
+
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-BREAKER_FAILURES = int(os.getenv("BREAKER_FAILURES", "5"))
-BREAKER_WINDOW_SECONDS = float(os.getenv("BREAKER_WINDOW_SECONDS", "60"))
-BREAKER_COOLDOWN_SECONDS = float(os.getenv("BREAKER_COOLDOWN_SECONDS", "30"))
 
 
 class CallTimeout(TimeoutError):
@@ -44,6 +47,10 @@ class CallTimeout(TimeoutError):
 
 class CircuitOpen(RuntimeError):
     """The source's breaker is open — the call was skipped without trying."""
+
+    def __init__(self, source: str):
+        self.source = source
+        super().__init__(f"{source} is temporarily unavailable (circuit open)")
 
 
 class CircuitBreaker:
@@ -67,6 +74,11 @@ class CircuitBreaker:
         self._opened_at: float | None = None
         self._trial_in_flight = False
         self._lock = threading.Lock()
+        # DATA-02 source health: wall-clock times and counts since start.
+        self.successes = 0
+        self.failures = 0
+        self.last_success_at: float | None = None
+        self.last_failure_at: float | None = None
 
     @property
     def state(self) -> str:
@@ -94,6 +106,8 @@ class CircuitBreaker:
 
     def record_success(self) -> None:
         with self._lock:
+            self.successes += 1
+            self.last_success_at = time.time()
             if self._opened_at is not None:
                 log.info(f"[breaker] {self.name} closed again")
             self._failures.clear()
@@ -102,6 +116,8 @@ class CircuitBreaker:
 
     def record_failure(self) -> None:
         with self._lock:
+            self.failures += 1
+            self.last_failure_at = time.time()
             now = self._clock()
             if self._opened_at is not None:
                 # The half-open trial failed (or a straggler from before the
@@ -133,6 +149,25 @@ def breaker(source: str) -> CircuitBreaker:
         return b
 
 
+def breaker_states() -> dict[str, dict[str, Any]]:
+    """DATA-02: per-source health for /health/data and the ops watchdog —
+    breaker state, call counts and last success/failure (epoch seconds)."""
+    with _breakers_lock:
+        items = list(_breakers.items())
+    out: dict[str, dict[str, Any]] = {}
+    for name, b in sorted(items):
+        total = b.successes + b.failures
+        out[name] = {
+            "state": b.state,
+            "successes": b.successes,
+            "failures": b.failures,
+            "success_rate": round(b.successes / total, 3) if total else None,
+            "last_success_at": b.last_success_at,
+            "last_failure_at": b.last_failure_at,
+        }
+    return out
+
+
 def reset_breakers() -> None:
     """Tests only: forget every breaker's state."""
     with _breakers_lock:
@@ -141,12 +176,8 @@ def reset_breakers() -> None:
 
 # Two pools so a tool call (execute_task) waiting on its own source calls can
 # never deadlock by exhausting the pool those inner calls need.
-_IO_POOL = ThreadPoolExecutor(
-    max_workers=int(os.getenv("IO_POOL_WORKERS", "64")), thread_name_prefix="aria-io"
-)
-_TOOL_POOL = ThreadPoolExecutor(
-    max_workers=int(os.getenv("TOOL_POOL_WORKERS", "32")), thread_name_prefix="aria-tool"
-)
+_IO_POOL = ThreadPoolExecutor(max_workers=IO_POOL_WORKERS, thread_name_prefix="aria-io")
+_TOOL_POOL = ThreadPoolExecutor(max_workers=TOOL_POOL_WORKERS, thread_name_prefix="aria-tool")
 
 
 def call_with_timeout(fn: Callable[..., T], *args: Any, timeout: float, pool: str = "io", **kwargs: Any) -> T:
@@ -171,7 +202,7 @@ def guarded_call(
     the last two count as failures for the breaker."""
     b = breaker(source)
     if not b.allow():
-        raise CircuitOpen(f"{source} is temporarily unavailable (circuit open)")
+        raise CircuitOpen(source)
     try:
         result = call_with_timeout(fn, *args, timeout=timeout, **kwargs) if timeout else fn(*args, **kwargs)
     except Exception:

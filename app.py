@@ -5,36 +5,66 @@ Gradio 6 compatible. show_api=False fixes the proxy/launch error.
 
 import logging
 import os
+import re
 import threading
 import time
 
 import gradio as gr
+from cachetools import TTLCache
 
 from utils.logging_setup import configure_logging, run_in_turn
 
 # Before anything else logs: JSON lines with turn ids + secret redaction (OBS-01).
 configure_logging()
 
-from config import MAX_CHAT_CHARS
-from utils.auth import AuthError, login, signup
+from config import (
+    CHAT_CONCURRENCY,
+    MAX_CHAT_CHARS,
+    QUEUE_MAX_SIZE,
+    TRIAL_DAILY_LIMIT,
+    TURNS_PER_MINUTE,
+    check_boot,
+)
+from graph.progress import ProgressUpdate
+from utils import lifecycle
 from utils.db import ensure_schema
+from utils.errors import AriaError, ConfigurationError, UserInputError, error_id_from_turn, render_error
+from utils.escaping import html_text, md_cell
 from utils.helpers import IST as IST_TZ
 from utils.helpers import now_ist
 from utils.input_guard import CleanMessage, InputRejected, clean_message
-from utils.telegram_link import start_polling_thread
 from utils.tracing import warn_if_auto_tracing_on
 from utils.url_safety import UnsafeURLError
 
 log = logging.getLogger(__name__)
 
-# ── Schema check on startup (migrations run as a release step, ARCH-01) ───────
-ensure_schema()
 
-# OBS-02: refuse silently-unredacted tracing setups loudly.
-warn_if_auto_tracing_on()
+def startup() -> None:
+    """Process start-up, run once before serving (not at import, so tests and
+    tools can import this module without touching a database).
 
-# ── Start the Telegram /start-code listener (no-ops if no bot token set) ──────
-start_polling_thread()
+    ARCH-03: every deployment problem (DATABASE_URL, secrets, providers) is
+    reported at once and the process exits non-zero. ARCH-01: the schema must
+    already be at head (migrations are a release step)."""
+    check_boot()
+    ensure_schema()
+    # OBS-02: refuse silently-unredacted tracing setups loudly.
+    warn_if_auto_tracing_on()
+    # REL-05: background jobs (alert check, housekeeping, Telegram poller,
+    # nightly refreshes) run in worker.py; in dev, in this process too.
+    from config import RUN_JOBS_IN_APP
+
+    if RUN_JOBS_IN_APP:
+        import threading
+
+        import worker
+
+        worker.start(threading.Event())
+    # LLM-08: probe every routed model once, in the background.
+    from agents.model_health import start_model_health_check
+
+    start_model_health_check()
+
 
 # ── Loading indicator HTML (three bouncing dots, styled via global CSS) ──────
 LOADING_HTML = '<span class="aria-dot"></span><span class="aria-dot"></span><span class="aria-dot"></span>'
@@ -45,19 +75,40 @@ LOADING_HTML = '<span class="aria-dot"></span><span class="aria-dot"></span><spa
 # orchestration path now (the legacy keyword-routed Orchestrator + its 6
 # specialist agent classes were retired once the graph reached feature parity
 # across all 6 domains — see ARCHITECTURE.md).
-_orchestrators = {}
+#
+# REL-03: a bounded cache (at most ORCHESTRATOR_CACHE_SIZE, evicted after
+# ORCHESTRATOR_IDLE_SECONDS idle). An evicted conversation loses nothing: the
+# next turn rebuilds its memory from chat_history and any pending
+# confirmation from the session row. VAL-10: keyed by (user, chat session),
+# so two tabs on two chats never share memory or a pending yes/no.
+ORCHESTRATOR_CACHE_SIZE = 500
+ORCHESTRATOR_IDLE_SECONDS = 1800
+_orchestrators: TTLCache = TTLCache(maxsize=ORCHESTRATOR_CACHE_SIZE, ttl=ORCHESTRATOR_IDLE_SECONDS)
 _orchestrators_lock = threading.Lock()
 
 
-def get_orchestrator(user_id: int):
+def get_orchestrator(user_id: int, session_id: int | None = None):
     # Concurrent turns (REL-01) mean two threads can race to build the same
-    # user's orchestrator; the lock keeps it to exactly one instance.
+    # conversation's orchestrator; the lock keeps it to exactly one instance.
+    key = (user_id, session_id)
     with _orchestrators_lock:
-        if user_id not in _orchestrators:
+        orch = _orchestrators.get(key)
+        if orch is None:
             from agents.graph_orchestrator import GraphOrchestrator
 
-            _orchestrators[user_id] = GraphOrchestrator(user_id)
-        return _orchestrators[user_id]
+            orch = GraphOrchestrator(user_id, session_id)
+            _orchestrators[key] = orch
+        else:
+            _orchestrators[key] = orch  # refresh the idle timer
+        return orch
+
+
+def evict_user(user_id: int) -> None:
+    """Drop every cached conversation of a user (e.g. after a BYO key change,
+    so the next turn picks up the new provider)."""
+    with _orchestrators_lock:
+        for key in [k for k in list(_orchestrators.keys()) if k[0] == user_id]:
+            _orchestrators.pop(key, None)
 
 
 # ── Concurrency (REL-01) ──────────────────────────────────────────────────────
@@ -67,17 +118,21 @@ def get_orchestrator(user_id: int):
 # still gets at most ONE turn in flight, because their GraphOrchestrator (and
 # its conversation memory) is per-user state that isn't safe to drive from two
 # threads at once — a second tab's message gets a "still working" reply.
-CHAT_CONCURRENCY = int(os.getenv("CHAT_CONCURRENCY", "8"))
-QUEUE_MAX_SIZE = int(os.getenv("QUEUE_MAX_SIZE", "100"))
 WATCHLIST_CONCURRENCY = 4
 
-_user_turn_locks: dict[int, threading.Lock] = {}
+# One turn in flight per conversation (VAL-10); bounded like the cache above.
+_user_turn_locks: TTLCache = TTLCache(maxsize=ORCHESTRATOR_CACHE_SIZE * 2, ttl=ORCHESTRATOR_IDLE_SECONDS)
 _user_turn_locks_guard = threading.Lock()
 
 
-def _user_turn_lock(user_id) -> threading.Lock:
+def _user_turn_lock(user_id, session_id=None) -> threading.Lock:
     with _user_turn_locks_guard:
-        return _user_turn_locks.setdefault(user_id, threading.Lock())
+        key = (user_id, session_id)
+        lock = _user_turn_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+        _user_turn_locks[key] = lock
+        return lock
 
 
 def _queue_kwargs() -> dict:
@@ -104,6 +159,24 @@ _TAB_LABELS = {
 }
 
 
+def _routing_badge(tab_used: str | None) -> str:
+    """UX-02: the "Routed to" line is a debugging aid, off unless SHOW_ROUTING_BADGE."""
+    from config import SHOW_ROUTING_BADGE
+
+    return f"*🔀 Routed to: {_tab_label(tab_used or 'equity')}*\n\n" if SHOW_ROUTING_BADGE else ""
+
+
+def _progress_html(steps: list[str]) -> str:
+    """Loading dots plus the last few research steps (UX-02)."""
+    shown = steps[-4:]
+    trail = " → ".join(html_text(s) for s in shown[:-1])
+    current = html_text(shown[-1]) + "…" if shown else ""
+    return (
+        f"{LOADING_HTML}<div class='aria-progress' role='status' aria-live='polite'>"
+        f"{trail + ' → ' if trail else ''}<strong>{current}</strong></div>"
+    )
+
+
 def _tab_label(tab_used: str) -> str:
     """Renders a routing badge label for `tab_used`, including a joined
     multi-domain label (e.g. "report+alert" -> "📋 Report Generator + 🔔
@@ -114,12 +187,30 @@ def _tab_label(tab_used: str) -> str:
     return " + ".join(_TAB_LABELS.get(p, p) for p in parts)
 
 
+# UX-01: one example per domain a new user might not know about.
 CHAT_DEFAULTS = [
     "Analyse TCS",
-    "IC report for TCS",
+    "Alert me if INFY falls 5%",
     "Best ELSS for tax saving",
-    "Top gainers today",
+    "Plan ₹50L for retirement in 20 years",
 ]
+
+# UX-01: always one click away in the chat tab.
+CAPABILITIES_MD = """
+**ARIA can**
+- research any NSE/BSE-listed company: fundamentals (bank-aware), technicals, news and sentiment,
+  peers, a risk profile, backtests and full research reports (PDF/Markdown);
+- screen the whole NSE market ("IT stocks with PE below 25 and ROE above 18%");
+- rank and compare mutual funds by returns, risk and cost;
+- watch prices, % moves and indicators for you and alert you on Telegram or in the app;
+- track your portfolio's P&L and build a goal-based plan from your profile.
+
+**ARIA can't**
+- tell you what to buy or sell: it's educational research, not SEBI-registered advice;
+- see live tick data: prices come from public sources and can be delayed (each answer says when);
+- cover markets outside India, derivatives strategies, crypto, or tax filing;
+- be right every time: numbers come with their sources — check what matters before acting.
+"""
 CHAT_PLACEHOLDER = (
     "Ask anything — stock analysis, IC/result-update reports, mutual funds, "
     "screening, portfolio, market overview…"
@@ -159,9 +250,8 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     nowhere. Locking the input for the round-trip closes that window instead
     of just detecting it after the fact.
 
-    Yields: (cleared_input, send_btn, updated_history, chart, suggestions, pdf, md, csv, *btn_updates)
+    Yields: (cleared_input, send_btn, updated_history, chart, suggestions, *btn_updates)
     """
-    no_file = gr.update(value=None, visible=False)
     # VAL-01: one input contract — normalise, strip invisible/control chars,
     # bound the length — and use the cleaned text everywhere below.
     checked = clean_message(message)
@@ -173,9 +263,6 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
                 history,
                 gr.update(),
                 suggestions,
-                no_file,
-                no_file,
-                no_file,
             ) + tuple(gr.update() for _ in range(4))
             return
         log.info(f"[respond] input rejected: {checked.reason}")
@@ -192,9 +279,6 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
             rejected_hist,
             gr.update(),
             suggestions,
-            no_file,
-            no_file,
-            no_file,
         ) + tuple(gr.update() for _ in range(4))
         return
     message = checked.text
@@ -213,7 +297,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     # process_stream() call below re-attempts orchestrator construction and
     # surfaces the same failure as a proper "API Key Required" message.
     try:
-        if get_orchestrator(user_id).classify(clean) == "equity":
+        if get_orchestrator(user_id, session_id).classify(clean) == "equity":
             kw = _TF_KEYWORDS.get(tf, "")
             if kw and kw not in clean.lower():
                 clean = clean + " " + kw
@@ -231,31 +315,43 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         loading_hist,
         gr.update(value=None, visible=False),
         suggestions,
-        no_file,
-        no_file,
-        no_file,
     ) + _make_btn_updates(suggestions)
 
     chart_fig = None
     new_sugg = suggestions
-    pdf_update = no_file
-    md_update = no_file
-    csv_update = no_file
     text = ""
+    tab_used: str | None = None
     try:
-        orch = get_orchestrator(user_id)
+        orch = get_orchestrator(user_id, session_id)
         tab_used = "equity"
         # Equity Q&A streams token-by-token (see EquityAgent.process_stream);
         # every other specialist yields exactly once with its finished
         # result, so this loop renders identically for both — it just runs
         # once for a non-streaming tab.
-        # pdf/md/csv paths are read after the loop (final yield), hence B007.
-        for text, chart, pdf_path, md_path, csv_path, tab_used in orch.process_stream(clean):  # noqa: B007
+        # Download links are read after the loop (final yield), hence B007.
+        steps: list[str] = []
+        for out in orch.process_stream(clean, progress=True):
+            if isinstance(out, ProgressUpdate):
+                # UX-02: the research steps so far, under the loading dots.
+                steps.append(out.label)
+                yield (
+                    _INPUT_BUSY,
+                    _SEND_BUSY,
+                    history
+                    + [
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": _progress_html(steps)},
+                    ],
+                    gr.update(),
+                    suggestions,
+                ) + _make_btn_updates(suggestions)
+                continue
+            text, chart, pdf_url, md_url, csv_url, tab_used = out
             if chart is not None:
                 chart_fig = chart
             streaming_hist = history + [
                 {"role": "user", "content": message},
-                {"role": "assistant", "content": f"*🔀 Routed to: {_tab_label(tab_used)}*\n\n" + text},
+                {"role": "assistant", "content": _routing_badge(tab_used) + text},
             ]
             yield (
                 _INPUT_BUSY,
@@ -263,44 +359,31 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
                 streaming_hist,
                 gr.update(value=chart_fig, visible=chart_fig is not None),
                 suggestions,
-                no_file,
-                no_file,
-                no_file,
             ) + _make_btn_updates(suggestions)
 
         new_sugg = orch.generate_suggestions(text, clean)
-        text = f"*🔀 Routed to: {_tab_label(tab_used)}*\n\n" + text
-        if pdf_path:
-            pdf_update = gr.update(value=pdf_path, label=f"⬇ {os.path.basename(pdf_path)}", visible=True)
-        if md_path:
-            md_update = gr.update(value=md_path, label=f"⬇ {os.path.basename(md_path)}", visible=True)
-        if csv_path:
-            csv_update = gr.update(value=csv_path, label="⬇ Export Results CSV", visible=True)
-    except UnsafeURLError as e:
-        # A saved BYO base URL that fails the egress policy (SEC-01).
-        text = (
-            f"### ⚠️ Settings need attention\n\n{e}\n\nUpdate or remove the base URL in the **Settings** tab."
-        )
-    except ValueError as e:
-        text = (
-            f"### ⚠️ API Key Required\n\n{e}\n\n"
-            "Add to `.env`:\n"
-            "```\nGROQ_API_KEY_1=your_key   # free at console.groq.com\n"
-            "GEMINI_API_KEY=your_key    # free at aistudio.google.com/apikey\n```\n"
-            "Then restart: `python app.py`"
-        )
-    except Exception:
-        # OBS-02: the error ID is the turn's id prefix — it finds the `turns`
-        # row and the trace (scripts/find_turn.py). Raw exception text is
-        # logged, never shown (it can carry internals).
+        text = _routing_badge(tab_used) + text
+        # OPS-02: links to /download/... routes, which any replica can serve.
+        # Links live in the answer itself: a separate component's update raced
+        # the sidebar re-render and was often lost (TEST-04), and in the
+        # message they stay usable from the chat history.
+        text += _download_links(pdf_url, md_url, csv_url)
+    except Exception as e:
+        # SEC-08: the user gets a friendly message and a short error ID; the
+        # exception text (which can carry SQL, paths, provider responses) goes
+        # only to the log. OBS-02: the error ID is the turn's id prefix — it
+        # finds the `turns` row and the trace (scripts/find_turn.py).
         from utils.logging_setup import turn_id_var
 
-        error_id = turn_id_var.get().replace("-", "")[:8] or "unknown"
-        log.exception(f"[respond] turn failed (error_id={error_id})")
-        text = (
-            "⚠️ Something went wrong on our side while answering that.\n\n"
-            f"Please try again. If it keeps happening, report **Error ID `{error_id}`**."
-        )
+        error_id = error_id_from_turn(turn_id_var.get())
+        if isinstance(e, UserInputError | ConfigurationError):
+            log.info(f"[respond] turn refused ({type(e).__name__}, error_id={error_id})")
+        else:
+            log.exception(f"[respond] turn failed (error_id={error_id})")
+        text = render_error(e if isinstance(e, AriaError) else None, error_id)
+        if isinstance(e, UnsafeURLError):
+            # A saved BYO base URL that fails the egress policy (SEC-01).
+            text += "\n\nUpdate or remove the base URL in the **Settings** tab."
 
     # A save failure here (e.g. a Neon connection dropped for being idle —
     # utils/db.py now retries once, but a second failure is still possible)
@@ -309,7 +392,7 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     # Finding-1 fix). Losing one turn's chat-history row is a much smaller
     # problem than leaving the whole input permanently locked.
     try:
-        _persist_turn(user_id, session_id, message, text, is_first=not history)
+        _persist_turn(user_id, session_id, message, text, is_first=not history, route=tab_used)
     except Exception as e:
         log.warning(f"[respond] failed to persist turn for session {session_id}: {e}")
 
@@ -326,16 +409,23 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         updated_history,
         chart_update,
         new_sugg,
-        pdf_update,
-        md_update,
-        csv_update,
     ) + btn_updates
 
 
 def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
     """respond(), but at most one turn per user at a time (REL-01), with every
     log line of the turn tagged by run_in_turn (OBS-01)."""
-    lock = _user_turn_lock(user_id)
+    if lifecycle.is_draining():
+        # OPS-04: this instance is shutting down; don't start work it would
+        # have to cut off. The message survives in the box for a resend.
+        log.info("[respond] rejected: server draining for shutdown")
+        yield _busy_outputs(message, history, suggestions, text=_DRAINING_TEXT)
+        return
+    if not _turn_allowed(user_id):
+        log.info("[respond] rejected: per-user turn rate limit")
+        yield _busy_outputs(message, history, suggestions, text=_RATE_LIMITED_TEXT)
+        return
+    lock = _user_turn_lock(user_id, session_id)
     if not lock.acquire(blocking=False):
         log.info("[respond] rejected: user already has a turn in flight")
         yield _busy_outputs(message, history, suggestions)
@@ -343,42 +433,69 @@ def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
     try:
         # run_in_turn keeps one turn_id on every log line of this turn, across
         # yields (Gradio resumes each generator step in a fresh context).
-        yield from run_in_turn(
-            respond(user_id, message, history, suggestions, session_id, tf), user_id, session_id
-        )
+        with lifecycle.track_turn():
+            yield from run_in_turn(
+                respond(user_id, message, history, suggestions, session_id, tf), user_id, session_id
+            )
     finally:
         lock.release()
 
 
-def _busy_outputs(message, history: list, suggestions: list) -> tuple:
-    """Reply for a second message from a user whose previous turn is still
-    running (e.g. from another browser tab). Keeps their text in the box."""
-    no_file = gr.update(value=None, visible=False)
+_BUSY_TEXT = "⏳ Still working on your previous question — send this again once that answer arrives."
+_DRAINING_TEXT = "🔄 ARIA is restarting for an update. Please send this again in a minute."
+_RATE_LIMITED_TEXT = (
+    f"🐢 You're sending messages faster than ARIA can answer them (limit: {TURNS_PER_MINUTE} a minute). "
+    "Please wait a moment and send this again."
+)
+
+
+def _turn_allowed(user_id) -> bool:
+    """SEC-12: at most TURNS_PER_MINUTE turns per user per minute, counted in
+    Postgres so every replica shares the budget. Fails open if the database
+    is unreachable (the turn itself would then fail with a clear error)."""
+    if not user_id:
+        return True
+    from utils.db import rate_limit_take
+
+    try:
+        return rate_limit_take(f"turn:{user_id}", TURNS_PER_MINUTE, 60)
+    except Exception:
+        log.warning("[respond] rate-limit check failed; allowing the turn", exc_info=True)
+        return True
+
+
+def _busy_outputs(message, history: list, suggestions: list, text: str = _BUSY_TEXT) -> tuple:
+    """Reply for a message that can't start now: the user's previous turn is
+    still running (e.g. another browser tab), or the server is draining for a
+    restart (OPS-04). Keeps their text in the box."""
     busy_hist = (history or []) + [
         {"role": "user", "content": (message or "")[:200]},
-        {
-            "role": "assistant",
-            "content": "⏳ Still working on your previous question — "
-            "send this again once that answer arrives.",
-        },
+        {"role": "assistant", "content": text},
     ]
     keep_text = gr.update(value=message or "", interactive=True)
-    return (keep_text, _SEND_READY, busy_hist, gr.update(), suggestions, no_file, no_file, no_file) + tuple(
+    return (keep_text, _SEND_READY, busy_hist, gr.update(), suggestions) + tuple(
         gr.update() for _ in range(4)
     )
 
 
-def _persist_turn(user_id: int, session_id: int, user_msg: str, assistant_msg: str, is_first: bool):
+def _persist_turn(
+    user_id: int, session_id: int, user_msg: str, assistant_msg: str, is_first: bool, route: str | None = None
+):
+    """Saves the exchange. The assistant row carries its turn id (feedback and
+    traces link to it, LLM-12) and the route in `meta`; the stored text has no
+    routing badge, so it never reaches the model as history."""
+    from agents.conversation_memory import strip_badge
     from utils.db import chat_save, session_touch
+    from utils.logging_setup import turn_id_var
 
+    meta = {"turn_id": turn_id_var.get() or None, "route": route}
     chat_save(user_id, session_id, "chat", "user", user_msg)
-    chat_save(user_id, session_id, "chat", "assistant", assistant_msg)
+    chat_save(user_id, session_id, "chat", "assistant", strip_badge(assistant_msg), meta=meta)
     session_touch(user_id, session_id, title=_session_title(user_msg) if is_first else None)
 
 
 def clear_chat(user_id: int):
-    if user_id in _orchestrators:
-        _orchestrators[user_id].reset()
+    # "Clear" starts a new chat; the old one stays saved with its own state.
     return ([], gr.update(value=None, visible=False), CHAT_DEFAULTS) + _make_btn_updates(CHAT_DEFAULTS)
 
 
@@ -434,14 +551,15 @@ def _build_chat_sidebar(
         return tuple(core + extras)
 
     def _new_chat(user_id):
-        if user_id:
-            get_orchestrator(user_id).reset()
+        # A new chat gets its own session (and orchestrator) on its first message.
         return _blank_update()
 
     def _load_session(user_id, sid):
         msgs = chat_load(user_id, sid)
         hist = [{"role": m["role"], "content": m["content"]} for m in msgs]
-        get_orchestrator(user_id).load_history(hist)
+        # The session's orchestrator restores its own memory (and any pending
+        # confirmation) from the database (REL-03/VAL-10).
+        get_orchestrator(user_id, sid)
         core = [sid, hist, gr.update(value=None, visible=False), CHAT_DEFAULTS] + list(
             _make_btn_updates(CHAT_DEFAULTS)
         )
@@ -492,6 +610,7 @@ def _build_chat_sidebar(
                         fn=lambda uid=user_id, s=sid: _load_session(uid, s),
                         inputs=[],
                         outputs=load_outputs,
+                        show_progress="hidden",
                     )
                     d.click(
                         fn=lambda current_sid, refresh, uid=user_id, s=sid: _delete_session(
@@ -499,10 +618,11 @@ def _build_chat_sidebar(
                         ),
                         inputs=[session_state, refresh_state],
                         outputs=load_outputs + [refresh_state],
+                        show_progress="hidden",
                     )
 
-    new_chat_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs)
-    new_chat_icon_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs)
+    new_chat_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs, show_progress="hidden")
+    new_chat_icon_btn.click(_new_chat, inputs=[user_state], outputs=load_outputs, show_progress="hidden")
 
     def _toggle(is_open):
         new_state = not is_open
@@ -515,95 +635,170 @@ def _build_chat_sidebar(
 
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
-CSS = """
+APP_CSS = """
+/* UX-03: every colour is a token. Light by default, dark when Gradio's
+   `.dark` is on <body> (set from the stored choice or prefers-color-scheme,
+   see APP_JS). Pairs used for text are checked for WCAG AA (4.5:1) in
+   tests/test_a11y_tokens.py; text is never smaller than 12px. */
+:root {
+    --aria-bg: #ffffff;
+    --aria-surface: #f6f8fa;
+    --aria-surface-2: #eaeef2;
+    --aria-sunken: #f6f8fa;
+    --aria-border: #d0d7de;
+    --aria-text: #1f2328;
+    --aria-text-2: #31373d;
+    --aria-muted: #59636e;
+    --aria-accent: #0969da;
+    --aria-accent-fg: #0550ae;
+    --aria-accent-soft: #ddf4ff;
+    --aria-accent-strong: #0969da;
+    --aria-on-accent: #ffffff;
+    --aria-accent-hover: #0550ae;
+    --aria-danger: #cf222e;
+    --aria-code: #0550ae;
+    --aria-focus: #0969da;
+}
+.dark {
+    --aria-bg: #0d1117;
+    --aria-surface: #161b22;
+    --aria-surface-2: #21262d;
+    --aria-sunken: #0a0d12;
+    --aria-border: #30363d;
+    --aria-text: #e6edf3;
+    --aria-text-2: #c9d1d9;
+    --aria-muted: #9da7b3;
+    --aria-accent: #58a6ff;
+    --aria-accent-fg: #58a6ff;
+    --aria-accent-soft: #132a45;
+    --aria-accent-strong: #1f6feb;
+    --aria-on-accent: #ffffff;
+    --aria-accent-hover: #1158c7;
+    --aria-danger: #ff7b72;
+    --aria-code: #79c0ff;
+    --aria-focus: #58a6ff;
+}
 body, .gradio-container {
-    background: #0d1117 !important;
-    color: #e6edf3 !important;
+    background: var(--aria-bg) !important;
+    color: var(--aria-text) !important;
 }
 .gradio-container {
     max-width: 100% !important;
     padding: 0 !important;
     margin: 0 !important;
+    /* Gradio's default primary blue (blue-500) under white text is 3.7:1;
+       its theme variables are redefined here, closer than its own :root/.dark. */
+    --button-primary-background-fill: var(--aria-accent-strong);
+    --button-primary-background-fill-hover: var(--aria-accent-hover);
+    --button-primary-border-color: var(--aria-accent-strong);
+    --button-primary-border-color-hover: var(--aria-accent-hover);
+    --button-primary-text-color: var(--aria-on-accent);
+    --button-primary-text-color-hover: var(--aria-on-accent);
+}
+/* Keyboard focus is always visible (WCAG 2.4.7) */
+.gradio-container :is(button, a, input, textarea, select, [tabindex]):focus-visible {
+    outline: 2px solid var(--aria-focus) !important;
+    outline-offset: 2px !important;
 }
 /* Tabs */
 .tab-nav button {
-    background: #161b22 !important;
-    color: #8b949e !important;
+    background: var(--aria-surface) !important;
+    color: var(--aria-muted) !important;
     border: none !important;
     border-bottom: 2px solid transparent !important;
     padding: 10px 20px !important;
-    font-size: 13px !important;
+    font-size: 14px !important;
 }
 .tab-nav button.selected {
-    color: #58a6ff !important;
-    border-bottom: 2px solid #58a6ff !important;
-    background: #0d1117 !important;
+    color: var(--aria-accent-fg) !important;
+    border-bottom: 2px solid var(--aria-accent) !important;
+    background: var(--aria-bg) !important;
 }
 /* Chatbot */
 .chatbot {
-    background: #0d1117 !important;
+    background: var(--aria-bg) !important;
     border: none !important;
 }
 /* Message bubbles */
 .message.user > div {
-    background: #1c2128 !important;
-    border: 1px solid #30363d !important;
+    background: var(--aria-surface) !important;
+    border: 1px solid var(--aria-border) !important;
     border-radius: 12px 12px 4px 12px !important;
-    color: #e6edf3 !important;
+    color: var(--aria-text) !important;
 }
 .message.bot > div {
     background: transparent !important;
-    color: #e6edf3 !important;
+    color: var(--aria-text) !important;
 }
 .message.bot table {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
-    background: #161b22;
+    background: var(--aria-surface);
     border-radius: 6px;
     overflow: hidden;
 }
 .message.bot th {
-    background: #21262d;
-    color: #58a6ff;
+    background: var(--aria-surface-2);
+    color: var(--aria-accent-fg);
     padding: 7px 12px;
-    border-bottom: 1px solid #30363d;
+    border-bottom: 1px solid var(--aria-border);
 }
-.message.bot td { padding: 6px 12px; border-bottom: 1px solid #21262d; }
-.message.bot code { background: #1f2937; color: #79c0ff; padding: 1px 6px; border-radius: 4px; }
+.message.bot td { padding: 6px 12px; border-bottom: 1px solid var(--aria-surface-2); }
+.message.bot code { background: var(--aria-surface-2); color: var(--aria-code); padding: 1px 6px; border-radius: 4px; }
+.message.bot a { color: var(--aria-accent-fg); text-decoration: underline; }
 /* Input */
 .input-row textarea {
-    background: #161b22 !important;
-    border: 1px solid #30363d !important;
-    color: #e6edf3 !important;
+    background: var(--aria-surface) !important;
+    border: 1px solid var(--aria-border) !important;
+    color: var(--aria-text) !important;
     border-radius: 10px !important;
 }
-.input-row textarea:focus { border-color: #58a6ff !important; outline: none !important; }
+.input-row textarea:focus { border-color: var(--aria-accent) !important; }
 /* Suggestion chips */
 .sugg-btn {
-    background: #161b22 !important;
-    color: #8b949e !important;
-    border: 1px solid #30363d !important;
+    background: var(--aria-surface) !important;
+    color: var(--aria-text-2) !important;
+    border: 1px solid var(--aria-border) !important;
     border-radius: 16px !important;
-    font-size: 12px !important;
+    font-size: 13px !important;
     padding: 4px 12px !important;
 }
 .sugg-btn:hover {
-    color: #58a6ff !important;
-    border-color: #58a6ff66 !important;
+    color: var(--aria-accent-fg) !important;
+    border-color: var(--aria-accent) !important;
 }
 /* Send / Clear buttons */
-.send-btn { background: #1f6feb !important; color: white !important; border-radius: 8px !important; border: none !important; }
-.send-btn:hover { background: #388bfd !important; }
-.clear-btn { background: transparent !important; color: #6e7681 !important; border: 1px solid #30363d !important; border-radius: 8px !important; }
-.clear-btn:hover { color: #f85149 !important; border-color: #f85149 !important; }
+.send-btn { background: var(--aria-accent-strong) !important; color: var(--aria-on-accent) !important; border-radius: 8px !important; border: none !important; }
+.send-btn:hover { background: var(--aria-accent-hover) !important; }
+.clear-btn { background: transparent !important; color: var(--aria-muted) !important; border: 1px solid var(--aria-border) !important; border-radius: 8px !important; }
+.clear-btn:hover { color: var(--aria-danger) !important; border-color: var(--aria-danger) !important; }
 /* Top header */
 #aria-header {
-    background: #161b22;
-    border-bottom: 1px solid #30363d;
+    background: var(--aria-surface);
+    border-bottom: 1px solid var(--aria-border);
     padding: 8px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
 }
+.aria-brand { font-size: 18px; font-weight: 700; color: var(--aria-accent-fg); }
+.aria-tagline { font-size: 12px; color: var(--aria-muted); margin-left: 10px; }
+.aria-pill {
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--aria-accent-soft);
+    color: var(--aria-accent-fg);
+    border: 1px solid var(--aria-border);
+}
+.aria-footer { text-align: center; font-size: 12px; color: var(--aria-muted); padding: 6px 0 10px; }
 footer { display: none !important; }
+/* UX-02: research steps under the loading dots */
+.aria-progress { font-size: 12px; color: var(--aria-muted); margin-top: 6px; line-height: 1.5; }
+.aria-progress strong { color: var(--aria-text-2); font-weight: 500; }
 /* Typing / loading indicator */
 @keyframes aria-bounce {
     0%, 80%, 100% { transform: translateY(0);    opacity: 0.35; }
@@ -613,85 +808,61 @@ footer { display: none !important; }
     display: inline-block;
     width: 7px; height: 7px;
     border-radius: 50%;
-    background: #58a6ff;
+    background: var(--aria-accent);
     margin: 0 2px;
     vertical-align: middle;
     animation: aria-bounce 1.2s infinite ease-in-out;
 }
 .aria-dot:nth-child(2) { animation-delay: 0.2s; }
 .aria-dot:nth-child(3) { animation-delay: 0.4s; }
-/* Download buttons */
-.dl-btn {
-    flex: 0 0 auto !important;
-    width: auto !important;
-    min-width: 0 !important;
-}
-.dl-btn button {
-    border-radius: 20px !important;
-    font-size: 12px !important;
-    padding: 5px 18px !important;
-    font-weight: 500 !important;
-    letter-spacing: 0.2px !important;
-    white-space: nowrap !important;
-}
-.dl-row {
-    gap: 8px !important;
-    padding: 6px 0 2px 0 !important;
-    justify-content: flex-start !important;
-    flex-wrap: wrap !important;
+@media (prefers-reduced-motion: reduce) {
+    .aria-dot { animation: none; opacity: 0.8; }
 }
 /* Timeframe radio */
-.tf-radio label { font-size: 12px !important; color: #8b949e !important; }
+.tf-radio label { font-size: 12px !important; color: var(--aria-text) !important; }
 .tf-radio .wrap { gap: 4px !important; }
 /* Chat sidebar (ChatGPT-style) */
-.chat-sidebar {
-    background: #0a0d12 !important;
-    border-right: 1px solid #30363d !important;
-    padding: 8px !important;
-    max-height: 640px;
-    overflow-y: auto;
-}
-.sidebar-title { color: #8b949e !important; font-size: 11px !important; padding: 2px 4px !important; }
+.sidebar-title { color: var(--aria-muted) !important; font-size: 12px !important; padding: 2px 4px !important; }
 .new-chat-btn {
-    background: #161b22 !important;
-    color: #e6edf3 !important;
-    border: 1px solid #30363d !important;
+    background: var(--aria-surface) !important;
+    color: var(--aria-text) !important;
+    border: 1px solid var(--aria-border) !important;
     border-radius: 8px !important;
-    font-size: 12px !important;
+    font-size: 13px !important;
     margin-bottom: 6px !important;
     width: 100% !important;
 }
-.new-chat-btn:hover { border-color: #58a6ff66 !important; }
-.sidebar-empty { color: #6e7681 !important; font-size: 11px !important; padding: 6px 4px !important; }
+.new-chat-btn:hover { border-color: var(--aria-accent) !important; }
+.sidebar-empty { color: var(--aria-muted) !important; font-size: 12px !important; padding: 6px 4px !important; }
 .session-row { gap: 4px !important; margin-bottom: 2px !important; }
 .session-btn {
     background: transparent !important;
-    color: #c9d1d9 !important;
+    color: var(--aria-text-2) !important;
     border: none !important;
     text-align: left !important;
     justify-content: flex-start !important;
-    font-size: 12px !important;
+    font-size: 13px !important;
     padding: 6px 8px !important;
     border-radius: 6px !important;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
 }
-.session-btn:hover { background: #161b22 !important; color: #58a6ff !important; }
+.session-btn:hover { background: var(--aria-surface) !important; color: var(--aria-accent-fg) !important; }
 .session-btn-active {
-    background: #161b22 !important;
-    color: #58a6ff !important;
-    border-left: 2px solid #58a6ff !important;
+    background: var(--aria-surface) !important;
+    color: var(--aria-accent-fg) !important;
+    border-left: 2px solid var(--aria-accent) !important;
     font-weight: 600 !important;
 }
 .session-del-btn {
     background: transparent !important;
-    color: #6e7681 !important;
+    color: var(--aria-muted) !important;
     border: none !important;
-    font-size: 11px !important;
+    font-size: 12px !important;
     padding: 4px !important;
 }
-.session-del-btn:hover { color: #f85149 !important; }
+.session-del-btn:hover { color: var(--aria-danger) !important; }
 /* ChatGPT-style chat shell: sidebar docked left, centered chat column */
 .chat-shell { gap: 0 !important; align-items: stretch !important; }
 .chat-main {
@@ -703,8 +874,8 @@ footer { display: none !important; }
    exist (its click handlers target them), but must render first. */
 .chat-sidebar {
     order: -1;
-    background: #0a0d12 !important;
-    border-right: 1px solid #30363d !important;
+    background: var(--aria-sunken) !important;
+    border-right: 1px solid var(--aria-border) !important;
     padding: 8px 6px !important;
     width: 260px !important;
     min-width: 260px !important;
@@ -726,7 +897,7 @@ footer { display: none !important; }
 }
 .sidebar-icon-btn {
     background: transparent !important;
-    color: #c9d1d9 !important;
+    color: var(--aria-text-2) !important;
     border: 1px solid transparent !important;
     border-radius: 8px !important;
     font-size: 15px !important;
@@ -736,7 +907,7 @@ footer { display: none !important; }
     max-width: 32px !important;
     flex: 0 0 auto !important;
 }
-.sidebar-icon-btn:hover { background: #161b22 !important; border-color: #30363d !important; }
+.sidebar-icon-btn:hover { background: var(--aria-surface) !important; border-color: var(--aria-border) !important; }
 /* The icon-only "new chat" button only makes sense once the full panel
    (with its own "+ New chat" button) is hidden — CSS keeps it out of the
    way in the expanded state without needing a second server round-trip. */
@@ -747,28 +918,135 @@ footer { display: none !important; }
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
-    background: #161b22;
+    background: var(--aria-surface);
     border-radius: 6px;
     overflow: hidden;
 }
 .wl-table th {
-    background: #21262d;
-    color: #58a6ff;
+    background: var(--aria-surface-2);
+    color: var(--aria-accent-fg);
     padding: 8px 12px;
     text-align: left;
-    border-bottom: 1px solid #30363d;
+    border-bottom: 1px solid var(--aria-border);
 }
 .wl-table td {
     padding: 7px 12px;
-    border-bottom: 1px solid #21262d;
-    color: #e6edf3;
+    border-bottom: 1px solid var(--aria-surface-2);
+    color: var(--aria-text);
 }
 .wl-table tr:last-child td { border-bottom: none; }
-.wl-empty { color: #6e7681; font-size: 13px; padding: 10px 2px; }
+.wl-empty { color: var(--aria-muted); font-size: 13px; padding: 10px 2px; }
 """
 
 
+CSS = APP_CSS  # older name
+
+# UX-03: light or dark follows the visitor's stored choice, else their OS
+# preference (prefers-color-scheme), and the header toggle flips and remembers
+# it. Gradio applies its own dark vars when `.dark` is on <body>, and APP_CSS's
+# tokens follow the same class. Icon-only buttons get accessible names here
+# because gr.Button has no aria-label; @gr.render re-creates the sidebar, so a
+# MutationObserver labels new ones. Must be an IIFE — Gradio evaluates `js` as
+# a bare expression.
+APP_JS = """(() => {
+  const KEY = 'aria-theme';
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  const stored = () => { try { return localStorage.getItem(KEY); } catch (e) { return null; } };
+  const apply = () => {
+    const pick = stored();
+    const dark = pick ? pick === 'dark' : mq.matches;
+    document.body.classList.toggle('dark', dark);
+    const btn = document.getElementById('theme-btn');
+    if (btn) btn.setAttribute('aria-pressed', String(dark));
+  };
+  window.ariaToggleTheme = () => {
+    const dark = !document.body.classList.contains('dark');
+    try { localStorage.setItem(KEY, dark ? 'dark' : 'light'); } catch (e) {}
+    apply();
+  };
+  const NAMES = {'◧': 'Show or hide chat history', '✎': 'New chat', '✕': 'Delete this chat'};
+  let queued = false;
+  const label = () => {
+    queued = false;
+    document.querySelectorAll('button').forEach((b) => {
+      const name = NAMES[b.textContent.trim()];
+      if (name && b.getAttribute('aria-label') !== name) {
+        b.setAttribute('aria-label', name);
+        b.setAttribute('title', name);
+      }
+    });
+    // Gradio keeps an aria-hidden copy of the tab strip (to measure overflow)
+    // whose buttons can still take focus; `inert` takes them out of the tab order.
+    document.querySelectorAll('.tab-container.visually-hidden[aria-hidden="true"]').forEach((el) => {
+      el.inert = true;
+    });
+    const btn = document.getElementById('theme-btn');
+    if (btn && !btn.hasAttribute('aria-pressed')) apply();
+  };
+  new MutationObserver(() => {
+    if (!queued) { queued = true; requestAnimationFrame(label); }
+  }).observe(document.body, {childList: true, subtree: true});
+  mq.addEventListener('change', apply);
+  apply();
+  label();
+})()"""
+
+THEME_TOGGLE_JS = "() => { window.ariaToggleTheme && window.ariaToggleTheme(); }"
+
+HEADER_HTML = """
+<header id='aria-header'>
+  <div>
+    <span class='aria-brand'>⚡ ARIA</span>
+    <span class='aria-tagline'>Autonomous Research &amp; Investment Analyst · NSE · BSE · v2</span>
+  </div>
+  <div class='aria-pill'>Free trial · bring your own key for unlimited use (Settings)</div>
+</header>
+"""
+
+FOOTER_HTML = """
+<div class='aria-footer'>
+  Data: Yahoo Finance (via yfinance), NSE, BSE, AMFI, mfapi.in, Google News and publisher RSS &nbsp;|&nbsp;
+  ⚠️ Not SEBI-registered. Educational information, not investment advice.
+</div>
+"""
+
+# SEC-04: logout is a POST to the FastAPI route (it deletes the session row and
+# the HttpOnly cookie), then back to the login page.
+LOGOUT_JS = (
+    "() => { fetch('/auth/logout', {method: 'POST', credentials: 'same-origin'})"
+    ".finally(() => { window.location.href = '/login'; }); }"
+)
+
+
 # ── Build the single unified chat tab (orchestrator-routed) ──────────────────
+
+
+def onboarding_card(info: dict) -> str:
+    """UX-01 first-run card: 3 things ARIA does, its main limit, the trial and Telegram."""
+    from config import TRIAL_DAILY_LIMIT
+
+    if info.get("byo"):
+        trial = "You're using your own LLM key, so there's no daily limit."
+    else:
+        left = max(0, TRIAL_DAILY_LIMIT - int(info.get("used_today") or 0))
+        trial = (
+            f"**{left} of {TRIAL_DAILY_LIMIT}** free questions left today. "
+            "Add your own LLM key in **⚙️ Settings** for unlimited use."
+        )
+    telegram = (
+        "✅ Telegram is connected: alerts reach your phone."
+        if info.get("telegram")
+        else "To get alerts on your phone: **⚙️ Settings → Connect Telegram** (one tap)."
+    )
+    return (
+        "### 👋 Welcome to ARIA\n"
+        "1. **Research any NSE/BSE company**: try *“Analyse TCS”* or *“Compare TCS with peers”*.\n"
+        "2. **Set alerts** on prices, % moves or indicators: *“Alert me if INFY falls 5%”*.\n"
+        "3. **Plan and compare funds**: *“Best ELSS for tax saving”* or *“Plan ₹50L for retirement”*.\n\n"
+        "**Good to know:** ARIA explains and researches; it doesn't give personal buy/sell advice, "
+        "and prices can be delayed.\n\n"
+        f"{trial}  \n{telegram}"
+    )
 
 
 def _build_chat_tab(user_state: gr.State):
@@ -790,14 +1068,36 @@ def _build_chat_tab(user_state: gr.State):
     # than fighting component build order.
     with gr.Row(elem_classes=["chat-shell"]):
         with gr.Column(scale=4, elem_classes=["chat-main"]):
+            # UX-01: first-run card (hidden once dismissed) and the capability boundary.
+            with gr.Group(visible=False, elem_id="onboarding") as onboarding_box:
+                onboarding_md = gr.Markdown("", elem_id="onboarding-card")
+                onboarding_done = gr.Button("Got it — let's start", size="sm", variant="primary")
+            with gr.Accordion("What ARIA can and can't do", open=False, elem_id="capabilities"):
+                gr.Markdown(CAPABILITIES_MD)
             chatbot = gr.Chatbot(
                 label="",
                 show_label=False,
+                # SEC-10: stated explicitly so a Gradio default change can't
+                # turn off sanitising of LLM- and user-supplied markup.
+                sanitize_html=True,
                 height=480,
                 render_markdown=True,
                 elem_id=f"chatbot-{tab_id}",
             )
             chart_panel = gr.Plot(value=None, elem_id=f"chart-{tab_id}", show_label=False, visible=False)
+
+            # LLM-12: a thumbs-down opens this so the user can say what was wrong.
+            feedback_turn = gr.State(None)
+            with gr.Group(visible=False, elem_id=f"feedback-{tab_id}") as feedback_box:
+                feedback_reason = gr.Radio(
+                    ["A number is wrong", "Out of date", "Not what I asked", "Other"],
+                    label="What was wrong with this answer?",
+                )
+                feedback_text = gr.Textbox(label="Details (optional)", max_lines=3, max_length=2000)
+                with gr.Row():
+                    feedback_send = gr.Button("Send feedback", size="sm", variant="primary")
+                    feedback_skip = gr.Button("Skip", size="sm")
+            feedback_note = gr.Markdown("", elem_id=f"feedback-note-{tab_id}")
 
             # Timeframe selector — only applies when the orchestrator routes to equity
             with gr.Row(elem_classes=["tf-radio"]):
@@ -809,38 +1109,20 @@ def _build_chat_tab(user_state: gr.State):
                     scale=1,
                 )
 
-            # Download buttons — report PDF/MD and screener CSV, hidden until produced
-            with gr.Row(elem_classes=["dl-row"]):
-                pdf_btn = gr.DownloadButton(
-                    "⬇ Download PDF",
-                    value=None,
-                    visible=False,
-                    variant="primary",
-                    size="sm",
-                    elem_classes=["dl-btn"],
-                )
-                md_btn = gr.DownloadButton(
-                    "⬇ Download Markdown",
-                    value=None,
-                    visible=False,
-                    variant="secondary",
-                    size="sm",
-                    elem_classes=["dl-btn"],
-                )
-                csv_btn = gr.DownloadButton(
-                    "⬇ Export Results CSV",
-                    value=None,
-                    visible=False,
-                    variant="secondary",
-                    size="sm",
-                    elem_classes=["dl-btn"],
-                )
+            # Download links — report PDF/MD and screener CSV, hidden until
+            # produced. OPS-02: plain links to /download/... (any replica
+            # serves them), not Gradio file components tied to one replica.
 
             gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
             with gr.Row():
                 sug_btns = [
                     gr.Button(CHAT_DEFAULTS[i], size="sm", elem_classes=["sugg-btn"]) for i in range(4)
                 ]
+
+            # VAL-08: shown only while the research graph waits for a yes/no.
+            with gr.Row(visible=False, elem_id=f"confirm-row-{tab_id}") as confirm_row:
+                yes_btn = gr.Button("✅ Yes, go ahead", variant="primary", size="sm")
+                no_btn = gr.Button("✖ No, cancel", variant="secondary", size="sm")
 
             with gr.Row(elem_id=f"input-row-{tab_id}"):
                 msg_box = gr.Textbox(
@@ -868,16 +1150,20 @@ def _build_chat_tab(user_state: gr.State):
             chart_panel,
             suggestions_state,
             sug_btns,
-            extra_reset=[pdf_btn, md_btn, csv_btn],
         )
 
     outputs = (
-        [msg_box, send_btn, chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn]
+        [msg_box, send_btn, chatbot, chart_panel, suggestions_state]
         + sug_btns
         + [session_state, refresh_state]
     )
 
-    def _respond(user_id, session_id, refresh, msg, hist, sugg, tf):
+    def _respond(user_id, session_id, refresh, msg, hist, sugg, tf, request: gr.Request):
+        # SEC-04: the authenticated request decides who is chatting (API
+        # clients never run the page's load event that fills user_state).
+        user_id = _request_user(request) or user_id
+        if not user_id:
+            return
         if session_id is None and isinstance(clean_message(msg), CleanMessage):
             from utils.db import session_create
 
@@ -893,8 +1179,7 @@ def _build_chat_tab(user_state: gr.State):
 
     def _clear(user_id):
         hist, chart, sugg, *btns = clear_chat(user_id)
-        no_dl = gr.update(value=None, visible=False)
-        return [hist, chart, sugg, no_dl, no_dl, no_dl] + list(btns) + [None]
+        return [hist, chart, sugg] + list(btns) + [None]
 
     # show_progress="hidden" on both: Gradio's own generic ETA overlay
     # ("processing | Xs/Ys" text + a stray link icon) otherwise renders on
@@ -904,28 +1189,104 @@ def _build_chat_tab(user_state: gr.State):
     # (bouncing dots, prefixed to the assistant bubble) is the one loading
     # indicator meant to be visible; this stops Gradio's from fighting it.
     chat_inputs = [user_state, session_state, refresh_state, msg_box, chatbot, suggestions_state, tf_radio]
+
     # Both triggers share one "chat" worker pool (REL-01): the limit is on
     # concurrent chat turns server-wide, not per button.
-    msg_box.submit(
-        _respond,
-        chat_inputs,
-        outputs,
-        show_progress="hidden",
-        concurrency_id="chat",
-        concurrency_limit=CHAT_CONCURRENCY,
+    def _confirm_visible(user_id, session_id, request: gr.Request):
+        """Show Yes/No while this chat's graph is paused for confirmation."""
+        user_id = _request_user(request) or user_id
+        orch = _orchestrators.get((user_id, session_id)) if user_id else None
+        return gr.update(visible=bool(orch and getattr(orch, "_awaiting_confirmation", False)))
+
+    def _on_like(data: gr.LikeData, user_id, session_id, request: gr.Request):
+        """Thumbs up/down on an answer, linked to the turn that produced it."""
+        user_id = _request_user(request) or user_id
+        hidden = (gr.update(visible=False), None, "")
+        if not user_id or session_id is None:
+            return hidden
+        from utils.db import chat_load, feedback_record
+
+        index = data.index[0] if isinstance(data.index, (list, tuple)) else data.index
+        rows = chat_load(user_id, session_id)
+        if not isinstance(index, int) or index >= len(rows) or rows[index]["role"] != "assistant":
+            return hidden
+        turn_id = (rows[index].get("meta") or {}).get("turn_id")
+        if not turn_id or data.liked is None:
+            return hidden
+        rating = 1 if data.liked else -1
+        feedback_record(user_id, turn_id, rating, session_id=session_id)
+        from utils.metrics import observe_feedback
+
+        observe_feedback(rating)
+        if rating == 1:
+            return gr.update(visible=False), None, "👍 Thanks for the feedback."
+        return gr.update(visible=True), turn_id, ""
+
+    def _send_feedback(user_id, session_id, turn_id, reason, details, request: gr.Request):
+        user_id = _request_user(request) or user_id
+        if user_id and turn_id:
+            from utils.db import feedback_record
+
+            feedback_record(user_id, turn_id, -1, session_id=session_id, reason=reason, free_text=details)
+        return gr.update(visible=False), None, None, "", "🙏 Thanks — this helps us fix wrong answers."
+
+    chatbot.like(_on_like, [user_state, session_state], [feedback_box, feedback_turn, feedback_note])
+    feedback_send.click(
+        _send_feedback,
+        [user_state, session_state, feedback_turn, feedback_reason, feedback_text],
+        [feedback_box, feedback_turn, feedback_reason, feedback_text, feedback_note],
     )
-    send_btn.click(
-        _respond,
-        chat_inputs,
-        outputs,
-        show_progress="hidden",
-        concurrency_id="chat",
-        concurrency_limit=CHAT_CONCURRENCY,
+    feedback_skip.click(lambda: (gr.update(visible=False), None), None, [feedback_box, feedback_turn])
+
+    def _onboarding_view(user_id, request: gr.Request):
+        """UX-01: the first-run card for users who haven't dismissed it."""
+        user_id = _request_user(request) or user_id
+        if not user_id:
+            return gr.update(visible=False), ""
+        from datetime import datetime
+
+        from utils.db import user_onboarding
+        from utils.helpers import IST
+
+        try:
+            info = user_onboarding(user_id, datetime.now(IST).date())
+        except Exception:
+            log.warning("[onboarding] status unavailable", exc_info=True)
+            return gr.update(visible=False), ""
+        if info["onboarded"]:
+            return gr.update(visible=False), ""
+        return gr.update(visible=True), onboarding_card(info)
+
+    def _onboarding_dismiss(user_id, request: gr.Request):
+        user_id = _request_user(request) or user_id
+        if user_id:
+            from utils.db import user_mark_onboarded
+
+            user_mark_onboarded(user_id)
+        return gr.update(visible=False)
+
+    # Load-time events hide Gradio's progress: its pending fade could stay on
+    # the target after a slow first load (TEST-07), see _reset_chat in build_ui.
+    user_state.change(_onboarding_view, [user_state], [onboarding_box, onboarding_md], show_progress="hidden")
+    onboarding_done.click(_onboarding_dismiss, [user_state], [onboarding_box])
+
+    chat_kwargs = {"show_progress": "hidden", "concurrency_id": "chat", "concurrency_limit": CHAT_CONCURRENCY}
+    msg_box.submit(_respond, chat_inputs, outputs, **chat_kwargs).then(
+        _confirm_visible, [user_state, session_state], [confirm_row]
     )
+    send_btn.click(_respond, chat_inputs, outputs, **chat_kwargs).then(
+        _confirm_visible, [user_state, session_state], [confirm_row]
+    )
+    for btn, answer in ((yes_btn, "yes"), (no_btn, "no")):
+        # A click is the typed answer: fill the box, run the same turn path.
+        btn.click(lambda a=answer: a, None, [msg_box]).then(
+            _respond, chat_inputs, outputs, **chat_kwargs
+        ).then(_confirm_visible, [user_state, session_state], [confirm_row])
     clear_btn.click(
         _clear,
         [user_state],
-        [chatbot, chart_panel, suggestions_state, pdf_btn, md_btn, csv_btn] + sug_btns + [session_state],
+        [chatbot, chart_panel, suggestions_state] + sug_btns + [session_state],
+        show_progress="hidden",
     )
 
     for btn in sug_btns:
@@ -1007,8 +1368,9 @@ def _watchlist_table_html(rows: list[list]) -> str:
     """
     if not rows:
         return "<p class='wl-empty'>No symbols yet — add one below.</p>"
-    head = "".join(f"<th>{c}</th>" for c in WATCHLIST_COLS)
-    body = "".join("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows)
+    # SEC-10: every cell is escaped — symbols come from users, names from yfinance.
+    head = "".join(f"<th>{html_text(c)}</th>" for c in WATCHLIST_COLS)
+    body = "".join("<tr>" + "".join(f"<td>{html_text(cell)}</td>" for cell in row) + "</tr>" for row in rows)
     return f"<table class='wl-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
 
@@ -1052,10 +1414,21 @@ def _build_watchlist_tab(user_state: gr.State):
         ref_btn = gr.Button("🔄 Refresh", variant="secondary", scale=1, min_width=90)
 
     def _add(user_id, sym_raw, refresh):
-        sym = clean_ticker(sym_raw.strip().upper())
-        if not sym:
-            return refresh, "⚠️ Enter a valid NSE symbol."
-        watchlist_add(user_id, sym)
+        # VAL-07: only listed NSE symbols, resolved like a chat mention, max 50.
+        from utils.db import WatchlistFull
+        from utils.errors import UserInputError
+        from utils.forms import WATCHLIST_MAX, watchlist_symbol
+
+        try:
+            sym = watchlist_symbol(sym_raw)
+        except UserInputError as e:
+            return refresh, f"⚠️ {html_text(e.user_message)}"
+        try:
+            added = watchlist_add(user_id, sym, max_symbols=WATCHLIST_MAX)
+        except WatchlistFull:
+            return refresh, f"⚠️ Your watchlist is full ({WATCHLIST_MAX} symbols). Remove one to add another."
+        if not added:
+            return refresh, f"ℹ️ **{sym}** is already on your watchlist."
         return refresh + 1, f"✅ **{sym}** added to watchlist."
 
     def _remove(user_id, sym_raw, refresh):
@@ -1082,9 +1455,198 @@ def _build_watchlist_tab(user_state: gr.State):
     return status
 
 
-# ── Settings tab (bring-your-own LLM key) ──────────────────────────────────────
+# ── Portfolio tab (UX-05) ──────────────────────────────────────────────────────
 
-_TRIAL_DAILY_LIMIT = 5
+PORTFOLIO_LOT_COLS = ["Lot #", "Symbol", "Qty", "Avg price", "Buy date"]
+
+
+def _portfolio_lots_html(lots: list[dict]) -> str:
+    """Plain, escaped HTML table of lots (gr.Dataframe paints one row — see
+    _watchlist_table_html)."""
+    from utils.numbers import format_inr
+
+    if not lots:
+        return "<p class='wl-empty'>No holdings yet — add one below or import your broker's CSV.</p>"
+    head = "".join(f"<th>{html_text(c)}</th>" for c in PORTFOLIO_LOT_COLS)
+    body = "".join(
+        "<tr>"
+        + "".join(
+            f"<td>{html_text(cell)}</td>"
+            for cell in (
+                lot["id"],
+                lot["symbol"],
+                f"{lot['qty'].normalize():f}",
+                format_inr(lot["avg_price"]),
+                lot["buy_date"] or "—",
+            )
+        )
+        + "</tr>"
+        for lot in lots
+    )
+    return f"<table class='wl-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def _portfolio_view(user_id: int | None):
+    """(summary markdown, chart, lots html) for the Portfolio tab."""
+    from tools import portfolio
+    from tools.charts.builder import portfolio_chart
+    from utils.db import portfolio_all
+
+    if not user_id:
+        return "", None, _portfolio_lots_html([])
+    lots = portfolio_all(user_id)
+    holdings, summary = portfolio.valuation(lots)
+    chart = portfolio_chart(portfolio.chart_rows(holdings)) if holdings else None
+    return portfolio.to_markdown(holdings, summary), chart, _portfolio_lots_html(lots)
+
+
+def _build_portfolio_tab(user_state: gr.State):
+    """Portfolio tab: holdings at live prices (P&L, weights, allocation
+    chart), add / edit / remove lots, and CSV import from a broker holdings
+    export (Zerodha, Groww) or a plain sheet."""
+    from tools import portfolio
+    from utils.audit import audit
+    from utils.db import (
+        MAX_PORTFOLIO_LOTS,
+        PortfolioFull,
+        portfolio_add,
+        portfolio_import,
+        portfolio_remove,
+        portfolio_remove_lot,
+        portfolio_update,
+    )
+    from utils.errors import UserInputError
+
+    gr.Markdown(
+        "## 📊 Portfolio\nYour holdings at live prices. Quantities and prices are stored exactly; "
+        "P&L is before tax and charges."
+    )
+    pf_refresh = gr.State(0)
+
+    @gr.render(inputs=[user_state, pf_refresh])
+    def _render(user_id, _refresh):
+        summary_md, chart, lots_html = _portfolio_view(user_id)
+        gr.Markdown(summary_md, elem_id="pf-summary")
+        if chart is not None:
+            gr.Plot(chart, show_label=False, elem_id="pf-chart")
+        with gr.Accordion("Lots", open=False):
+            gr.HTML(lots_html, elem_id="pf-lots")
+
+    status = gr.Markdown("", elem_id="pf-status")
+
+    with gr.Group():
+        gr.Markdown("**Add a holding**")
+        with gr.Row():
+            add_sym = gr.Textbox(label="Company or NSE symbol", max_lines=1, max_length=60, scale=3)
+            add_qty = gr.Textbox(label="Quantity", max_lines=1, max_length=30, scale=1)
+            add_price = gr.Textbox(label="Avg buy price (₹)", max_lines=1, max_length=30, scale=1)
+            add_date = gr.Textbox(label="Buy date (optional)", placeholder="YYYY-MM-DD", max_lines=1, scale=1)
+            add_btn = gr.Button("➕ Add", variant="primary", scale=1, min_width=80)
+
+    with gr.Accordion("Edit or remove", open=False):
+        with gr.Row():
+            lot_id = gr.Number(label="Lot #", precision=0, minimum=1, scale=1)
+            ed_qty = gr.Textbox(label="New quantity", max_lines=1, max_length=30, scale=1)
+            ed_price = gr.Textbox(label="New avg price (₹)", max_lines=1, max_length=30, scale=1)
+            ed_date = gr.Textbox(label="Buy date", placeholder="YYYY-MM-DD", max_lines=1, scale=1)
+        with gr.Row():
+            upd_btn = gr.Button("✎ Update lot", size="sm")
+            del_lot_btn = gr.Button("🗑 Remove lot", size="sm")
+            del_sym = gr.Textbox(label="", placeholder="Symbol", show_label=False, max_lines=1, scale=2)
+            del_sym_btn = gr.Button("🗑 Remove all lots of symbol", size="sm")
+
+    with gr.Accordion("Import from your broker (CSV)", open=False):
+        gr.Markdown(
+            "Upload a holdings export: Zerodha Console (*Instrument, Qty., Avg. cost*), Groww "
+            "(*Stock Name / ISIN, Quantity, Average buy price*) or any sheet with *symbol, quantity, "
+            "avg price* (and optionally *buy date*) columns."
+        )
+        with gr.Row():
+            csv_file = gr.File(label="Holdings CSV", file_types=[".csv"], scale=3)
+            csv_replace = gr.Checkbox(label="Replace my current holdings", value=False, scale=1)
+            csv_btn = gr.Button("⬆️ Import", variant="primary", scale=1)
+    ref_btn = gr.Button("🔄 Refresh prices", size="sm")
+
+    def _who(user_id, request):
+        return _request_user(request) or user_id
+
+    def _add(user_id, sym, qty, price, when, refresh, request: gr.Request):
+        user_id = _who(user_id, request)
+        if not user_id:
+            return refresh, "⚠️ Please sign in."
+        try:
+            lot = portfolio.parse_lot(sym, qty, price, when)
+            portfolio_add(user_id, lot["symbol"], lot["qty"], lot["avg_price"], lot["buy_date"])
+        except UserInputError as e:
+            return refresh, f"⚠️ {html_text(e.user_message)}"
+        except PortfolioFull:
+            return refresh, f"⚠️ You can keep up to {MAX_PORTFOLIO_LOTS} lots. Remove some to add more."
+        return refresh + 1, f"✅ Added {lot['qty'].normalize():f} **{lot['symbol']}**."
+
+    def _update(user_id, lid, qty, price, when, refresh, request: gr.Request):
+        user_id = _who(user_id, request)
+        try:
+            ok = bool(lid) and portfolio_update(
+                user_id,
+                int(lid),
+                portfolio.parse_quantity(qty),
+                portfolio.parse_price(price),
+                portfolio.parse_buy_date(when),
+            )
+        except UserInputError as e:
+            return refresh, f"⚠️ {html_text(e.user_message)}"
+        return (refresh + 1, f"✎ Lot #{int(lid)} updated.") if ok else (refresh, "⚠️ No such lot.")
+
+    def _remove_lot(user_id, lid, refresh, request: gr.Request):
+        user_id = _who(user_id, request)
+        ok = bool(lid) and portfolio_remove_lot(user_id, int(lid))
+        return (refresh + 1, f"🗑 Lot #{int(lid)} removed.") if ok else (refresh, "⚠️ No such lot.")
+
+    def _remove_symbol(user_id, sym, refresh, request: gr.Request):
+        user_id = _who(user_id, request)
+        sym = (sym or "").strip().upper()
+        n = portfolio_remove(user_id, sym) if sym else 0
+        if not n:
+            return refresh, "⚠️ You don't hold that symbol."
+        return refresh + 1, f"🗑 Removed {n} lot{'s' if n != 1 else ''} of **{html_text(sym)}**."
+
+    def _import(user_id, path, replace, refresh, request: gr.Request):
+        user_id = _who(user_id, request)
+        if not user_id:
+            return refresh, "⚠️ Please sign in."
+        if not path:
+            return refresh, "⚠️ Choose a CSV file first."
+        try:
+            with open(path, "rb") as f:
+                data = f.read(portfolio.MAX_CSV_BYTES + 1)
+            lots, problems = portfolio.parse_csv(data)
+            if not lots:
+                raise UserInputError("No usable holdings in that file.")
+            n = portfolio_import(user_id, lots, replace=bool(replace))
+        except UserInputError as e:
+            return refresh, f"⚠️ {html_text(e.user_message)}"
+        except PortfolioFull:
+            return refresh, f"⚠️ That would take you past {MAX_PORTFOLIO_LOTS} lots."
+        audit("portfolio.import", actor_user_id=user_id, details={"lots": n, "replace": bool(replace)})
+        msg = f"✅ Imported {n} holding{'s' if n != 1 else ''}" + (
+            " (replaced the previous ones)." if replace else "."
+        )
+        if problems:
+            msg += "\n\nSkipped:\n" + "\n".join(f"- {p}" for p in problems[:20])
+        return refresh + 1, msg
+
+    add_btn.click(_add, [user_state, add_sym, add_qty, add_price, add_date, pf_refresh], [pf_refresh, status])
+    upd_btn.click(_update, [user_state, lot_id, ed_qty, ed_price, ed_date, pf_refresh], [pf_refresh, status])
+    del_lot_btn.click(_remove_lot, [user_state, lot_id, pf_refresh], [pf_refresh, status])
+    del_sym_btn.click(_remove_symbol, [user_state, del_sym, pf_refresh], [pf_refresh, status])
+    csv_btn.click(_import, [user_state, csv_file, csv_replace, pf_refresh], [pf_refresh, status])
+    ref_btn.click(
+        lambda r: r + 1, [pf_refresh], [pf_refresh], concurrency_limit=WATCHLIST_CONCURRENCY
+    )  # one quote per holding; keep it bounded
+    return status
+
+
+# ── Settings tab (bring-your-own LLM key) ──────────────────────────────────────
 
 
 def _settings_status_md(user_id: int) -> str:
@@ -1107,8 +1669,8 @@ def _settings_status_md(user_id: int) -> str:
     today = datetime.now(IST).date()
     if urow and urow["free_msgs_reset_at"] != today:
         used = 0
-    remaining = max(0, _TRIAL_DAILY_LIMIT - used)
-    return f"🆓 **Free trial** — {remaining}/{_TRIAL_DAILY_LIMIT} messages left today. Add your own key below for unlimited use."
+    remaining = max(0, TRIAL_DAILY_LIMIT - used)
+    return f"🆓 **Free trial** — {remaining}/{TRIAL_DAILY_LIMIT} messages left today. Add your own key below for unlimited use."
 
 
 def _build_settings_tab(user_state: gr.State):
@@ -1150,19 +1712,17 @@ def _build_settings_tab(user_state: gr.State):
     def _save(user_id, model, base_url, api_key):
         if not user_id:
             return "", model, base_url, api_key
-        model = (model or "").strip()
-        api_key = (api_key or "").strip()
-        base_url = (base_url or "").strip() or None
-        if not model or not api_key:
-            return "⚠️ Model and API key are both required.", model, base_url or "", api_key
-        if base_url:
-            # SEC-01: only public https endpoints — never internal hosts.
-            from utils.url_safety import UnsafeURLError, validate_public_https_url
+        # VAL-07: format checks (SEC-01 URL policy included), then a live
+        # 1-token call — a key is saved only once the provider has accepted it.
+        from utils.errors import AriaError
+        from utils.forms import llm_settings, probe_llm
 
-            try:
-                base_url = validate_public_https_url(base_url)
-            except UnsafeURLError as e:
-                return f"⚠️ {e}", model, base_url, api_key
+        try:
+            model, api_key, base_url = llm_settings(model, api_key, base_url)
+            probe_llm(model, api_key, base_url)
+        except AriaError as e:
+            hint = f" {e.fix_hint}" if e.fix_hint else ""
+            return f"⚠️ {e.user_message}{hint}", model or "", base_url or "", api_key or ""
         from utils.crypto import encrypt
         from utils.db import llm_config_set
 
@@ -1178,13 +1738,20 @@ def _build_settings_tab(user_state: gr.State):
                 api_key,
             )
         llm_config_set(user_id, "openai_compatible", model, encrypted, base_url=base_url)
+        from utils.audit import audit
+
+        audit(
+            "settings.llm_key_set",
+            actor_user_id=user_id,
+            details={"model": model[:100], "base_url_host": _url_host(base_url)},
+        )
         # Evict the cached orchestrator so the new key applies on this
         # user's very next message instead of waiting for a restart/reset —
         # GraphOrchestrator resolves its BYO config once per instance
         # (agents/graph_orchestrator.py), so a stale cached instance would
         # otherwise keep using whatever was configured (or the trial path)
         # when it was first built.
-        _orchestrators.pop(user_id, None)
+        evict_user(user_id)
         return (
             _settings_status_md(user_id),
             model,
@@ -1225,7 +1792,7 @@ def _build_settings_tab(user_state: gr.State):
             provider = OpenAICompatibleProvider("Reply with OK.", api_key, model, base_url)
             provider.ask("ping", temperature=0.0, max_tokens=1)
         except UnsafeURLError as e:
-            return f"⚠️ {e}"
+            return f"⚠️ {e.user_message}"
         except Exception as e:
             kind = _error_class(LLMProvidersExhausted(e, is_byo=True))
             log.warning(f"[Settings] connection test failed ({kind}): {e}")
@@ -1238,7 +1805,10 @@ def _build_settings_tab(user_state: gr.State):
         from utils.db import llm_config_clear
 
         llm_config_clear(user_id)
-        _orchestrators.pop(user_id, None)
+        from utils.audit import audit
+
+        audit("settings.llm_key_cleared", actor_user_id=user_id)
+        evict_user(user_id)
         return _settings_status_md(user_id), "", "", ""
 
     save_btn.click(
@@ -1248,7 +1818,7 @@ def _build_settings_tab(user_state: gr.State):
     )
     test_btn.click(_test, inputs=[user_state, model_box, base_url_box, api_key_box], outputs=[status])
     clear_btn.click(_clear, inputs=[user_state], outputs=[status, model_box, base_url_box, api_key_box])
-    user_state.change(_refresh_status, inputs=[user_state], outputs=[status])
+    user_state.change(_refresh_status, inputs=[user_state], outputs=[status], show_progress="hidden")
 
     gr.Markdown(
         "---\n### 🔔 Telegram Alerts\nConnect your own Telegram chat so alerts you create come straight to you."
@@ -1295,11 +1865,14 @@ def _build_settings_tab(user_state: gr.State):
         from utils.db import telegram_chat_id_set
 
         telegram_chat_id_set(user_id, None)
+        from utils.audit import audit
+
+        audit("settings.telegram_unlinked", actor_user_id=user_id)
         return _telegram_status_md(user_id)
 
     tg_connect_btn.click(_tg_connect, inputs=[user_state], outputs=[tg_status])
     tg_disconnect_btn.click(_tg_disconnect, inputs=[user_state], outputs=[tg_status])
-    user_state.change(_tg_refresh, inputs=[user_state], outputs=[tg_status])
+    user_state.change(_tg_refresh, inputs=[user_state], outputs=[tg_status], show_progress="hidden")
 
     # ── Alert inbox (DATA-08) ────────────────────────────────────────────────
     # Fallback delivery channel: alerts that fired while Telegram wasn't linked
@@ -1335,9 +1908,77 @@ def _build_settings_tab(user_state: gr.State):
 
     inbox_refresh_btn.click(_inbox_refresh, inputs=[user_state], outputs=[inbox_md])
     inbox_read_btn.click(_inbox_mark_read, inputs=[user_state], outputs=[inbox_md])
-    user_state.change(lambda uid: _inbox_refresh(uid, notify=True), inputs=[user_state], outputs=[inbox_md])
+    user_state.change(
+        lambda uid: _inbox_refresh(uid, notify=True),
+        inputs=[user_state],
+        outputs=[inbox_md],
+        show_progress="hidden",
+    )
+
+    # ── Account security (SEC-04) ─────────────────────────────────────────────
+    gr.Markdown("---\n### 🔐 Signed-in devices")
+    sessions_md = gr.Markdown("")
+    with gr.Row():
+        logout_others_btn = gr.Button("Log out other devices", variant="secondary")
+        logout_here_btn = gr.Button("Log out", variant="secondary")
+
+    def _sessions(user_id):
+        if not user_id:
+            return ""
+        from utils.db import auth_sessions_list
+
+        try:
+            rows = auth_sessions_list(user_id)
+        except Exception as e:
+            log.warning(f"[Settings] session list failed: {e}")
+            return "⚠️ Couldn't load your signed-in devices right now."
+        return _sessions_md(rows)
+
+    def _logout_others(user_id, request: gr.Request):
+        if not user_id:
+            return ""
+        from utils.auth import logout_other_devices
+        from web.session import COOKIE_NAME
+
+        n = logout_other_devices(user_id, request.cookies.get(COOKIE_NAME))
+        from utils.audit import audit
+
+        audit("auth.logout_other_devices", actor_user_id=user_id, details={"revoked": n})
+        return f"✅ Logged out {n} other session(s).\n\n" + _sessions(user_id)
+
+    gr.Markdown(
+        "**Your data** — [download everything ARIA stores about you](/account/export) (JSON) · "
+        "**Delete account** — permanently remove your account and all its data: "
+        "[delete my account…](/account/delete)"
+    )
+
+    logout_others_btn.click(_logout_others, inputs=[user_state], outputs=[sessions_md])
+    logout_here_btn.click(None, js=LOGOUT_JS)
+    user_state.change(_sessions, inputs=[user_state], outputs=[sessions_md], show_progress="hidden")
 
     return status
+
+
+def _url_host(url: str | None) -> str | None:
+    if not url:
+        return None
+    from urllib.parse import urlsplit
+
+    return urlsplit(url).hostname
+
+
+def _sessions_md(rows: list[dict]) -> str:
+    """Signed-in sessions table; the user agent is escaped (SEC-10)."""
+    if not rows:
+        return "_No active sessions._"
+    lines = ["| Device | Last active (IST) |", "|---|---|"]
+    for r in rows:
+        ua = md_cell(r.get("user_agent") or "Unknown device", max_len=60)
+        seen = (
+            r["last_seen_at"].astimezone(IST_TZ).strftime("%d %b %Y, %H:%M") if r.get("last_seen_at") else "—"
+        )
+        lines.append(f"| {ua} | {seen} |")
+    return "\n".join(lines)
 
 
 def _inbox_md(rows: list[dict]) -> str:
@@ -1355,110 +1996,54 @@ def _inbox_md(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# ── Auth gate ─────────────────────────────────────────────────────────────────
+_DOWNLOAD_URL_RE = re.compile(r"^/download/(?:report/\d+\.(?:pdf|md)|file/[A-Za-z0-9_-]{16,64})$")
 
 
-def _build_auth_gate():
-    """
-    Login/signup screen. On success, sets user_state to the authenticated
-    user_id, hides this gate, and reveals the main app.
-    Returns (auth_group, main_group, user_state).
-    """
-    user_state = gr.State(None)  # holds user_id once authenticated
+def _download_link(url: str, label: str) -> str:
+    """A Markdown link to one of our own download routes (anything else renders nothing)."""
+    if not _DOWNLOAD_URL_RE.match(url or ""):
+        return ""
+    return f"[{label}]({url})"
 
-    def _load_legal_text() -> str:
-        try:
-            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "LEGAL.md")
-            with open(path, encoding="utf-8") as f:
-                return f.read()
-        except Exception:
-            return "Terms of Use & Privacy Notice unavailable — contact this instance's operator."
 
-    with gr.Column(elem_id="auth-gate", visible=True) as auth_group:
-        gr.HTML(
-            "<div style='text-align:center;padding:30px 0 10px'>"
-            "<span style='font-size:22px;font-weight:700;color:#58a6ff;'>⚡ ARIA</span><br/>"
-            "<span style='font-size:12px;color:#8b949e;'>Sign in to your research workspace</span>"
-            "</div>"
-        )
-        with gr.Column(scale=1, min_width=360, elem_id="auth-card"):
-            email_box = gr.Textbox(label="Email", placeholder="you@example.com")
-            pass_box = gr.Textbox(label="Password", type="password", placeholder="At least 8 characters")
-            with gr.Accordion("📜 Terms of Use & Privacy Notice", open=False):
-                gr.Markdown(_load_legal_text(), elem_id="legal-text")
-            terms_box = gr.Checkbox(label="I agree to the Terms of Use & Privacy Notice above", value=False)
-            auth_msg = gr.Markdown("")
-            with gr.Row():
-                login_btn = gr.Button("Log in", variant="primary")
-                signup_btn = gr.Button("Sign up", variant="secondary")
+def _download_links(pdf_url: str | None, md_url: str | None, csv_url: str | None) -> str:
+    """OPS-02: the answer's download links, as a line under it ("" if none)."""
+    links = [
+        _download_link(pdf_url or "", "⬇ Download PDF"),
+        _download_link(md_url or "", "⬇ Download Markdown"),
+        _download_link(csv_url or "", "⬇ Export results (CSV)"),
+    ]
+    links = [x for x in links if x]
+    return "\n\n" + " · ".join(links) if links else ""
 
-    with gr.Column(elem_id="main-app", visible=False) as main_group:
-        pass  # populated by caller
 
-    def _do_login(email, password, _agreed):
-        try:
-            token = login(email, password)
-        except AuthError as e:
-            return str(e), gr.update(visible=True), gr.update(visible=False), None
-        from utils.auth import get_user_id
+def _request_user(request: gr.Request | None) -> int | None:
+    """The user server.py's auth_dependency resolved from the session cookie
+    for this request (SEC-04), or None outside the authenticated server."""
+    username = getattr(request, "username", None) if request is not None else None
+    return int(username) if username and str(username).isdigit() else None
 
-        uid = get_user_id(token)
-        return "", gr.update(visible=False), gr.update(visible=True), uid
 
-    def _do_signup(email, password, agreed):
-        if not agreed:
-            return (
-                "⚠️ Please agree to the Terms of Use & Privacy Notice to sign up.",
-                gr.update(visible=True),
-                gr.update(visible=False),
-                None,
-            )
-        try:
-            uid = signup(email, password)
-            from utils.db import accept_terms
-
-            accept_terms(uid)
-            token = login(email, password)
-        except AuthError as e:
-            return str(e), gr.update(visible=True), gr.update(visible=False), None
-        from utils.auth import get_user_id
-
-        uid = get_user_id(token)
-        return "", gr.update(visible=False), gr.update(visible=True), uid
-
-    login_btn.click(
-        _do_login, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state]
-    )
-    signup_btn.click(
-        _do_signup, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state]
-    )
-    pass_box.submit(
-        _do_login, [email_box, pass_box, terms_box], [auth_msg, auth_group, main_group, user_state]
-    )
-
-    return auth_group, main_group, user_state
+def _identify_user(request: gr.Request) -> int | None:
+    """The authenticated user id for this page load (SEC-04)."""
+    return _request_user(request)
 
 
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="ARIA — Autonomous Financial Research Engine") as demo:
-        auth_group, main_group, user_state = _build_auth_gate()
+        # SEC-04: who is logged in comes from the session cookie, checked by
+        # server.py's auth_dependency on every request (gr.Request.username).
+        # user_state is set once per page load from that, never from input.
+        user_state = gr.State(None)
 
-        with main_group:
+        with gr.Column(elem_id="main-app"):
             # Header
-            gr.HTML("""
-            <div id='aria-header' style='display:flex;align-items:center;justify-content:space-between'>
-              <div>
-                <span style='font-size:18px;font-weight:700;color:#58a6ff;'>⚡ ARIA</span>
-                <span style='font-size:11px;color:#8b949e;margin-left:10px;'>
-                  Autonomous Research &amp; Investment Analyst · NSE · BSE · v2
-                </span>
-              </div>
-              <div style='font-size:10px;padding:3px 10px;border-radius:12px;
-                          background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;'>
-                Free trial · bring your own key for unlimited use (Settings)
-              </div>
-            </div>
-            """)
+            gr.HTML(HEADER_HTML)
+            with gr.Row(elem_id="top-actions"):
+                theme_btn = gr.Button("◐ Light / dark", size="sm", variant="secondary", elem_id="theme-btn")
+                logout_btn = gr.Button("Log out", size="sm", variant="secondary", elem_id="logout-btn")
+            theme_btn.click(None, js=THEME_TOGGLE_JS)
+            logout_btn.click(None, js=LOGOUT_JS)
 
             # Tabs — one unified chat (orchestrator-routed) + Watchlist utility view
             with gr.Tabs():
@@ -1468,16 +2053,14 @@ def build_ui() -> gr.Blocks:
                 with gr.Tab("📌 Watchlist"):
                     _build_watchlist_tab(user_state)
 
+                with gr.Tab("📊 Portfolio"):
+                    _build_portfolio_tab(user_state)
+
                 with gr.Tab("⚙️ Settings"):
                     _build_settings_tab(user_state)
 
             # Footer
-            gr.HTML("""
-            <div style='text-align:center;font-size:10px;color:#484f58;padding:6px 0 10px'>
-              Data: NSE/BSE via yfinance · NSE bhavcopy · AMFI · Google News RSS — All free &nbsp;|&nbsp;
-              ⚠️ Not SEBI-registered. For professional research purposes only.
-            </div>
-            """)
+            gr.HTML(FOOTER_HTML)
 
         # Note: the watchlist table no longer needs a user_state.change
         # handler here — its @gr.render already takes user_state as an
@@ -1489,11 +2072,18 @@ def build_ui() -> gr.Blocks:
         def _reset_chat(user_id):
             return [], gr.update(value=None, visible=False), CHAT_DEFAULTS, None
 
+        # show_progress="hidden" here and on every other event that writes the
+        # chatbot: Gradio draws its own "•••" pending bubble on a target
+        # component while such an event waits in the queue, and on a slow
+        # first load it outlived the answer (TEST-07 found it on the container).
         user_state.change(
             _reset_chat,
             [user_state],
             [chat_chatbot, chat_chart, chat_sugg_state, chat_session],
+            show_progress="hidden",
         )
+
+        demo.load(_identify_user, None, [user_state], show_progress="hidden")
 
     demo.queue(**_queue_kwargs())
     return demo
@@ -1511,41 +2101,21 @@ if __name__ == "__main__":
     print("  NSE · BSE · Mutual Funds · Screener")
     print("=" * 62)
     print(f"  Started  : {now_ist()}")
-    print("  URL      : http://localhost:7860")
+    from config import LOCAL_LLM_BASE_URL, LOCAL_LLM_MODEL, PORT
+
+    print(f"  URL      : http://localhost:{PORT}")
     print("  Primary  : Groq (Llama 3.3 70B) — 14,400 req/day per key")
     print("  Fallback : Google Gemini 2.0 Flash")
-    from config import LOCAL_LLM_BASE_URL, LOCAL_LLM_MODEL
-
     if LOCAL_LLM_BASE_URL:
         print(f"  Local    : {LOCAL_LLM_MODEL} at {LOCAL_LLM_BASE_URL} (last resort)")
     print("=" * 62)
-    from config import SECRET_KEY
-
-    if not SECRET_KEY:
-        print("  ⚠️  SECRET_KEY is not set — BYO LLM key encryption (Settings tab)")
-        print("      will fail. Add SECRET_KEY=<any random string> to .env.")
-        print("=" * 62)
+    startup()
 
     os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,0.0.0.0")
     os.environ.setdefault("no_proxy", "localhost,127.0.0.1,0.0.0.0")
 
-    demo = build_ui()
-    demo.launch(
-        server_name="0.0.0.0",  # container entrypoint; host/proxy controls exposure  # noqa: S104  # nosec B104
-        server_port=7860,
-        share=False,
-        show_error=True,
-        quiet=False,
-        theme=gr.themes.Base(),
-        css=CSS,
-        # Force Gradio's built-in dark theme vars regardless of the visitor's
-        # OS/browser color-scheme preference — this app has one deliberate
-        # dark aesthetic, not a light/dark toggle. Without this, users on a
-        # light-mode OS get Gradio's default light component backgrounds
-        # (white Chatbot/Radio/Dataframe boxes) clashing with our dark CSS,
-        # since Gradio only applies its dark theme vars when `.dark` is on
-        # <body> (not <html>), which it otherwise sets from
-        # prefers-color-scheme. Must be an IIFE — Gradio evaluates `js` as a
-        # bare expression, it does not call a bare arrow function for you.
-        js="(() => { document.body.classList.add('dark'); })()",
-    )
+    # SEC-04: FastAPI (login/signup/logout, cookie sessions) around the
+    # Gradio UI — see server.py.
+    from server import serve
+
+    serve()

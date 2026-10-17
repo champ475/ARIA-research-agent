@@ -3,9 +3,9 @@ scripts/check_alerts.py — standalone alert evaluator.
 
 Run on a schedule by .github/workflows/alert-check.yml (GitHub Actions cron,
 every 5 min). Not part of the Gradio app process — uses a single direct
-psycopg2 connection since this is a short-lived process that opens one
-connection and exits (the app's ThreadedConnectionPool in utils/db.py would
-be pointless here); this is a deliberate, still-valid choice, not something
+psycopg connection since this is a short-lived process that opens one
+connection and exits (the app's pool in utils/db.py would be pointless
+here); this is a deliberate, still-valid choice, not something
 the multi-user Telegram routing below needed to change.
 
 Multi-user Telegram routing: each alert's notification goes to ITS OWNER's
@@ -40,36 +40,34 @@ import os
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import psycopg2
+import psycopg
 import requests
-from psycopg2.extras import RealDictCursor
+from psycopg.rows import dict_row
 
-from config import DATABASE_URL, TELEGRAM_BOT_TOKEN
+from config import ALERT_MAX_DELIVERY_ATTEMPTS, DATABASE_URL, TELEGRAM_BOT_TOKEN, check_boot
 from tools.analysis.technical import compute_all
 from tools.data.fetcher import get_info, get_ohlcv
 from tools.data.nse_scraper import get_bulk_deals
-from utils.helpers import IST
 from utils.logging_setup import configure_logging
 
 log = logging.getLogger("check_alerts")
 
-ALERT_MAX_DELIVERY_ATTEMPTS = int(os.getenv("ALERT_MAX_DELIVERY_ATTEMPTS", "5"))
 
 # Failures that retrying can't fix — go straight to the in-app inbox.
 _PERMANENT_DELIVERY_ERRORS = {"not_linked", "bot_not_configured"}
 
 
 def market_is_open() -> bool:
-    now = datetime.now(IST)
-    if now.weekday() >= 5:  # Sat/Sun
-        return False
-    open_t = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    close_t = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return open_t <= now <= close_t
+    """DATA-06: NSE's calendar — weekends, trading holidays and special
+    sessions (Muhurat) — not just weekday hours."""
+    from utils.market_clock import is_open
+
+    return is_open()
 
 
 def send_telegram(text: str, chat_id: str | None) -> tuple[bool, str | None]:
@@ -251,11 +249,13 @@ def _portfolio_pnl_alert(
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     if price is None:
         return None
-    qty = sum(r["qty"] for r in rows)
-    cost = sum(r["qty"] * r["avg_price"] for r in rows)
-    if cost == 0:
+    # UX-05: qty/avg_price are NUMERIC (Decimal); the quote is a float.
+    from tools.portfolio import aggregate
+
+    holding = aggregate([{"symbol": symbol, **r} for r in rows])[0]
+    if not holding["invested"]:
         return None
-    pnl_pct = (qty * price - cost) / cost * 100
+    pnl_pct = float((holding["qty"] * Decimal(str(price)) - holding["invested"]) / holding["invested"] * 100)
     if _moved_enough(pnl_pct, threshold, direction):
         return f"🔔 {symbol} portfolio P&L is {pnl_pct:+.2f}% — beyond your {threshold}% alert"
     return None
@@ -392,7 +392,7 @@ def main() -> int:
         return 0
     from utils.migrations import SchemaOutOfDate, check_schema
 
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=10)
     try:
         # ARCH-01: this job only reads/writes rows. The schema is migrated by
         # the app's release step; if that hasn't happened yet, stop loudly
@@ -402,7 +402,16 @@ def main() -> int:
         except SchemaOutOfDate as e:
             log.error(f"Alert check aborted: {e}")
             return 1
-        run_once(conn)
+        # REL-05: the same lock and heartbeat as worker.py's alert_check, so a
+        # worker and this cron never evaluate (and deliver) the same run twice.
+        from datetime import timedelta
+
+        from utils.jobs import Job, run_job
+
+        outcome = run_job(Job("alert_check", lambda: run_once(conn), every=timedelta(minutes=4)))
+        log.info(f"Alert check: {outcome}")
+        if outcome == "failed":
+            return 1
     finally:
         conn.close()
     return 0
@@ -410,4 +419,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     configure_logging()
+    check_boot(serving=False)
     sys.exit(main())

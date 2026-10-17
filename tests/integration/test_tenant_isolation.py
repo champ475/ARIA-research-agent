@@ -18,6 +18,36 @@ pytestmark = pytest.mark.integration
 # ── utils/db.py ───────────────────────────────────────────────────────────────
 
 
+def test_onboarding_is_per_user(db, two_users):
+    """UX-01: dismissing the card is one user's choice."""
+    from datetime import date
+
+    a, b = two_users
+    db._query("UPDATE users SET onboarded_at = NULL", fetch=None, commit=True)
+    db.user_mark_onboarded(a)
+    assert db.user_onboarding(a, date.today())["onboarded"] is True
+    assert db.user_onboarding(b, date.today())["onboarded"] is False
+
+
+def test_downloads_are_per_user(db, two_users):
+    """OPS-02: a stored download is readable only by its owner."""
+    a, b = two_users
+    token = db.download_put(a, "r.csv", "text/csv", b"a,b")
+    assert db.download_get(b, token) is None
+    assert db.download_get(a, token)["filename"] == "r.csv"
+
+
+def test_portfolio_lots_are_per_user(db, two_users):
+    """UX-05: B can't edit, remove or replace A's lots."""
+    a, b = two_users
+    lot = db.portfolio_add(a, "TCS", 10, 3500.0)
+    assert not db.portfolio_update(b, lot, 1, 1.0)
+    assert not db.portfolio_remove_lot(b, lot)
+    db.portfolio_import(b, [{"symbol": "ITC", "qty": 1, "avg_price": 1}], replace=True)
+    assert [r["symbol"] for r in db.portfolio_all(a)] == ["TCS"]
+    assert [r["symbol"] for r in db.portfolio_all(b)] == ["ITC"]
+
+
 def test_portfolio(db, two_users):
     a, b = two_users
     db.portfolio_add(a, "TCS", 10, 3500.0)
@@ -115,6 +145,83 @@ def test_llm_config(db, two_users):
     assert db.llm_config_get(b) is None
     db.llm_config_clear(b)
     assert db.llm_config_get(a)["api_key_encrypted"] == "enc-key-a"
+    # Key rotation's compare-and-set only ever touches the named user's row.
+    assert db.llm_config_rewrap(b, "enc-key-a", "enc-by-b") is False
+    assert db.llm_config_get(a)["api_key_encrypted"] == "enc-key-a"
+
+
+def test_auth_sessions(db, two_users):
+    """SEC-04: B listing or revoking sessions never sees or touches A's."""
+    from datetime import UTC, datetime, timedelta
+
+    a, b = two_users
+    later = datetime.now(UTC) + timedelta(days=1)
+    db.auth_session_create(a, "hash-a", later, ip="1.2.3.4", user_agent="A's browser")
+    db.auth_session_create(b, "hash-b", later)
+    assert [r["user_agent"] for r in db.auth_sessions_list(b)] == [None]
+    assert db.auth_sessions_revoke_others(b, "hash-b") == 0
+    assert db.auth_session_lookup("hash-a")["user_id"] == a
+    assert len(db.auth_sessions_list(a)) == 1
+
+
+def test_account_lifecycle_functions(db, two_users):
+    """SEC-06: tokens, password and deletion act only on the named user."""
+    from datetime import UTC, datetime, timedelta
+
+    a, b = two_users
+    later = datetime.now(UTC) + timedelta(minutes=30)
+    db.auth_token_create(a, "reset", "tok-a", later)
+    db.auth_token_create(b, "reset", "tok-b", later)  # B's new token doesn't void A's
+    assert db.auth_token_consume("reset", "tok-a") == a
+    a_hash = db.user_password_hash(a)
+    db.user_set_password(b, "new-hash-b")
+    assert db.user_password_hash(a) == a_hash and db.user_password_hash(b) == "new-hash-b"
+    db._query("UPDATE users SET email_verified_at=NULL", fetch=None, commit=True)
+    db.user_mark_verified(b)
+    assert db.user_by_email(db.user_email(a))["email_verified_at"] is None
+    db.watchlist_add(a, "TCS")
+    assert db.user_delete(b) is True
+    assert db.user_email(b) is None and db.watchlist_all(a) == ["TCS"]
+
+
+def test_data_export_rows(db, two_users):
+    """COMP-03: export helpers return only the named user's rows."""
+    a, b = two_users
+    db.watchlist_add(a, "TCS")
+    assert db.user_rows("watchlist", b) == []
+    assert db.user_account_row(b)["id"] == b
+
+
+def test_session_pending(db, two_users):
+    """VAL-10: a paused confirmation is readable and clearable only by its owner."""
+    a, b = two_users
+    sid = db.session_create(a, "chat", title="A")
+    db.session_pending_set(a, sid, "user-a-thread")
+    assert db.session_pending_get(b, sid) is None
+    db.session_pending_set(b, sid, None)  # B can't clear A's pending step
+    assert db.session_pending_get(a, sid) == "user-a-thread"
+    db.session_pending_set(a, sid, None)
+    assert db.session_pending_get(a, sid) is None
+
+
+def test_trial_tokens(db, two_users):
+    """LLM-11: each user's daily trial token budget is their own and resets daily."""
+    a, b = two_users
+    day1, day2 = date(2026, 10, 16), date(2026, 10, 17)
+    assert db.trial_tokens_add(a, 900, day1) == 900
+    assert db.trial_tokens_add(a, 100, day1) == 1000
+    assert db.trial_tokens_used(b, day1) == 0
+    assert db.trial_tokens_used(a, day2) == 0  # a new day starts at zero
+    assert db.trial_tokens_add(a, 5, day2) == 5
+
+
+def test_feedback(db, two_users):
+    """LLM-12: B's ratings never land on or reveal A's."""
+    a, b = two_users
+    db.feedback_record(a, "turn-a", -1, reason="wrong number")
+    assert db.feedback_for(b) == []
+    db.feedback_record(b, "turn-a", 1)  # B rating the same turn id is B's own row
+    assert db.feedback_for(a)[0]["rating"] == -1
 
 
 def test_trial_quota(db, two_users):
@@ -164,12 +271,25 @@ COVERED = {
     "portfolio_add": test_portfolio,
     "portfolio_remove": test_portfolio,
     "portfolio_all": test_portfolio,
+    "portfolio_update": test_portfolio_lots_are_per_user,
+    "portfolio_remove_lot": test_portfolio_lots_are_per_user,
+    "portfolio_import": test_portfolio_lots_are_per_user,
+    "download_put": test_downloads_are_per_user,
+    "download_get": test_downloads_are_per_user,
+    "user_onboarding": test_onboarding_is_per_user,
+    "user_mark_onboarded": test_onboarding_is_per_user,
     "watchlist_add": test_watchlist,
     "watchlist_remove": test_watchlist,
     "watchlist_all": test_watchlist,
     "session_create": test_sessions_and_chat_history,
     "session_list": test_sessions_and_chat_history,
     "session_touch": test_sessions_and_chat_history,
+    "session_pending_get": test_session_pending,
+    "session_pending_set": test_session_pending,
+    "trial_tokens_used": test_trial_tokens,
+    "trial_tokens_add": test_trial_tokens,
+    "feedback_record": test_feedback,
+    "feedback_for": test_feedback,
     "session_delete": test_sessions_and_chat_history,
     "chat_save": test_sessions_and_chat_history,
     "chat_load": test_sessions_and_chat_history,
@@ -193,6 +313,18 @@ COVERED = {
     "llm_config_get": test_llm_config,
     "llm_config_set": test_llm_config,
     "llm_config_clear": test_llm_config,
+    "llm_config_rewrap": test_llm_config,
+    "auth_session_create": test_auth_sessions,
+    "auth_sessions_list": test_auth_sessions,
+    "auth_sessions_revoke_others": test_auth_sessions,
+    "auth_token_create": test_account_lifecycle_functions,
+    "user_email": test_account_lifecycle_functions,
+    "user_password_hash": test_account_lifecycle_functions,
+    "user_mark_verified": test_account_lifecycle_functions,
+    "user_set_password": test_account_lifecycle_functions,
+    "user_delete": test_account_lifecycle_functions,
+    "user_rows": test_data_export_rows,
+    "user_account_row": test_data_export_rows,
     "trial_quota_check_and_increment": test_trial_quota,
     "telegram_link_code_create": test_telegram_linking,
     "telegram_chat_id_set": test_telegram_linking,

@@ -4,7 +4,7 @@ google-genai>=1.0.0
 openai>=1.0.0
 
 # ── Crypto (encrypting user-supplied LLM API keys, utils/crypto.py) ──────────
-cryptography>=42.0.0
+cryptography>=50.0.0
 
 # ── Agentic research graph ────────────────────────────────────────────────────
 langgraph>=0.2.0
@@ -12,7 +12,7 @@ langchain-core>=0.3.0
 langchain-groq>=0.2.0
 langchain-google-genai>=2.0.0
 langgraph-checkpoint-postgres>=2.0.0
-psycopg[binary,pool]>=3.1.0
+psycopg[binary,pool]>=3.1.0      # the one Postgres driver: app pool, checkpointer, Alembic (REL-04)
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 yfinance>=0.2.40
@@ -27,7 +27,7 @@ lxml>=5.0.0
 # ── PDF processing ────────────────────────────────────────────────────────────
 pdfplumber>=0.10.0
 markdown>=3.5.0
-weasyprint>=60.0
+weasyprint>=70.0
 nh3>=0.2.17                  # HTML sanitiser for report PDF rendering (SEC-02)
 
 # ── Technical analysis ────────────────────────────────────────────────────────
@@ -37,18 +37,20 @@ ta>=0.11.0
 plotly>=5.18.0
 
 # ── UI ────────────────────────────────────────────────────────────────────────
-gradio>=4.40.0
+gradio>=6.16.0
 
 # ── Sentiment ─────────────────────────────────────────────────────────────────
 vaderSentiment>=3.3.2
 
 # ── Database ──────────────────────────────────────────────────────────────────
-psycopg2-binary>=2.9.9
 rapidfuzz>=3.6.0                 # instrument-name fuzzy matching (VAL-02)
 alembic>=1.13.0                  # versioned schema migrations (ARCH-01); pulls in SQLAlchemy
 
 # ── Utils ─────────────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
+pydantic-settings>=2.6.0         # typed, validated configuration (ARCH-03)
+cachetools>=5.5.0                # bounded TTL caches: sessions (SEC-04), orchestrators (REL-03)
+prometheus-client>=0.20.0        # /metrics for dashboards and alerts (OBS-03)
 pytz>=2024.1
 
 # ── Testing ───────────────────────────────────────────────────────────────────

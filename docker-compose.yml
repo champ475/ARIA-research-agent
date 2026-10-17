@@ -26,9 +26,117 @@ services:
       # bundled `db` service when run via compose, regardless of what's
       # in .env (e.g. a Neon URL left over from non-Docker use).
       DATABASE_URL: postgresql://aria:aria@db:5432/aria
+      # REL-05: background jobs run in the `worker` service below.
+      RUN_JOBS_IN_APP: "false"
     depends_on:
       db:
         condition: service_healthy
 
+  # REL-05: alert checks, housekeeping, the Telegram poller and the nightly
+  # refreshes — each job under an advisory lock, so `docker compose up
+  # --scale worker=2` is safe (one owner per job, the other on standby).
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "worker.py"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://aria:aria@db:5432/aria
+    # No HTTP server here; liveness is the job_heartbeats table, which the
+    # ops watchdog (OBS-04) checks.
+    healthcheck:
+      disable: true
+    depends_on:
+      app:
+        condition: service_started  # the app's start command applies migrations
+      db:
+        condition: service_healthy
+
+  # ── Staging (OPS-01): `docker compose --profile staging up --build` ───────
+  # Its own Postgres, env file (.env.staging, from .env.staging.example), port
+  # 7861 and worker — nothing shared with the default stack above.
+  db-staging:
+    profiles: ["staging"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aria
+      POSTGRES_PASSWORD: aria
+      POSTGRES_DB: aria_staging
+    volumes:
+      - aria_pg_staging:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aria -d aria_staging"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app-staging:
+    profiles: ["staging"]
+    build: .
+    restart: unless-stopped
+    ports:
+      - "7861:7860"
+    env_file:
+      - path: .env.staging
+        required: false
+    environment:
+      APP_ENV: staging
+      DATABASE_URL: postgresql://aria:aria@db-staging:5432/aria_staging
+      RUN_JOBS_IN_APP: "false"
+    depends_on:
+      db-staging:
+        condition: service_healthy
+
+  worker-staging:
+    profiles: ["staging"]
+    build: .
+    restart: unless-stopped
+    command: ["python", "worker.py"]
+    env_file:
+      - path: .env.staging
+        required: false
+    environment:
+      APP_ENV: staging
+      DATABASE_URL: postgresql://aria:aria@db-staging:5432/aria_staging
+    healthcheck:
+      disable: true
+    depends_on:
+      app-staging:
+        condition: service_started
+
+  # ── Observability (OBS-03): `docker compose --profile observability up` ──
+  # Prometheus scrapes the app's /metrics; Grafana (http://localhost:3000,
+  # admin/admin on first login) has the ARIA dashboard provisioned.
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - aria_prometheus:/prometheus
+    depends_on:
+      - app
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - aria_grafana:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   aria_pg_data:
+  aria_pg_staging:
+  aria_prometheus:
+  aria_grafana:

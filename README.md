@@ -1,19 +1,22 @@
 # ARIA — Autonomous Research & Investment Analyst
 
-An autonomous financial research engine for Indian stocks and mutual funds (NSE/BSE). ARIA covers stock research, IC-style reports, mutual fund advice, stock screening, goal-based financial planning, and price/technical alerts sent straight to your phone.
+An autonomous financial research engine for Indian stocks and mutual funds (NSE/BSE). ARIA covers stock research, IC-style reports, mutual fund comparison, stock screening, a portfolio tracker, goal-based financial planning, and price/technical alerts sent straight to your phone.
 
 You ask a question in plain language; a LangGraph research engine (see [docs/RFC_AGENTIC_RESEARCH_GRAPH.md](docs/RFC_AGENTIC_RESEARCH_GRAPH.md)) decomposes it into a plan, runs parallel evidence collection across equity/reports/mutual funds/screener/alerts/planning, verifies claims before synthesis, and answers with citations you can trace back to the underlying data.
 
 ## Features
 
-- **📈 Equity research** — fundamentals, technicals (RSI/MACD/Bollinger/moving averages), news, charts, peer comparison, backtesting, streamed live token-by-token.
+- **📈 Equity research** — fundamentals (lender-aware: no ROCE or D/E for banks/NBFCs), technicals (RSI/MACD/Bollinger/moving averages), news and headline sentiment, charts, same-industry peer comparison, a 0–100 risk profile, and MA-crossover/RSI backtests with trading costs — streamed live token-by-token.
 - **📄 IC-style reports** — initiating coverage, result updates, sector thematics, quick notes — downloadable as PDF/Markdown.
-- **💰 Mutual funds** — NAV lookup, category comparison (large/mid/small cap, ELSS, debt, hybrid, index), SIP-vs-lumpsum guidance.
-- **🔍 Screener** — filter the market by PE/ROE/ROCE/D-E/sector, top gainers/losers, bulk/block deals, save screens for reuse.
+- **💰 Mutual funds** — NAV lookup, category comparison (large/mid/small cap, ELSS, debt, hybrid, index) with returns and risk metrics, SIP-vs-lumpsum explained.
+- **🔍 Screener** — filter every NSE-listed stock (nightly snapshot) by PE/PB/ROE/ROCE/D-E/dividend yield/growth/market cap/sector ("between", %, ₹ crore all understood; the answer shows the filters it applied and anything it didn't understand), top gainers/losers, large deals, CSV export, save screens for reuse.
 - **🔔 Price & technical alerts** — 14 condition types, delivered to your own Telegram chat the moment they fire (checked every 5 min, even while your machine is off).
 - **🎯 Goal-based planning** — multi-turn intake (age, capital, horizon, goal, risk tolerance), remembered across sessions, then a real allocation grounded in actual fund/stock data.
+- **📊 Portfolio** — add holdings (or import a Zerodha/Groww holdings CSV), live P&L and allocation, and alerts on portfolio P&L.
 - **📌 Watchlist** — a quick-glance tracked-symbol list, separate from alerts.
-- **⚙️ Bring your own LLM key** — 5 free messages/day on the app's keys, then plug in any OpenAI-compatible provider (OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...) for unlimited use, encrypted at rest.
+- **🔐 Your account** — email verification, password reset, "log out other devices", download all your data as JSON, delete your account.
+- **♿ Accessible** — light and dark themes (follows your system, with a toggle), WCAG 2.1 AA contrast, keyboard focus, and charts described in words.
+- **⚙️ Bring your own LLM key** — 5 free questions/day on the app's keys, then plug in any OpenAI-compatible provider (OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...) for unlimited use, encrypted at rest.
 - **Follows the conversation** — like ChatGPT, a follow-up ("what about its RSI?") resolves against what you were just discussing, no need to repeat the ticker.
 - **Cites its numbers** — every ratio/claim links back to the exact evidence it came from, with an explicit confidence level when the underlying data was thin.
 
@@ -42,12 +45,14 @@ cp .env.example .env
 
 ```bash
 python scripts/migrate.py   # applies migrations; safe to re-run, needed after every update
-python app.py
+python app.py               # the web app (FastAPI + Gradio, see server.py)
 ```
 
-The app checks the schema version at startup and refuses to start (with this instruction) if migrations haven't been applied.
+The app checks its configuration and the schema version at startup and refuses to start, with a readable list of what to fix, if anything is wrong. Health endpoints: `/healthz` (process up) and `/readyz` (database, schema, an LLM provider).
 
-Open **http://localhost:7860**, sign up with an email and password, and start chatting.
+**Background jobs** (alert checks in market hours, housekeeping, the Telegram link listener, the nightly fundamentals snapshot and fund metrics) live in `worker.py`. In dev (`APP_ENV=dev`, the default) the app runs them in-process. Anywhere else, run `python worker.py` next to the app. Each job holds a Postgres advisory lock, so extra workers or app replicas never double-run anything. If `DATABASE_URL` points at a connection pooler (Neon's `-pooler` host), set `JOBS_DATABASE_URL` to the direct host: advisory locks need a real session.
+
+Open **http://localhost:7860**, sign up with an email and password, and start chatting. (In dev, the email-confirmation link is printed to the app log instead of mailed; set `MAIL_BACKEND=smtp` and `SMTP_*` to send real mail, e.g. with a Gmail app password.)
 
 ### Or run it with Docker
 
@@ -58,11 +63,11 @@ cp .env.example .env   # fill in SECRET_KEY at minimum
 docker compose up --build
 ```
 
-Open **http://localhost:7860**. Data persists in a named Docker volume (`aria_pg_data`) across restarts.
+Open **http://localhost:7860**. Data persists in a named Docker volume (`aria_pg_data`) across restarts. Compose also starts a `worker` service for the background jobs.
 
 ### Or deploy it for free on Hugging Face Spaces
 
-No server to manage, no card required. This works cleanly with the free tier specifically because nothing in this app depends on the host's disk surviving a restart — reports render on demand from Postgres (not a local file), and alerts run entirely on GitHub Actions, independent of whether the Space is asleep or awake.
+No server to manage, no card required. Nothing in this app depends on the host's disk surviving a restart: reports and CSVs are generated on demand from Postgres. Background jobs need either a `python worker.py` process somewhere, or the GitHub Actions alert checker below, which runs whether or not the Space is awake.
 
 1. Create a new Space at [huggingface.co/new-space](https://huggingface.co/new-space) — pick **Docker** as the SDK.
 2. Push this repo's contents to the Space's git remote (shown on the Space's page after creation), or connect it to sync from your GitHub fork. The existing `Dockerfile` runs as-is — no changes needed.
@@ -159,9 +164,27 @@ ARIA asks a few questions to fill in your profile (age, capital, horizon, goal, 
 ### 📌 Watchlist
 Use the Watchlist tab to add/remove stocks you're tracking — separate from alerts, just a quick-glance list.
 
+## Running it in production
+
+ARIA isn't hosted as a public service; `docker compose` (app + worker + Postgres, plus an optional Prometheus/Grafana `observability` profile) is the reference deployment. To operate an instance:
+
+- [docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md): dev, staging and prod settings.
+- [docs/RELEASING.md](docs/RELEASING.md): tagged releases, rollback, migration rules.
+- [docs/RUNBOOK.md](docs/RUNBOOK.md): what to do for each ops alert, plus backups and restore.
+- [docs/SLO.md](docs/SLO.md): service-level objectives and the weekly report.
+- [docs/PRIVACY.md](docs/PRIVACY.md) and [docs/ADVICE_POLICY.md](docs/ADVICE_POLICY.md): data handling and the education-only boundary.
+
+## Security
+
+Found a vulnerability? See [docs/SECURITY.md](docs/SECURITY.md); please report it privately.
+
 ## Contributing
 
 Bug reports, feature requests, and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, test running, and how to add a new agent or tool.
+
+## Data sources
+
+Data: Yahoo Finance (via yfinance), NSE, BSE, AMFI, mfapi.in, Google News and publisher RSS. These are free public sources, used for non-commercial, education-only research. Each one's terms, permitted use and attribution are in [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md). Before any commercial use, read that register's status column: NSE and Yahoo data need a licence.
 
 ## Legal
 

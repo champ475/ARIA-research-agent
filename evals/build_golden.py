@@ -74,7 +74,7 @@ def add(
     cases.append(case)
 
 
-# ── equity (32) ───────────────────────────────────────────────────────────────
+# ── equity (35) ───────────────────────────────────────────────────────────────
 for q, ents, tools in [
     ("How is TCS doing?", ["TCS"], EQUITY_TOOLS),
     ("analyse Reliance fundamentals", ["RELIANCE"], FUND),
@@ -108,6 +108,10 @@ for q, ents, tools in [
     ("block deals for HDFC Bank", ["HDFCBANK"], DEALS),
     ("what is TCS trading at", ["TCS"], ["fetch_info"]),
     ("Power Grid beta and volatility", ["POWERGRID"], EQUITY_TOOLS),
+    # UX-04: the analysis tools (planned deterministically when asked for).
+    ("backtest MA crossover on TATAMOTORS", ["TMPV"], ["backtest"]),
+    ("compare TCS with peers", ["TCS"], ["peer_comparison"]),
+    ("risk profile of ADANIPOWER", ["ADANIPOWER"], ["risk_assessment"]),
 ]:
     add("equity", q, intent="equity", entities=ents, data=True, tools=tools)
 

@@ -29,6 +29,10 @@ class Evidence(TypedDict):
     timestamp: datetime
     confidence: float  # source reliability x freshness
     citation_key: str  # matches tools/analysis/fundamental.py's cited_footnotes() convention
+    # DATA-06: when the data itself is from — the exchange's quote time when
+    # the source gives one, else when it was fetched (a cache hit keeps the
+    # original fetch time). `timestamp` is when this Evidence was built.
+    as_of: NotRequired[datetime]
 
 
 class Task(TypedDict):
@@ -43,6 +47,8 @@ class Task(TypedDict):
     # "timeout" | "circuit_open" | "deadline" | "error" — graph/deadline.py
     # turns it into the user-visible "data missing" note.
     error: NotRequired[str]
+    # DATA-02: the data source that failed ("nse", "yfinance"), when known.
+    source: NotRequired[str]
 
 
 class ResearchPlan(TypedDict):
@@ -176,6 +182,7 @@ class GraphState(TypedDict):
     pending_fundamental_payload: dict | None  # footnote source for the deferred call above, applied
     # by GraphOrchestrator once the full text is streamed
     chart_html: str
-    pdf_path: str | None  # report-domain file output (Phase 7.1), None for other intents
-    md_path: str | None  # report-domain file output (Phase 7.1), None for other intents
-    csv_path: str | None  # screener-domain file output (Phase 7.3), None for other intents
+    # OPS-02: download links (web/download_routes.py), never local file paths.
+    pdf_url: str | None  # report-domain download, None for other intents
+    md_url: str | None  # report-domain download, None for other intents
+    csv_url: str | None  # screener-domain download, None for other intents

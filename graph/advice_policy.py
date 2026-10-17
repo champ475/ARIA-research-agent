@@ -8,6 +8,8 @@ one reviewed place rather than in prompts the LLM may or may not follow.
 
 from __future__ import annotations
 
+import prompts
+
 POSTURE = "education_only"
 
 FOOTER_MARKER = "ℹ️ *Educational information, not investment advice."
@@ -50,13 +52,7 @@ REFUSALS = {
 }
 
 # Added to the answer prompt when a request asks for a personal call.
-REFRAME_INSTRUCTION = (
-    "\n\nADVICE BOUNDARY: the user asked for a personal buy/sell/hold decision or a tip. ARIA is "
-    "education-only and not SEBI-registered. Do NOT tell them to buy, sell or hold, do NOT give a "
-    "target price as advice, and do NOT rate it a 'strong buy' or similar. Instead lay out what the "
-    "data shows, the main arguments on both sides, the key risks, and what they should check or ask "
-    "a SEBI-registered adviser before deciding."
-)
+REFRAME_INSTRUCTION = prompts.get("advice.reframe")
 CAUTION_NOTE = (
     "ℹ️ *Unlisted, penny and SME stocks can be illiquid and hard to exit, and grey-market prices "
     "aren't official. Treat tips about them with extra caution.*"

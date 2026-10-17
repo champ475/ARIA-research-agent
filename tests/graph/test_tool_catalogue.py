@@ -31,6 +31,12 @@ class TestCatalogueRegistry:
             "fetch_top_movers",
             "fetch_bulk_deals",
             "fetch_block_deals",
+            # UX-04
+            "peer_comparison",
+            "risk_assessment",
+            "news_sentiment",
+            "backtest",
+            "portfolio_view",  # UX-05
         }
 
     def test_get_tool_returns_matching_spec(self):

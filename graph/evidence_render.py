@@ -221,6 +221,8 @@ def render_for_prompt(ev: dict, budget_chars: int) -> str:
             # DATA-04: a ranked list says how it was ranked.
             method = f"Ranking: {df['ranking_method'].iloc[0]}\n" if "ranking_method" in df.columns else ""
             return method + _markdown_table(df, _pick_columns(df, etype), budget_chars - len(method))
+    if etype in _ANALYSIS_TYPES and isinstance(payload, dict):
+        return _render_analysis(etype, payload, budget_chars)
     if etype == "alert_list" and isinstance(payload, list):
         lines = [
             f"- #{a.get('id')} {a.get('symbol')}: {a.get('condition') or a.get('alert_type')}"
@@ -230,6 +232,46 @@ def render_for_prompt(ev: dict, budget_chars: int) -> str:
         ]
         return "\n".join(lines)[:budget_chars]
     return ""
+
+
+# UX-04: the analysis tools' context beyond their claims (which arrive as
+# conclusions): the peer table, method notes, backtest assumptions and trades.
+_ANALYSIS_TYPES = {"peer_comparison", "risk_profile", "news_sentiment", "backtest_result", "portfolio"}
+_PEER_COLUMNS = ["symbol", "name", "pe", "pb", "roe", "roce", "de", "mcap_cr"]
+
+
+def _render_analysis(etype: str, p: dict, budget: int) -> str:
+    if etype == "portfolio":
+        return _truncate_markdown(str(p.get("table") or p.get("note") or ""), budget)
+    if etype == "peer_comparison":
+        rows = p.get("rows") or []
+        if not rows:
+            return str(p.get("note") or "")[:budget]
+        df = pd.DataFrame(rows)
+        hide = {"roce", "de"} if p.get("lender") else set()
+        cols = [c for c in _PEER_COLUMNS if c in df.columns and c not in hide]
+        head = f"Peers by {p.get('basis')} (source: {p.get('source')}); first row is {p.get('symbol')}.\n"
+        if hide:
+            head += "ROCE and D/E aren't meaningful for lenders and are not shown.\n"
+        return head + _markdown_table(df, cols, budget - len(head))
+    if etype == "backtest_result":
+        if p.get("error"):
+            return f"Backtest not possible: {p['error']}"[:budget]
+        trades = "; ".join(
+            f"{t.get('type')} {t.get('date')} @ {t.get('price')}"
+            + (f" ({t['pnl_pct']}%)" if "pnl_pct" in t else "")
+            for t in p.get("recent_trades") or []
+        )
+        text = (
+            f"Strategy: {p.get('strategy')} | window {p.get('window')} | "
+            f"vs buy-and-hold {p.get('buy_hold_pct')}% (difference {p.get('outperformance')} points)\n"
+            f"Assumptions: {p.get('assumptions')}\nRecent trades: {trades or 'none'}"
+        )
+        return text[:budget]
+    method = p.get("method") or ""
+    missing = p.get("not_assessed") or []
+    text = f"Method: {method}" + (f"\nNot assessed: {', '.join(missing)}" if missing else "")
+    return text[:budget]
 
 
 def _weight(ev: dict, intents: set[str], query: str) -> float:

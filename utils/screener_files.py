@@ -1,26 +1,41 @@
 """
-utils/screener_files.py
-Shared CSV writer for screener results. Extracted from
-agents/screener_agent.py::export_csv() (Phase 7.3 of the graph-expansion
-plan) so both the legacy ScreenerAgent and the LangGraph CommunicationLayer
-node produce identical output from the same code path.
+utils/screener_files.py — screener results as CSV bytes (OPS-02: stored in
+the `downloads` table and served by /download/file/<token>, never written
+to a replica's temp dir).
 """
 
 from __future__ import annotations
 
 import csv
-import os
-import tempfile
+import io
+
+# Column order of the export. Rows can't be trusted to carry it: a repeat
+# query is served from the evidence cache, whose JSONB storage reorders keys.
+COLUMNS = [
+    "symbol",
+    "name",
+    "sector",
+    "price",
+    "mktcap_cr",
+    "pe",
+    "pb",
+    "roe",
+    "roce",
+    "de",
+    "div_yield",
+    "rev_growth",
+    "as_of",
+    "source",
+]
 
 
-def save_screener_csv(results: list[dict]) -> str | None:
-    """Write screener results to a temp CSV and return the file path."""
+def screener_csv_bytes(results: list[dict]) -> bytes:
     if not results:
-        return None
-    path = os.path.join(tempfile.gettempdir(), "aria_screener_results.csv")
-    fieldnames = list(results[0].keys())
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
-    return path
+        return b""
+    keys = {k for row in results for k in row}
+    fields = [c for c in COLUMNS if c in keys] + sorted(keys - set(COLUMNS))
+    out = io.StringIO(newline="")
+    writer = csv.DictWriter(out, fieldnames=fields)
+    writer.writeheader()
+    writer.writerows(results)
+    return out.getvalue().encode("utf-8")

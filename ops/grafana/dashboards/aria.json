@@ -1,0 +1,556 @@
+{
+  "uid": "aria-overview",
+  "title": "ARIA — production overview",
+  "tags": [
+    "aria"
+  ],
+  "timezone": "Asia/Kolkata",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Turns by intent (per min)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum by (intent) (rate(aria_turns_total[5m])) * 60",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Error rate (SLO 99.5%)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum(rate(aria_turns_total{status=~\"error|llm_unavailable\"}[10m])) / clamp_min(sum(rate(aria_turns_total[10m])), 1e-9)",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Time to first output p50 / p95 (equity SLO ≤ 15 s)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(aria_turn_ttft_seconds_bucket[5m])))",
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(aria_turn_ttft_seconds_bucket[5m])))",
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(aria_turn_ttft_seconds_bucket{intent=\"equity\"}[5m])))",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Turn latency p50 / p95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(aria_turn_latency_seconds_bucket[5m])))",
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(aria_turn_latency_seconds_bucket[5m])))",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "LLM calls per turn",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum(rate(aria_llm_calls_total[15m])) / clamp_min(sum(rate(aria_turns_total[15m])), 1e-9)",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "LLM tokens (per min)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum by (direction) (rate(aria_llm_tokens_total[5m])) * 60",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "LLM cost (₹ per hour)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyINR"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum(increase(aria_llm_cost_inr_total[1h]))",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "LLM cost per turn (₹)",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyINR"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum(increase(aria_llm_cost_inr_total[24h])) / clamp_min(sum(increase(aria_turns_total[24h])), 1)",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Provider fallback rate",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum(rate(aria_llm_fallbacks_total[15m])) / clamp_min(sum(rate(aria_llm_calls_total[15m])), 1e-9)",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Evidence cache hit rate",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum(rate(aria_tool_calls_total{cache=\"hit\"}[15m])) / clamp_min(sum(rate(aria_tool_calls_total[15m])), 1e-9)",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Parse failures by node (per hour)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum by (node) (increase(aria_parse_failures_total[1h]))",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Ungrounded-number rate",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum(rate(aria_grounding_checks_total{result=\"ungrounded\"}[1h])) / clamp_min(sum(rate(aria_grounding_checks_total[1h])), 1e-9)",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Feedback (per day)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "sum by (rating) (increase(aria_feedback_total[1d]))",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Background job: time since last success",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "aria_job_last_ok_age_seconds",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "DB pool connections",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "aria_db_pool_connections",
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Data sources up",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aria-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 56
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aria-prometheus"
+          },
+          "expr": "aria_data_source_up",
+          "legendFormat": "__auto"
+        }
+      ]
+    }
+  ]
+}

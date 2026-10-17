@@ -14,33 +14,31 @@ difference.
 
 from __future__ import annotations
 
-from agents.conversation_memory import ConversationMemory
+from agents.conversation_memory import SUMMARY_PROMPT, ConversationMemory
+from agents.providers.usage import ThreadLocalUsage, stream_event_usage
 from config import LLM_STREAM_TIMEOUT_SECONDS, LLM_TIMEOUT_SECONDS, TOKENS_FAST
+from utils.errors import ConfigurationError
 from utils.tracing import usage_from_response
 
-_SUMMARY_PROMPT = (
-    "Existing summary of earlier conversation (may be empty):\n{old}\n\n"
-    "New older messages to fold in:\n{chunk}\n\n"
-    "Write an updated concise summary (3-5 sentences) capturing key facts, figures, "
-    "tickers, and decisions mentioned, so later replies stay consistent with this history. "
-    "Return only the summary text."
-)
 
-
-class OpenAICompatibleProvider:
+class OpenAICompatibleProvider(ThreadLocalUsage):
     # REL-02 per-request timeouts; LocalLLMProvider overrides both (CPU model).
     _request_timeout: float = LLM_TIMEOUT_SECONDS
     _stream_timeout: float = LLM_STREAM_TIMEOUT_SECONDS
+    # LLM-11: ask for a usage report on the final streamed chunk (OpenAI API).
+    _stream_usage: bool = True
 
     def __init__(self, system: str, api_key: str, model: str, base_url: str | None = None):
         if not api_key:
-            raise ValueError(
-                "No API key configured for your chosen LLM provider.\n"
-                "Add one in Settings — any OpenAI-compatible provider works "
-                "(OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...)."
+            raise ConfigurationError(
+                "No API key is configured for your LLM provider.",
+                fix_hint="Add one in Settings — any OpenAI-compatible provider works "
+                "(OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...).",
             )
         if not model:
-            raise ValueError("No model configured for your chosen LLM provider — set one in Settings.")
+            raise ConfigurationError(
+                "No model is configured for your LLM provider.", fix_hint="Set one in Settings."
+            )
         try:
             from openai import OpenAI as _OpenAI
         except ImportError as e:
@@ -72,7 +70,7 @@ class OpenAICompatibleProvider:
         self._memory = ConversationMemory(cap=20, summarizer=self._summarize)
 
     def _summarize(self, old_summary: str, chunk_text: str) -> str:
-        prompt = _SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
+        prompt = SUMMARY_PROMPT.format(old=old_summary or "(none)", chunk=chunk_text)
         r = self._client.chat.completions.create(
             model=self._model,
             messages=[{"role": "user", "content": prompt}],
@@ -129,9 +127,13 @@ class OpenAICompatibleProvider:
                 max_tokens=max_tokens,
                 stream=True,
                 timeout=self._stream_timeout,
+                **({"stream_options": {"include_usage": True}} if self._stream_usage else {}),
             )
             for event in events:
-                delta = event.choices[0].delta.content
+                usage = stream_event_usage(event)
+                if usage is not None:
+                    self.last_usage = usage
+                delta = event.choices[0].delta.content if event.choices else None
                 if delta:
                     chunks.append(delta)
                     yield delta

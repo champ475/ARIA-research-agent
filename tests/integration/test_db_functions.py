@@ -12,6 +12,21 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from tests.integration import (
+    test_account_lifecycle,
+    test_audit,
+    test_brute_force,
+    test_consent,
+    test_data_export,
+    test_downloads,
+    test_feedback,
+    test_fundamentals_snapshot,
+    test_jobs,
+    test_rate_limits,
+    test_sessions,
+    test_slo,
+    test_watchdog,
+)
 from tests.integration.test_tenant_isolation import COVERED as ISOLATION_COVERED
 
 pytestmark = pytest.mark.integration
@@ -244,6 +259,35 @@ def test_mf_metrics_cache_round_trip_and_freshness(db):
     assert db.mf_metrics_get([], date.today()) == {}
 
 
+def test_secret_key_rotation_rewraps_every_stored_key(db, two_users, monkeypatch):
+    """SEC-11: rotate_secret_key re-encrypts rows with the new key; a row
+    changed after it was read is left alone (compare-and-set)."""
+    import config
+    import scripts.rotate_secret_key as rot
+    from utils import crypto
+
+    a, b = two_users
+    old_key, new_key = "o" * 40, "n" * 40
+    monkeypatch.setattr(config, "SECRET_KEY", old_key)
+    monkeypatch.setattr(config, "SECRET_KEY_PREVIOUS", "")
+    crypto.reset_cache()
+    db.llm_config_set(a, "openai_compatible", "m", crypto.encrypt("key-a"))
+    db.llm_config_set(b, "openai_compatible", "m", crypto.encrypt("key-b"))
+    assert {r["user_id"] for r in db.llm_config_ciphertexts()} == {a, b}
+
+    monkeypatch.setattr(config, "SECRET_KEY", new_key)
+    monkeypatch.setattr(config, "SECRET_KEY_PREVIOUS", old_key)
+    crypto.reset_cache()
+    assert rot.rotate_all() == {"rows": 2, "rotated": 2, "unreadable": 0, "changed_meanwhile": 0}
+    assert db.llm_config_rewrap(a, "stale-ciphertext", "x") is False
+
+    monkeypatch.setattr(config, "SECRET_KEY_PREVIOUS", "")
+    crypto.reset_cache()
+    assert crypto.decrypt(db.llm_config_get(a)["api_key_encrypted"]) == "key-a"
+    assert crypto.decrypt(db.llm_config_get(b)["api_key_encrypted"]) == "key-b"
+    crypto.reset_cache()
+
+
 # ── coverage meta-test ────────────────────────────────────────────────────────
 
 # Public functions covered in this file (user-scoped ones are in ISOLATION_COVERED).
@@ -261,9 +305,52 @@ COVERED = {
     "turns_by_error_id": test_turn_record_round_trip_and_error_id_lookup,
     "mf_metrics_get": test_mf_metrics_cache_round_trip_and_freshness,
     "mf_metrics_put": test_mf_metrics_cache_round_trip_and_freshness,
+    "llm_config_ciphertexts": test_secret_key_rotation_rewraps_every_stored_key,
+    # SEC-04 session plumbing, exercised end to end in test_sessions.py:
+    "auth_session_lookup": test_sessions.test_expired_session_gets_no_access,
+    "auth_session_touch": test_sessions.test_refresh_keeps_you_logged_in_and_gradio_routes_need_the_cookie,
+    "auth_session_delete": test_sessions.test_logout_makes_the_token_unusable,
+    "auth_sessions_purge_expired": test_sessions.test_expired_session_gets_no_access,
+    "audit_log_write": test_audit.test_audit_rows_cannot_be_changed_or_deleted,
+    "audit_log_for": test_audit.test_alert_and_screener_writes_are_audited,
+    "user_by_email": test_account_lifecycle.test_forgot_password_answers_the_same_for_unknown_addresses,
+    "auth_token_consume": test_account_lifecycle.test_reset_with_expired_reused_and_wrong_tokens,
+    "auth_attempt_last": test_brute_force.test_per_account_backoff_after_many_failures,
+    "auth_attempts_purge": test_brute_force.test_housekeeping_keeps_auth_attempts_bounded,
+    "auth_tokens_purge_expired": test_brute_force.test_housekeeping_keeps_auth_attempts_bounded,
+    "terms_version_get": test_consent.test_legal_md_version_is_published,
+    "user_scoped_tables": test_data_export.test_export_contains_every_user_table_and_only_the_users_rows,
+    "rate_limit_take": test_rate_limits.test_rate_limit_is_exact_under_a_burst,
+    "feedback_negative_since": test_feedback.test_rating_twice_updates_one_row_and_triage_shows_context,
+    "feedback_mark_triaged": test_feedback.test_export_writes_golden_stubs_and_marks_triaged,
+    "feedback_rate": test_feedback.test_rating_twice_updates_one_row_and_triage_shows_context,
+    "fundamentals_upsert": test_fundamentals_snapshot.test_three_filters_match_a_manual_check_and_run_fast,
+    "fundamentals_screen": test_fundamentals_snapshot.test_three_filters_match_a_manual_check_and_run_fast,
+    "fundamentals_status": test_fundamentals_snapshot.test_refresh_writes_and_resumes,
+    "fundamentals_fresh_symbols": test_fundamentals_snapshot.test_refresh_writes_and_resumes,
+    "fundamentals_peers": test_fundamentals_snapshot.test_peers_come_from_the_same_industry_closest_in_size,
+    "job_heartbeat_start": test_jobs.test_run_records_a_heartbeat_and_is_not_repeated,
+    "job_heartbeat_finish": test_jobs.test_a_failure_is_recorded_without_its_message,
+    "job_heartbeats": test_jobs.test_run_records_a_heartbeat_and_is_not_repeated,
+    "telegram_link_codes_purge_expired": test_jobs.test_expired_link_codes_are_purged,
+    "downloads_purge_expired": test_downloads.test_stored_files_expire_and_are_purged,
+    "slo_summary": test_slo.test_slo_report_matches_a_hand_count,
+    "turn_window_stats": test_watchdog.test_error_rate_pages_once_reminds_and_resolves,
+    "db_usage": test_watchdog.test_database_size_and_connections,
+    "ops_alert_fire": test_watchdog.test_error_rate_pages_once_reminds_and_resolves,
+    "ops_alert_resolve": test_watchdog.test_error_rate_pages_once_reminds_and_resolves,
+    "ops_alerts_open": test_watchdog.test_a_check_that_cannot_run_resolves_nothing,
 }
 # Exercised by every other test (pool plumbing) or by test_migrations.py.
-INFRASTRUCTURE = {"get_conn", "release_conn", "ensure_schema"}
+# Pool plumbing is exercised by every test and directly in test_db_pool.py.
+INFRASTRUCTURE = {
+    "get_conn",
+    "release_conn",
+    "ensure_schema",
+    "close_pool",
+    "connection_kwargs",
+    "pool_stats",
+}
 
 
 def test_every_public_db_function_has_an_integration_test():
@@ -276,3 +363,17 @@ def test_every_public_db_function_has_an_integration_test():
     }
     missing = sorted(public - set(COVERED) - set(ISOLATION_COVERED) - INFRASTRUCTURE)
     assert missing == [], f"utils/db.py functions without an integration test: {missing}"
+
+
+def test_watchlist_cap_and_duplicates(db, two_users):
+    """VAL-07: at most 50 symbols; a duplicate is reported, not double-counted."""
+    import pytest as _pytest
+
+    a, b = two_users
+    for i in range(50):
+        assert db.watchlist_add(a, f"S{i}") is True
+    assert db.watchlist_add(a, "S0") is False  # already there, even at the cap
+    with _pytest.raises(db.WatchlistFull):
+        db.watchlist_add(a, "ONEMORE")
+    assert len(db.watchlist_all(a)) == 50
+    assert db.watchlist_add(b, "S0") is True  # the cap is per user

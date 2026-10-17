@@ -1,8 +1,8 @@
 <!--
-  Snapshot of the living PRD (Claude Doc), exported at rev 21 on 2026-10-15.
+  Snapshot of the living PRD (Claude Doc), exported at rev 22 on 2026-10-17.
   Source of truth: https://claude.ai/code/artifact/9bae50e1-07a3-44c1-a152-133336d4b915
   Re-export after editing the doc; this copy lets a new session work offline.
-  (docs/PRD.md is the older July product PRD with a different phase plan.)
+  (docs/archive/PRD.md is the older July product PRD with a different phase plan.)
 -->
 
 # ARIA v2 — Production Readiness PRD
@@ -1096,6 +1096,47 @@ Each gate is a hard stop: the next phase's users aren't invited until every box 
 - [ ] OPS-02 Stateless app process
 - [ ] OPS-03 Production hosting
 - [ ] OPS-04 Health checks and graceful shutdown
+
+> **Status, 17 Oct 2026:** all 51 items are implemented on branch `phase2-production-ready`, one commit per item, and are in [PR #3](https://github.com/champ475/ARIA-research-agent/pull/3). The boxes stay unticked for a reviewer, per Definition of done #5. Results: about 2,100 tests pass (real-Postgres integration included), the eval gate is green, and there are 19 Playwright e2e tests (15 journeys plus axe). Migrations 0007–0021 are added, all expand-only.
+>
+> **Owner decisions:** OPS-03 hosting is skipped; ARIA is production-grade but not launched, and docker-compose is the reference deployment (ADR). Email uses SMTP (a Gmail app password works) with a console backend in dev. UX-05 Portfolio is built.
+>
+> **Measured against "Done when":**
+>
+> - **Release (TEST-07):** two local releases plus a rollback; smoke passed 4/4 at each step.
+> - **Restore (REL-08):** the restore drill passed against a seeded DB.
+> - **Accessibility (UX-03):** axe reports 0 serious or critical violations on the auth gate and all 4 tabs, in light and dark.
+> - **E2E flakiness (TEST-04):** 10 runs; 8 were fully green. The two failures were a test bug and a Gradio pending-bubble bug, both fixed.
+> - **Fundamentals (DATA-03):** within ±2% for 15 companies.
+> - **Screener (DATA-05):** 2,000 seeded rows query in under 2 s.
+>
+> **Deviations from the requirements above:**
+>
+> - **OPS-03 / OPS-01 / TEST-07:** no host or staging server. Staging, promote and deploy run locally or in compose; the deploy step is a no-op hook, and no tags have been pushed.
+> - **TEST-04:** the flake rate was measured over 10 runs, not 50.
+> - **REL-08:** the restore drill ran on a local seeded DB; Neon PITR is with the owner.
+> - **REL-05:** the 1-hour no-409 check was replaced by advisory-lock tests. The 2-replica tests ran in-process.
+> - **LLM-08 / LLM-11:** per-model quality and cost figures need working cloud keys. The old Groq llama and Gemini 2.0 models were retired, and the new defaults are gpt-oss-120b/20b and gemini-2.5-flash. The recorded eval fixtures still use the retired models.
+> - **UX-04:** 3 golden cases are unrecorded.
+> - **QA/Planner:** the two LLM calls are not merged.
+> - **VAL-08:** no LLM fallback for unclear yes/no replies.
+> - **SEC-05:** the Turnstile CAPTCHA is optional.
+> - **LLM-12:** the 5% rating target needs real users.
+> - **UX-01:** the usability test is the owner's job.
+> - **DATA-03:** reference values are partly independent recomputations.
+> - **TEST-05:** the BSE fixture is synthetic, because BSE returns 403.
+> - **DATA-02 / COMP-05:** the data-licensing decision is with the owner.
+> - **COMP-03:** counsel review is with the owner.
+> - **OPS-02 / DATA-10:** Parquet caches stay per replica (DATA-10 is in Phase 3).
+> - **UX-03:** the Plotly chart canvas stays dark in the light theme.
+> - **Found and fixed along the way:**
+>   - Postgres checkpointing crashed on nested DataFrames and Plotly figures.
+>   - The range check gated every equity turn.
+>   - Download links raced the UI.
+>   - Gradio's pending bubble outlived answers.
+>   - The screener CSV's column order followed the cache.
+>   - The trivy-action tag disappeared.
+> - **Before deploying:** run `python scripts/migrate.py` on production (to 0021), set the new production settings and run the worker. The steps are in TODO\_ARIA.md.
 
 ### Phase 3 · Scale and polish (from Jan 2027)
 

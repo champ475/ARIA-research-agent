@@ -1,6 +1,8 @@
 import contextlib
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agents.graph_orchestrator import GraphOrchestrator
 
 
@@ -12,7 +14,7 @@ def _build_orchestrator(fake_graph):
     process_stream() re-checks this every fresh turn, so it must survive
     past the `with` block construction happens in."""
     with (
-        patch("agents.graph_orchestrator.build_graph", return_value=fake_graph),
+        patch("agents.graph_orchestrator.shared_graph", return_value=fake_graph),
         patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None),
         patch.object(GraphOrchestrator, "_resolve_byo_config", return_value=None),
     ):
@@ -292,7 +294,9 @@ class TestGraphOrchestratorResolveByoConfig:
 
 class TestGraphOrchestratorMisc:
     def test_generate_suggestions_parses_llm_json_array(self):
+        # LLM chips are a BYO-user feature since LLM-11 (trial chips are deterministic).
         orch = _build_orchestrator(MagicMock())
+        orch._provider_config = {"api_key": "k", "model": "m"}
         fake_client = MagicMock()
         fake_client.ask.return_value = (
             '["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]'
@@ -302,12 +306,21 @@ class TestGraphOrchestratorMisc:
         assert result == ["Show my alerts", "Compare TCS vs INFY", "Top gainers today", "Set a price alert"]
 
     def test_generate_suggestions_falls_back_on_llm_failure(self):
+        # LLM chips are a BYO-user feature since LLM-11 (trial chips are deterministic).
         orch = _build_orchestrator(MagicMock())
+        orch._provider_config = {"api_key": "k", "model": "m"}
         fake_client = MagicMock()
         fake_client.ask.side_effect = RuntimeError("rate limited")
         with patch("agents.llm_client.LLMClient", return_value=fake_client):
             result = orch.generate_suggestions("resp", "query")
         assert result == ["Analyse a stock", "Compare mutual funds", "Top gainers today", "Set a price alert"]
+
+    def test_trial_suggestions_need_no_llm_call(self):
+        orch = _build_orchestrator(MagicMock())
+        with patch("agents.llm_client.LLMClient") as client_cls:
+            chips = orch.generate_suggestions("resp", "analyse TCS fundamentals")
+        client_cls.assert_not_called()
+        assert len(chips) == 4 and any("TCS" in c for c in chips)
 
     def test_reset_clears_awaiting_confirmation(self):
         orch = _build_orchestrator(MagicMock())
@@ -391,3 +404,45 @@ class TestTurnRecords:
         g = MagicMock()
         g.invoke.side_effect = RuntimeError("graph blew up")
         assert self._statuses(g, ["hi"]) == ["error"]
+
+
+class TestStreamCutOff:
+    """REL-06: a synthesis stream that dies part-way keeps what arrived."""
+
+    def _orch(self):
+        fake_graph = MagicMock()
+        fake_graph.invoke.return_value = {
+            "final_report": "",
+            "pending_synthesis_prompt": "PROMPT",
+            "tasks": [],
+        }
+        return _build_orchestrator(fake_graph)
+
+    def test_partial_answer_kept_with_note_and_no_exception_text(self):
+        from graph.deadline import CUT_OFF_NOTE
+
+        def broken_stream(*_a, **_k):
+            yield "TCS trades "
+            yield "at a P/E of 30."
+            raise ConnectionError("upstream reset at 10.0.0.1:443")
+
+        orch = self._orch()
+        with patch("agents.llm_client.LLMClient") as client:
+            client.return_value.stream.side_effect = broken_stream
+            results = list(orch.process_stream("analyse TCS"))
+        final = results[-1][0]
+        assert final.startswith("TCS trades at a P/E of 30.")
+        assert CUT_OFF_NOTE.strip() in final
+        assert "10.0.0.1" not in final and "ConnectionError" not in final
+
+    def test_failure_before_any_text_reaches_the_error_boundary(self):
+        def dead_stream(*_a, **_k):
+            raise ConnectionError("boom")
+            yield  # pragma: no cover
+
+        orch = self._orch()
+        with patch("agents.llm_client.LLMClient") as client:
+            client.return_value.stream.side_effect = dead_stream
+            gen = orch.process_stream("analyse TCS")
+            with pytest.raises(ConnectionError):
+                list(gen)

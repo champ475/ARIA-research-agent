@@ -25,9 +25,10 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
-from config import TOOL_TIMEOUT_SECONDS
+from config import DEGRADED_CONFIDENCE, TOOL_TIMEOUT_SECONDS
 from graph.deadline import remaining_seconds
 from graph.journal import log_decision
 from graph.state import Evidence, Task
@@ -35,6 +36,7 @@ from graph.tool_catalogue import get_tool
 from graph.write_policy import write_allowed
 from tools.data import evidence_cache
 from utils import tracing
+from utils.errors import SourceUnavailable
 from utils.resilience import CallTimeout, CircuitOpen, call_with_timeout
 
 log = logging.getLogger(__name__)
@@ -43,46 +45,74 @@ log = logging.getLogger(__name__)
 _INDEX_COL_FALLBACK = "index"  # pandas' own default name for reset_index() on an unnamed index
 
 
+def _frame_to_cacheable(payload: pd.DataFrame) -> dict:
+    orig_index_name = payload.index.name
+    index_name = orig_index_name or _INDEX_COL_FALLBACK
+    index_is_datetime = bool(pd.api.types.is_datetime64_any_dtype(payload.index))
+    records = payload.reset_index().to_dict(orient="records")
+    # OHLCV's DatetimeIndex becomes a column of pandas Timestamp objects
+    # here — those aren't msgpack-safe either (LangGraph's checkpointer
+    # serializer round-trips them via a method-call form its own
+    # deserializer then refuses to execute for security reasons), so every
+    # value is flattened to an ISO string. Column labels too: statements
+    # are keyed by fiscal-year-end Timestamps.
+    flat = []
+    for record in records:
+        flat.append(
+            {
+                (k.isoformat() if isinstance(k, (pd.Timestamp, datetime)) else str(k)): (
+                    v.isoformat() if isinstance(v, (pd.Timestamp, datetime)) else _to_cacheable(v)
+                )
+                for k, v in record.items()
+            }
+        )
+    return {
+        "__dataframe__": True,
+        "records": flat,
+        "index_name": str(index_name),
+        "index_had_no_name": orig_index_name is None,
+        "index_is_datetime": index_is_datetime,
+    }
+
+
 def _to_cacheable(payload: Any) -> Any:
+    """DataFrames anywhere in the payload become checkpoint-safe dicts —
+    including nested ones: fetch_financials returns {statement: DataFrame},
+    which the Postgres checkpointer couldn't serialise (found by TEST-04)."""
     if isinstance(payload, pd.DataFrame):
-        orig_index_name = payload.index.name
-        index_name = orig_index_name or _INDEX_COL_FALLBACK
-        index_is_datetime = bool(pd.api.types.is_datetime64_any_dtype(payload.index))
-        records = payload.reset_index().to_dict(orient="records")
-        # OHLCV's DatetimeIndex becomes a column of pandas Timestamp objects
-        # here — those aren't msgpack-safe either (LangGraph's checkpointer
-        # serializer round-trips them via a method-call form its own
-        # deserializer then refuses to execute for security reasons), so
-        # every record's values get flattened to plain ISO strings, not just
-        # the DataFrame shell.
-        for record in records:
-            for key, value in record.items():
-                if isinstance(value, (pd.Timestamp, datetime)):
-                    record[key] = value.isoformat()
-        return {
-            "__dataframe__": True,
-            "records": records,
-            "index_name": index_name,
-            "index_had_no_name": orig_index_name is None,
-            "index_is_datetime": index_is_datetime,
-        }
+        return _frame_to_cacheable(payload)
+    if isinstance(payload, dict) and not payload.get("__dataframe__"):
+        return {k: _to_cacheable(v) for k, v in payload.items()}
+    if isinstance(payload, list | tuple):
+        return [_to_cacheable(v) for v in payload]
+    if isinstance(payload, np.generic):  # numpy scalars from pandas/ta aren't msgpack-safe
+        return payload.item()
     return payload
+
+
+def _frame_from_cacheable(payload: dict) -> pd.DataFrame:
+    df = pd.DataFrame(payload["records"])
+    index_name = payload.get("index_name") or _INDEX_COL_FALLBACK
+    if index_name in df.columns:
+        if payload.get("index_is_datetime"):
+            df[index_name] = pd.to_datetime(df[index_name])
+        df = df.set_index(index_name)
+        if payload.get("index_had_no_name"):
+            df.index.name = None  # restore the original unnamed-index shape exactly
+    return df
 
 
 def from_cacheable(payload: Any) -> Any:
     """Public (no leading underscore) since research_executor.py and
-    communication_layer.py both need to reconstruct a DataFrame from
-    GraphState's checkpoint-safe Evidence.payload — see module docstring."""
-    if isinstance(payload, dict) and payload.get("__dataframe__"):
-        df = pd.DataFrame(payload["records"])
-        index_name = payload.get("index_name") or _INDEX_COL_FALLBACK
-        if index_name in df.columns:
-            if payload.get("index_is_datetime"):
-                df[index_name] = pd.to_datetime(df[index_name])
-            df = df.set_index(index_name)
-            if payload.get("index_had_no_name"):
-                df.index.name = None  # restore the original unnamed-index shape exactly
-        return df
+    communication_layer.py both need to reconstruct DataFrames from
+    GraphState's checkpoint-safe Evidence.payload — see module docstring.
+    Nested frames (a dict of statements) are restored too."""
+    if isinstance(payload, dict):
+        if payload.get("__dataframe__"):
+            return _frame_from_cacheable(payload)
+        return {k: from_cacheable(v) for k, v in payload.items()}
+    if isinstance(payload, list):
+        return [from_cacheable(v) for v in payload]
     return payload
 
 
@@ -106,6 +136,17 @@ def _blocked_evidence(task: Task, evidence_type: str, reason: str) -> Evidence:
     }
 
 
+def _as_of(payload: Any, fetched_at: datetime) -> datetime:
+    """DATA-06: the quote's own exchange time (yfinance `regularMarketTime`,
+    epoch seconds) when present and not in the future, else the fetch time."""
+    if isinstance(payload, dict):
+        t = payload.get("regularMarketTime")
+        now = datetime.now(UTC)
+        if isinstance(t, (int, float)) and not isinstance(t, bool) and 0 < t <= now.timestamp():
+            return datetime.fromtimestamp(t, UTC)
+    return fetched_at
+
+
 def _tool_budget(context: dict[str, Any]) -> float:
     """REL-02: one tool call waits at most TOOL_TIMEOUT_SECONDS, and never past
     the turn's deadline."""
@@ -118,7 +159,18 @@ def _failure_reason(e: Exception) -> str:
         return "timeout"
     if isinstance(e, CircuitOpen):
         return "circuit_open"
+    if isinstance(e, SourceUnavailable):
+        return "source_unavailable"
     return "error"
+
+
+def _failure_source(e: Exception) -> str | None:
+    """DATA-02: which data source let the task down, when known."""
+    if isinstance(e, SourceUnavailable):
+        return e.source
+    if isinstance(e, CircuitOpen):
+        return e.source
+    return None
 
 
 def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
@@ -153,7 +205,12 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
     if cached is not None:
         cacheable_payload = cached["payload"]
         confidence = cached["confidence"]
+        fetched_at = cached.get("fetched_at") or datetime.now(UTC)
     else:
+        fetched_at = datetime.now(UTC)
+        # Dependency outputs arrive checkpoint-safe (see research_executor);
+        # the tool gets the real objects back.
+        context = {k: (v if k.startswith("_") else from_cacheable(v)) for k, v in context.items()}
         if spec.side_effect:
             # Never abandon a write mid-flight: a timed-out caller could
             # report "failed" while the write still lands in the background.
@@ -162,7 +219,10 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
             raw_payload = call_with_timeout(
                 spec.fn, task["entity"], context, timeout=_tool_budget(context), pool="tool"
             )
-        confidence = 1.0
+        # DATA-02: a fallback source stood in (bhavcopy for a quote) — say so
+        # through confidence, which the answer's sourcing reflects.
+        degraded = isinstance(raw_payload, dict) and raw_payload.get("_degraded_source")
+        confidence = DEGRADED_CONFIDENCE if degraded else 1.0
         cacheable_payload = _to_cacheable(raw_payload)
         if spec.cacheable:
             evidence_cache.put(
@@ -179,6 +239,7 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
         # module docstring. Callers needing the real object use from_cacheable().
         "payload": cacheable_payload,
         "timestamp": datetime.now(UTC),
+        "as_of": _as_of(cacheable_payload, fetched_at),
         "confidence": confidence,
         # Fine-grained per-ratio citation keys (matching fundamental.py's
         # [^pe]/[^roce] convention) are assigned by ConclusionBuilder (Phase 5),
@@ -203,9 +264,12 @@ def execute_task_node(send_state: dict) -> dict:
         evidence = execute_task(task, context)
     except Exception as e:
         failed_task = {**task, "status": "failed", "error": _failure_reason(e)}
+        source = _failure_source(e)
+        if source:
+            failed_task["source"] = source
         return {
             "tasks": [failed_task],
-            **log_decision("execute_task", f"failed: {task['id']}", str(e)),
+            **log_decision("execute_task", f"failed: {task['id']}", _failure_reason(e)),
         }
     done_task = {**task, "status": "done", "result_evidence_ids": [evidence["id"]]}
     return {

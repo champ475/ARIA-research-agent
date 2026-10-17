@@ -6,6 +6,7 @@ Provides full calculation transparency for explainability.
 
 import pandas as pd
 
+from tools.analysis.sector_profile import LENDER, LENDER_NOTE, SUPPRESSED, sector_profile
 from utils.helpers import fmt_num, pct, safe_float, safe_val
 
 # ── yfinance D/E is reported as % (e.g. 1500 = 150%) for some fields
@@ -111,7 +112,8 @@ def compute(info: dict, financials: dict) -> dict:
             f"ROCE = EBIT / (Total Assets − Current Liabilities)\n"
             f"     = ₹{fmt_num(eb)} / (₹{fmt_num(assets)} − ₹{fmt_num(cl)})\n"
             f"     = ₹{fmt_num(eb)} / ₹{fmt_num(assets - cl)}\n"
-            f"     = {d['roce']:.2f}%"
+            f"     = {d['roce']:.2f}%\n"
+            f"     Method: latest fiscal year, consolidated; annual reports may use average capital employed."
         )
     else:
         d["roce"] = None
@@ -122,7 +124,10 @@ def compute(info: dict, financials: dict) -> dict:
     cl = d["current_liab"]
     if ca and cl and cl != 0:
         d["current_ratio"] = round(ca / cl, 2)
-        d["cr_detail"] = f"Current Ratio = ₹{fmt_num(ca)} / ₹{fmt_num(cl)} = {d['current_ratio']}"
+        d["cr_detail"] = (
+            f"Current Ratio = ₹{fmt_num(ca)} / ₹{fmt_num(cl)} = {d['current_ratio']}\n"
+            f"     Method: latest fiscal-year balance sheet, consolidated."
+        )
     else:
         d["current_ratio"] = _f("currentRatio")
         d["cr_detail"] = "Current Ratio: sourced from yfinance info"
@@ -138,7 +143,10 @@ def compute(info: dict, financials: dict) -> dict:
     # P/E = Price / EPS
     if price and eps and eps != 0:
         d["pe"] = round(price / eps, 2)
-        d["pe_detail"] = f"P/E = ₹{price} / ₹{eps} = {d['pe']}"
+        d["pe_detail"] = (
+            f"P/E = ₹{price} / ₹{eps} = {d['pe']}\n"
+            f"     Method: trailing-12-month consolidated EPS; exchange sites may use standalone EPS."
+        )
     else:
         d["pe"] = _f("trailingPE") or _f("forwardPE")
         d["pe_detail"] = "P/E: sourced from yfinance (EPS unavailable for recomputation)"
@@ -146,7 +154,10 @@ def compute(info: dict, financials: dict) -> dict:
     # P/B = Price / Book Value per share
     if price and bv and bv != 0:
         d["pb"] = round(price / bv, 2)
-        d["pb_detail"] = f"P/B = ₹{price} / ₹{bv} = {d['pb']}"
+        d["pb_detail"] = (
+            f"P/B = ₹{price} / ₹{bv} = {d['pb']}\n"
+            f"     Method: book value per share from the latest reported balance sheet."
+        )
     else:
         d["pb"] = _f("priceToBook")
         d["pb_detail"] = "P/B: sourced from yfinance"
@@ -186,8 +197,22 @@ def compute(info: dict, financials: dict) -> dict:
     d["description"] = (info.get("longBusinessSummary") or "")[:600]
     d["country"] = info.get("country", "India")
 
-    # ── DCF (multi-scenario) ──────────────────────────────────────────────────
-    d["dcf"] = _dcf(d)
+    # ── Sector profile (DATA-03) ──────────────────────────────────────────────
+    profile = sector_profile(info)
+    d["sector_profile"] = profile
+    if profile == LENDER:
+        for key in SUPPRESSED[LENDER]:
+            d[key] = None
+        d["roce_detail"] = d["de_calc_detail"] = d["cr_detail"] = LENDER_NOTE
+        nii, assets = raw.get("net_interest_income"), d["total_assets"]
+        d["nim_proxy"] = _ratio(nii, assets, "NII / Total Assets")
+        d["nim_detail"] = (
+            f"NII / Total Assets = ₹{fmt_num(nii)} / ₹{fmt_num(assets)} = {pct(d['nim_proxy'])}\n"
+            "     Method: a proxy. Reported NIM divides by average interest-earning assets, "
+            "so it reads higher."
+            if d["nim_proxy"] is not None
+            else "NIM: net interest income not in the source data"
+        )
 
     # ── Revenue/NI trend ──────────────────────────────────────────────────────
     d["margins_trend"] = _margins_trend(financials)
@@ -198,58 +223,96 @@ def compute(info: dict, financials: dict) -> dict:
 # ── Raw extractor from balance sheet / income statement ───────────────────────
 
 
+# DATA-03: statement rows are matched by exact name first (in the order
+# given), and only then by substring with exclusions. Plain substring
+# matching picked "Normalized EBITDA" for EBIT and "Reconciled Cost Of
+# Revenue" for revenue, because yfinance lists those rows first.
+_ROWS: dict[str, tuple[list[str], list[str], list[str]]] = {
+    # field: (exact names, substring fallbacks, exclusions for the fallback)
+    "total_assets": (["Total Assets"], ["total assets"], []),
+    "current_assets": (["Current Assets", "Total Current Assets"], ["total current assets"], ["other"]),
+    "current_liab": (
+        ["Current Liabilities", "Total Current Liabilities"],
+        ["total current liabilities"],
+        ["other"],
+    ),
+    "total_equity": (
+        ["Stockholders Equity", "Common Stock Equity", "Total Equity", "Total Stockholder Equity"],
+        ["stockholders equity", "shareholders equity"],
+        ["minority", "liabilities"],
+    ),
+    "total_debt": (
+        ["Total Debt", "Long Term Debt And Capital Lease Obligation", "Long Term Debt"],
+        ["total debt"],
+        ["net debt"],
+    ),
+    "cash": (["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"], [], []),
+    "revenue": (["Total Revenue", "Operating Revenue"], ["total revenue"], ["cost"]),
+    "net_income": (
+        [
+            "Net Income",
+            "Net Income Common Stockholders",
+            "Net Income From Continuing Operation Net Minority Interest",
+        ],
+        [],
+        [],
+    ),
+    "ebit": (["EBIT", "Operating Income"], [], []),
+    "ebitda": (["EBITDA", "Normalized EBITDA"], [], []),
+    "gross_profit": (["Gross Profit"], [], []),
+    "operating_exp": (["Operating Expense", "Total Operating Expenses"], [], []),
+    "net_interest_income": (["Net Interest Income"], [], []),
+    "operating_cf": (["Operating Cash Flow", "Total Cash From Operating Activities"], [], []),
+    "capex": (["Capital Expenditure", "Purchase Of PPE"], [], []),
+}
+
+
+def _row_value(df: pd.DataFrame, field: str) -> float | None:
+    """Latest non-empty value of `field`'s row in `df` (see _ROWS)."""
+    if df is None or df.empty:
+        return None
+    exact, contains, exclude = _ROWS[field]
+    by_name = {str(r).strip().lower(): r for r in df.index}
+    candidates = [by_name[n.lower()] for n in exact if n.lower() in by_name]
+    candidates += [
+        r
+        for r in df.index
+        if any(k in str(r).lower() for k in contains) and not any(x in str(r).lower() for x in exclude)
+    ]
+    for row in candidates:
+        try:
+            vals = df.loc[row].dropna()
+        except Exception:
+            continue
+        if isinstance(vals, pd.DataFrame):  # duplicate row labels
+            vals = vals.iloc[0].dropna()
+        if not vals.empty:
+            v = safe_float(vals.iloc[0])
+            if v is not None:
+                return v
+    return None
+
+
 def _extract_raw(bs: pd.DataFrame, inc: pd.DataFrame, cf: pd.DataFrame) -> dict:
     raw = {}
-
-    def _get(df, keywords):
-        if df is None or df.empty:
-            return None
-        for row in df.index:
-            rs = str(row).lower()
-            if any(k in rs for k in keywords):
-                try:
-                    vals = df.loc[row].dropna()
-                    if not vals.empty:
-                        return safe_float(vals.iloc[0])
-                except Exception:
-                    pass
-        return None
-
-    # Balance sheet
-    raw["total_assets"] = _get(bs, ["total assets"])
-    raw["current_assets"] = _get(bs, ["current assets", "total current assets"])
-    raw["current_liab"] = _get(bs, ["current liabilities", "total current liabilities"])
-    raw["total_equity"] = _get(
-        bs,
-        [
-            "stockholders equity",
-            "total equity",
-            "shareholders equity",
-            "common stock equity",
-            "total stockholder",
-        ],
-    )
-    raw["total_debt"] = _get(bs, ["total debt", "long term debt"]) or _get(
-        bs, ["long term debt and capital lease"]
-    )
-    raw["cash"] = _get(bs, ["cash and cash equivalents", "cash cash equivalents"])
-
-    # Income statement
-    raw["revenue"] = _get(inc, ["total revenue", "revenue"])
-    raw["net_income"] = _get(inc, ["net income", "net income applicable"])
-    raw["ebit"] = _get(inc, ["ebit", "operating income", "income from operations"])
-    raw["ebitda"] = _get(inc, ["ebitda", "normalized ebitda"])
-    raw["gross_profit"] = _get(inc, ["gross profit"])
-    raw["operating_exp"] = _get(inc, ["operating expense", "total operating expense"])
-
-    # Cashflow
-    raw["operating_cf"] = _get(cf, ["operating cash flow", "total cash from operating"])
-    raw["capex"] = _get(cf, ["capital expenditure", "purchase of property"])
+    for field in ("total_assets", "current_assets", "current_liab", "total_equity", "total_debt", "cash"):
+        raw[field] = _row_value(bs, field)
+    for field in (
+        "revenue",
+        "net_income",
+        "ebit",
+        "ebitda",
+        "gross_profit",
+        "operating_exp",
+        "net_interest_income",
+    ):
+        raw[field] = _row_value(inc, field)
+    raw["operating_cf"] = _row_value(cf, "operating_cf")
+    raw["capex"] = _row_value(cf, "capex")
     if raw.get("operating_cf") and raw.get("capex"):
         raw["fcf"] = raw["operating_cf"] - abs(raw["capex"])
     else:
         raw["fcf"] = None
-
     return raw
 
 
@@ -268,29 +331,23 @@ def _compute_de(raw: dict, info: dict) -> dict:
             f"D/E = Total Debt / Total Equity\n"
             f"    = ₹{fmt_num(debt)} / ₹{fmt_num(equity)}\n"
             f"    = {de_val:.2f}x\n"
-            f"    Source: Balance sheet (recomputed)"
+            f"    Source: Balance sheet (recomputed)\n"
+            f"    Method: total borrowings incl. lease liabilities ÷ shareholders' equity (excl. minority interest)."
         )
         return {"value": de_val, "detail": detail}
 
-    # Fallback to yfinance but flag if it looks wrong
+    # Fallback to yfinance's figure. DATA-03: checked against 15 companies'
+    # balance sheets, `debtToEquity` is always a percentage (TCS 9.83 ==
+    # 0.098x, MARUTI 0.096 == 0.001x) — dividing only values above 20, as
+    # before, showed TCS at 9.83x.
     upstream = safe_float(info.get("debtToEquity"))
     if upstream is not None:
-        # yfinance sometimes reports as percentage → divide by 100
-        if upstream > 20:
-            de_val = round(upstream / 100, 2)
-            detail = (
-                f"D/E = {upstream} (yfinance raw) ÷ 100 = {de_val:.2f}x\n"
-                f"    Note: yfinance reports D/E as percentage for some stocks.\n"
-                f"    Balance sheet data unavailable for direct recomputation.\n"
-                f"    ⚠️ Verify independently — yfinance D/E can be unreliable."
-            )
-        else:
-            de_val = upstream
-            detail = (
-                f"D/E = {upstream:.2f}x\n"
-                f"    Source: yfinance info (balance sheet unavailable)\n"
-                f"    ⚠️ Cross-check recommended."
-            )
+        de_val = round(upstream / 100, 2)
+        detail = (
+            f"D/E = {upstream} (yfinance, a percentage) ÷ 100 = {de_val:.2f}x\n"
+            f"    Balance sheet data unavailable for direct recomputation.\n"
+            f"    Method: Yahoo's most-recent-quarter figure."
+        )
         return {"value": de_val, "detail": detail}
 
     return {"value": None, "detail": "D/E: balance sheet data unavailable"}
@@ -302,68 +359,6 @@ def _ratio(num, denom, formula: str) -> float | None:
     if n is None or d is None or d == 0:
         return None
     return round(n / d, 4)
-
-
-# ── DCF (multi-scenario, transparent assumptions) ─────────────────────────────
-
-
-def _dcf(d: dict) -> dict | None:
-    fcf = safe_float(d.get("fcf"))
-    mktcap = safe_float(d.get("mktcap"))
-    price = safe_float(d.get("price"))
-
-    # Need shares outstanding: derive from mktcap / price
-    if not fcf or fcf <= 0:
-        return None
-    if not mktcap or not price or price == 0:
-        return None
-    shares = mktcap / price
-
-    scenarios = {
-        "Bear": {"growth": 0.06, "wacc": 0.13, "terminal": 0.03},
-        "Base": {"growth": 0.10, "wacc": 0.12, "terminal": 0.04},
-        "Bull": {"growth": 0.15, "wacc": 0.11, "terminal": 0.05},
-    }
-    results = {}
-    steps = {}
-    for label, s in scenarios.items():
-        pv = 0.0
-        cf = fcf
-        yr_detail = []
-        for yr in range(1, 6):
-            cf *= 1 + s["growth"]
-            pv += cf / ((1 + s["wacc"]) ** yr)
-            yr_detail.append(
-                f"  Y{yr}: FCF=₹{cf / 1e7:.1f}Cr PV=₹{(cf / ((1 + s['wacc']) ** yr)) / 1e7:.1f}Cr"
-            )
-        tv = (cf * (1 + s["terminal"])) / (s["wacc"] - s["terminal"])
-        tv_pv = tv / ((1 + s["wacc"]) ** 5)
-        pv += tv_pv
-        iv = round(pv / shares, 2)
-        results[label] = iv
-        steps[label] = {
-            "detail": "\n".join(yr_detail),
-            "tv": round(tv / 1e7, 1),
-            "tv_pv": round(tv_pv / 1e7, 1),
-            "iv": iv,
-        }
-
-    return {
-        "Bear": results["Bear"],
-        "Base": results["Base"],
-        "Bull": results["Bull"],
-        "price": price,
-        "upside_base": round(((results["Base"] - price) / price) * 100, 1) if price else None,
-        "fcf_used": fcf,
-        "shares": shares,
-        "steps": steps,
-        "note": (
-            f"DCF Assumptions: FCF base=₹{fmt_num(fcf)}\n"
-            f"Bear: 6% growth, 13% WACC, 3% terminal\n"
-            f"Base: 10% growth, 12% WACC, 4% terminal\n"
-            f"Bull: 15% growth, 11% WACC, 5% terminal"
-        ),
-    }
 
 
 def _margins_trend(financials: dict) -> dict:
@@ -398,7 +393,6 @@ def to_text(d: dict) -> str:
     def v(key):
         return safe_val(d.get(key)) if d.get(key) is not None else "N/A"
 
-    dcf = d.get("dcf") or {}
     mt = d.get("margins_trend") or {}
     lines = [
         f"**{d.get('name')}** | {d.get('sector')} / {d.get('industry')} | {d.get('country')}",
@@ -412,14 +406,17 @@ def to_text(d: dict) -> str:
         f"**Revenue:** {d.get('revenue_fmt', 'N/A')} | Net Income: {fmt_num(d.get('net_income'))} | FCF: {fmt_num(d.get('fcf'))}",
         f"**Analyst:** {d.get('rec', 'N/A')} | Target ₹{v('target_mean')} (Low ₹{v('target_low')} / High ₹{v('target_high')}) | N={d.get('n_analysts', 'N/A')} | Upside {v('analyst_upside')}%",
     ]
-    if dcf:
-        lines.append(
-            f"**DCF:** Bear ₹{dcf.get('Bear', 'N/A')} | Base ₹{dcf.get('Base', 'N/A')} (upside {dcf.get('upside_base', 'N/A')}%) | Bull ₹{dcf.get('Bull', 'N/A')}"
+    if d.get("sector_profile") == LENDER:
+        # DATA-03: no ROCE / D/E / current ratio for lenders, not even as N/A.
+        lines[4] = (
+            f"**Profitability:** ROE {pct(d.get('roe'))} | Net Margin {pct(d.get('net_margin'))} | "
+            f"NII/Total Assets (NIM proxy) {pct(d.get('nim_proxy'))} [^nim]"
         )
+        lines[5] = f"**Lender note:** {LENDER_NOTE}"
     if mt.get("revenue"):
         lines.append("**Rev trend (Cr):** " + " → ".join(f"₹{v}" for v in list(mt["revenue"].values())[:4]))
     lines.append(
-        "(Ratios marked [^pe]/[^pb]/[^roce]/[^de]/[^cr] have a full calculation "
+        "(Ratios marked [^pe]/[^pb]/[^roce]/[^de]/[^cr]/[^nim] have a full calculation "
         "on record — keep the marker attached when you state that ratio.)"
     )
     return "\n".join(lines)
@@ -432,6 +429,7 @@ _CITATION_FIELDS = {
     "roce": ("ROCE", "roce_detail"),
     "de": ("D/E Ratio", "de_calc_detail"),
     "cr": ("Current Ratio", "cr_detail"),
+    "nim": ("NIM (proxy)", "nim_detail"),
 }
 
 
@@ -453,26 +451,6 @@ def cited_footnotes(llm_out: str, d: dict) -> str:
         label, field = _CITATION_FIELDS[k]
         lines.append(f"**[^{k}] {label}**  \n{d.get(field, 'N/A')}")
         lines.append("")
-    return "\n".join(lines)
-
-
-def dcf_section(d: dict) -> str:
-    """
-    DCF scenario breakdown only — split out of calc_breakdown() so callers
-    that show cited_footnotes() for the citable ratios (P/E, P/B, ROCE, D/E,
-    Current Ratio) can still show the DCF working unconditionally: it has no
-    [^key] marker of its own for the model to cite, so gating it on citation
-    would silently drop it from every report.
-    """
-    dcf = d.get("dcf")
-    if not dcf:
-        return ""
-    lines = ["", "---", "### 🧮 DCF Model", dcf.get("note", "")]
-    for scenario, steps in (dcf.get("steps") or {}).items():
-        lines.append(f"\n**{scenario} Case:**")
-        lines.append(steps.get("detail", ""))
-        lines.append(f"  Terminal Value PV: ₹{steps.get('tv_pv', 'N/A')}Cr")
-        lines.append(f"  **Intrinsic Value: ₹{steps.get('iv', 'N/A')}**")
     return "\n".join(lines)
 
 
@@ -498,12 +476,4 @@ def calc_breakdown(d: dict) -> str:
         "### P/B Ratio",
         d.get("pb_detail", "N/A"),
     ]
-    dcf = d.get("dcf")
-    if dcf:
-        lines += ["", "### DCF Model", dcf.get("note", "")]
-        for scenario, steps in (dcf.get("steps") or {}).items():
-            lines.append(f"\n**{scenario} Case:**")
-            lines.append(steps.get("detail", ""))
-            lines.append(f"  Terminal Value PV: ₹{steps.get('tv_pv', 'N/A')}Cr")
-            lines.append(f"  **Intrinsic Value: ₹{steps.get('iv', 'N/A')}**")
     return "\n".join(lines)

@@ -60,8 +60,7 @@ def pg_db(pg_url):
     migrations.upgrade(pg_url)
     migrations.setup_checkpointer_tables(pg_url)
     yield db
-    if db._pool is not None:
-        db._pool.closeall()
+    db.close_pool()
     db._pool = saved_pool
     mp.undo()
 
@@ -71,7 +70,7 @@ def db(pg_db):
     """Empty tables for every test."""
     tables = pg_db._query(
         "SELECT tablename FROM pg_tables WHERE schemaname='public' "
-        "AND tablename NOT LIKE 'checkpoint%%' AND tablename <> 'alembic_version'"
+        "AND tablename NOT LIKE 'checkpoint%%' AND tablename NOT IN ('alembic_version', 'terms_versions')"
     )
     names = ", ".join(f'"{t["tablename"]}"' for t in tables)
     if names:

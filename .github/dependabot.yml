@@ -1,0 +1,21 @@
+# Dependency update PRs (PRD SEC-14). Python updates arrive as edits to
+# requirements*.txt; regenerate the hashed locks on the PR branch with
+# `python scripts/lock.py` (CI's lock-check fails until you do).
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

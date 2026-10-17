@@ -1,0 +1,30 @@
+name: Data canary
+
+# TEST-05: one live query per data source, checked against its contract
+# (scripts/data_canary.py). A failed run means an upstream changed or is
+# blocking us — GitHub emails the repo owner; the worker's own data_canary
+# job additionally pages via the ops watchdog. Refresh the recordings with
+# scripts/record_http_fixtures.py and fix the fetcher against them.
+on:
+  schedule:
+    - cron: "15,45 4-9 * * 1-5"   # every 30 min, ~09:45-15:15 IST, weekdays
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: pip install --require-hashes -r requirements.lock
+      - run: python scripts/data_canary.py
+        env:
+          APP_ENV: test

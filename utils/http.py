@@ -50,16 +50,24 @@ class GuardedSession(requests.Session):
         self.mount("http://", adapter)
 
     def request(self, method, url, *args, **kwargs):
+        import config
+
+        if config.ARIA_FAKE_DATA:  # TEST-04: offline, recorded answers only
+            from utils.fake_http import respond
+
+            return respond(method, url)
         kwargs.setdefault("timeout", self.default_timeout)
         b = breaker(self.source)
         if not b.allow():
-            raise CircuitOpen(f"{self.source} is temporarily unavailable (circuit open)")
+            raise CircuitOpen(self.source)
         try:
             resp = super().request(method, url, *args, **kwargs)
         except requests.RequestException:
             b.record_failure()
             raise
-        if resp.status_code == 429 or resp.status_code >= 500:
+        # 401/403: the source is refusing us (NSE blocks cloud IPs and
+        # cookie-less clients this way) — that's an outage, not "no data".
+        if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
             b.record_failure()
         else:
             b.record_success()

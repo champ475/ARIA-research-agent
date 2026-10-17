@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: aria
+    folder: ARIA
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

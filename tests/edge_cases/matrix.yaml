@@ -1,0 +1,216 @@
+# TEST-03: the PRD's edge-case matrix, one row per case. tests/edge_cases/
+# test_matrix.py runs every row through the real parser/validator named by
+# `kind` — add a row here (no Python) to add a test. Kinds and their fields:
+#
+#   input_guard      input | input_repeat {text, times}  -> expect {status, reason?, text?}
+#   entities         query, llm_mentions?                -> expect {entities?, unresolved_status?, suggestions_include?}
+#   entity_cap       query                               -> expect {blocking_status}
+#   alert            message, symbol                     -> expect {alert_type, threshold, direction?} | {refused_contains}
+#   alert_already    message, symbol, price              -> expect {already_true}
+#   alert_cancel     alerts [{id, symbol}], query        -> expect {result, matches?, alert_id?}
+#   wants_build      message                             -> expect {build}
+#   amount           text                                -> expect {value}
+#   confirmation     reply                               -> expect {kind}
+#   report_id        query                               -> expect {report_id: int | null}
+#   per_session      (none)                              -> expect {distinct}
+#   watchlist        input                               -> expect {rejected, escaped_contains?}
+#   market_closed    at (ISO, IST), evidence [types]     -> expect {header_contains}
+#   golden_coverage  domain, min_cases                   -> expect {intent?}
+#
+# `req` ties each row to its PRD requirement.
+
+- id: paste-50k-chars
+  req: VAL-01
+  kind: input_guard
+  input_repeat: {text: "analyse TCS ", times: 4200}
+  expect: {status: rejected, reason: too_long}
+
+- id: paste-at-the-limit
+  req: VAL-01
+  kind: input_guard
+  input_repeat: {text: "a", times: 4000}
+  expect: {status: clean}
+
+- id: emoji-only
+  req: VAL-01
+  kind: input_guard
+  input: "🚀🚀🚀"
+  expect: {status: clean, text: "🚀🚀🚀"}
+
+- id: zero-width-only
+  req: VAL-01
+  kind: input_guard
+  input: "​‌‍﻿"
+  expect: {status: rejected, reason: empty}
+
+- id: punctuation-and-spaces-around-a-question
+  req: VAL-01
+  kind: input_guard
+  input: "   ​TCS   PE?‍  "
+  expect: {status: clean, text: "TCS PE?"}
+
+- id: unknown-ticker-is-not-found
+  req: VAL-02
+  kind: entities
+  query: "analyse XYZQ"
+  expect: {entities: [], unresolved_status: not_found}
+
+- id: misspelled-company-suggests
+  req: VAL-02
+  kind: entities
+  query: "Relaince results"
+  llm_mentions: ["Relaince"]   # typos reach the resolver via QueryAnalyzer's company list
+  expect: {unresolved_status: ambiguous, suggestions_include: RELIANCE}
+
+- id: renamed-symbol-resolves
+  req: VAL-02
+  kind: entities
+  query: "analyse ZOMATO"
+  expect: {entities: [ETERNAL]}
+
+- id: eight-companies-capped
+  req: VAL-03
+  kind: entity_cap
+  query: "Compare TCS, INFY, WIPRO, HCLTECH, TECHM, LTIM, MPHASIS, COFORGE"
+  expect: {blocking_status: too_many}
+
+- id: alert-threshold-not-the-time-window
+  req: VAL-04
+  kind: alert
+  message: "Alert me if TCS drops below 3500 in 2 days"
+  symbol: TCS
+  expect: {alert_type: price_below, threshold: 3500}
+
+- id: alert-percent-fall-keeps-direction
+  req: VAL-04
+  kind: alert
+  message: "Alert me if TCS falls 5%"
+  symbol: TCS
+  expect: {alert_type: pct_change, threshold: 5, direction: down}
+
+- id: alert-rsi-out-of-range
+  req: VAL-04
+  kind: alert
+  message: "Alert me when TCS RSI crosses 150"
+  symbol: TCS
+  expect: {refused_contains: "RSI"}
+
+- id: alert-already-true-is-confirmed
+  req: VAL-04
+  kind: alert_already
+  message: "Alert me if TCS goes above 100"
+  symbol: TCS
+  price: 4012.5
+  expect: {already_true: true}
+
+- id: cancel-with-two-alerts-lists-both
+  req: VAL-04
+  kind: alert_cancel
+  alerts: [{id: 11, symbol: TCS}, {id: 12, symbol: TCS}]
+  query: "cancel my TCS alert"
+  expect: {result: ambiguous, matches: 2}
+
+- id: cancel-by-id
+  req: VAL-04
+  kind: alert_cancel
+  alerts: [{id: 11, symbol: TCS}, {id: 12, symbol: TCS}]
+  query: "cancel alert #12"
+  expect: {result: removed, alert_id: 12}
+
+- id: already-is-not-ready
+  req: VAL-05
+  kind: wants_build
+  message: "I'm already 30"
+  expect: {build: false}
+
+- id: explicit-build
+  req: VAL-05
+  kind: wants_build
+  message: "build my plan"
+  expect: {build: true}
+
+- id: lakh-amount
+  req: VAL-09
+  kind: amount
+  text: "10L"
+  expect: {value: 1000000}
+
+- id: lakh-words
+  req: VAL-09
+  kind: amount
+  text: "12 lakh"
+  expect: {value: 1200000}
+
+- id: rupee-commas-indian
+  req: VAL-09
+  kind: amount
+  text: "₹1,23,456.50"
+  expect: {value: 123456.5}
+
+- id: sure-is-yes
+  req: VAL-08
+  kind: confirmation
+  reply: "sure"
+  expect: {kind: "yes"}
+
+- id: yes-please-is-yes
+  req: VAL-08
+  kind: confirmation
+  reply: "yes please"
+  expect: {kind: "yes"}
+
+- id: nah-is-no
+  req: VAL-08
+  kind: confirmation
+  reply: "nah"
+  expect: {kind: "no"}
+
+- id: a-new-question-is-a-new-turn
+  req: VAL-08
+  kind: confirmation
+  reply: "what about INFY?"
+  expect: {kind: new_question}
+
+- id: report-for-a-year-is-not-an-id
+  req: VAL-08
+  kind: report_id
+  query: "Download report for 2024"
+  expect: {report_id: null}
+
+- id: report-hash-id
+  req: VAL-08
+  kind: report_id
+  query: "download report #12"
+  expect: {report_id: 12}
+
+- id: two-tabs-two-orchestrators
+  req: VAL-10
+  kind: per_session
+  expect: {distinct: true}
+
+- id: script-tag-in-watchlist
+  req: VAL-07
+  kind: watchlist
+  input: "<script>alert(1)</script>"
+  expect: {rejected: true, escaped_contains: "&lt;script&gt;"}
+
+- id: top-gainers-on-a-sunday
+  req: DATA-06
+  kind: market_closed
+  at: "2026-10-18T11:00:00"
+  evidence: [top_movers]
+  expect: {header_contains: "Markets are closed today; these figures are from the last session, Fri, 16 Oct 2026"}
+
+- id: top-gainers-on-a-holiday
+  req: DATA-06
+  kind: market_closed
+  at: "2026-10-20T11:00:00"
+  evidence: [top_movers]
+  expect: {header_contains: "(Dussehra)"}
+
+- id: hinglish-in-the-golden-set
+  req: LLM-01
+  kind: golden_coverage
+  domain: hinglish
+  min_cases: 15
+  expect: {}

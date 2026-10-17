@@ -22,29 +22,22 @@ import json
 import logging
 from collections.abc import Callable
 
+import prompts
 from agents.llm_client import LLMClient, LLMProvidersExhausted
-from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
+from config import EVIDENCE_PROMPT_CHAR_BUDGET, REFLECTION_SKIP_WHEN_COMPLETE, TOKENS_AGENT
 from graph.deadline import past_research_cutoff
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
 from graph.nodes.planner import _ALL_TOOL_NAMES, _build_tasks, _with_transitive_deps
-from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
+from graph.prompt_safety import wrap_untrusted
+from graph.schemas import ReflectionResult
 from graph.state import GraphState, MissingInfoItem, Task
 from graph.write_policy import WRITE_TOOLS
+from utils.llm_json import ParseFailure, extract_json, json_reply
 
 log = logging.getLogger(__name__)
 
-_SYSTEM = (
-    "You review evidence already collected against a research objective for "
-    "ARIA, an autonomous research engine. Respond with ONLY a JSON object, no "
-    'prose, no markdown fences: {"missing": [{"missing": "short label", '
-    '"reason": "why it\'s needed", "priority": "high|medium|low", '
-    '"action": "tool_name"}]}. Only list something as missing if the objective '
-    "genuinely can't be answered without it — an empty list means the "
-    'evidence already covers everything asked. "action" must be one of the '
-    "available tool names below; if no available tool would fill the gap, "
-    "omit that item entirely rather than inventing a tool name." + UNTRUSTED_NOTICE
-)
+_SYSTEM = prompts.get("reflection.system") + prompts.get("safety.untrusted_notice")
 
 # SEC-03: Reflection fills research gaps; it may never add a tool that writes.
 _REFLECTION_TOOL_NAMES = _ALL_TOOL_NAMES - WRITE_TOOLS
@@ -63,21 +56,11 @@ def _build_prompt(query: str, objective: str, evidence_summary: dict) -> str:
     )
 
 
-def _strip_code_fence(raw: str) -> str:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text[3:]
-        if text.lower().startswith("json"):
-            text = text[4:]
-        text = text.rsplit("```", 1)[0]
-    return text.strip()
-
-
 def _parse(raw: str) -> list[MissingInfoItem]:
     try:
-        parsed = json.loads(_strip_code_fence(raw))
+        parsed = extract_json(raw)
         raw_items = parsed.get("missing", [])
-    except (json.JSONDecodeError, AttributeError, TypeError):
+    except (ParseFailure, AttributeError, TypeError):
         log.warning("Reflection: failed to parse LLM output as JSON: %r", raw)
         return []
 
@@ -99,24 +82,43 @@ def _parse(raw: str) -> list[MissingInfoItem]:
     return items
 
 
+def _plan_fully_succeeded(state: GraphState) -> bool:
+    tasks = state.get("tasks") or []
+    return (
+        state.get("loop_count", 0) == 0
+        and state.get("complexity") in ("simple", "moderate")
+        and bool(tasks)
+        and all(t.get("status") == "done" for t in tasks)
+    )
+
+
 def build_reflection_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
-    client = client or LLMClient(_SYSTEM, provider_config)
+    client = client or LLMClient(_SYSTEM, provider_config, node="reflection")
 
     def reflection(state: GraphState) -> dict:
         loop_count = state.get("loop_count", 0)
         max_loops = state.get("max_loops", 2)
         if past_research_cutoff(state):
             return log_decision("Reflection", "skipped", "turn deadline reached — no further research")
+        if REFLECTION_SKIP_WHEN_COMPLETE and _plan_fully_succeeded(state):
+            # LLM-11: a moderate question whose every planned tool returned
+            # data has no gap for an extra model call to find.
+            return {
+                "missing_info": [],
+                **log_decision("Reflection", "skipped", "every planned task succeeded (moderate question)"),
+            }
 
         try:
-            raw = client.ask(
+            raw = json_reply(
+                client,
+                ReflectionResult,
+                "reflection",
                 _build_prompt(
                     state.get("query", ""), state.get("objective", ""), state.get("evidence_summary", {})
                 ),
-                model=GROQ_MODEL_FAST,
                 max_tokens=TOKENS_AGENT,
                 temperature=0.0,
             )
@@ -130,7 +132,7 @@ def build_reflection_node(
             return {
                 "missing_info": [],
                 "loop_count": max_loops,
-                **log_decision("Reflection", "skipped — all LLM providers exhausted", str(e)),
+                **log_decision("Reflection", "skipped — all LLM providers exhausted", type(e).__name__),
             }
         missing_items = _parse(raw)
 

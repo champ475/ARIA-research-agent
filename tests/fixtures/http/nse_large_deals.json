@@ -1,0 +1,332 @@
+{
+ "as_on_date": "15-Oct-2026",
+ "BULK_DEALS_DATA": [
+  {
+   "buySell": "BUY",
+   "clientName": "J4S FINANCIAL SOLUTIONS LLP",
+   "date": "15-Oct-2026",
+   "name": "Reliance Indl Infra Ltd",
+   "qty": "79381",
+   "remarks": "-",
+   "symbol": "RIIL",
+   "watp": "763.41"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "AMIT KUMAR JAIN",
+   "date": "15-Oct-2026",
+   "name": "Sagardeep Alloys Limited",
+   "qty": "112054",
+   "remarks": "-",
+   "symbol": "SAGARDEEP",
+   "watp": "30.53"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "PUNEET  BAWEJA",
+   "date": "15-Oct-2026",
+   "name": "Shanti Overseas (Ind) Ltd",
+   "qty": "82000",
+   "remarks": "-",
+   "symbol": "SHANTI",
+   "watp": "5.44"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "MICROCURVES TRADING PRIVATE LIMITED",
+   "date": "15-Oct-2026",
+   "name": "Shoppers Stop Limited",
+   "qty": "776236",
+   "remarks": "-",
+   "symbol": "SHOPERSTOP",
+   "watp": "410.66"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "NK SECURITIES RESEARCH PRIVATE LIMITED",
+   "date": "15-Oct-2026",
+   "name": "Shoppers Stop Limited",
+   "qty": "602496",
+   "remarks": "-",
+   "symbol": "SHOPERSTOP",
+   "watp": "408.84"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "IRAGE BROKING SERVICES LLP",
+   "date": "15-Oct-2026",
+   "name": "Shoppers Stop Limited",
+   "qty": "557450",
+   "remarks": "-",
+   "symbol": "SHOPERSTOP",
+   "watp": "414.08"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "PLUTUS WEALTH MANAGEMENT LLP",
+   "date": "15-Oct-2026",
+   "name": "SS Retail Limited",
+   "qty": "589619",
+   "remarks": "-",
+   "symbol": "SSRETAIL",
+   "watp": "771.13"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "JUMP TRADING FINANCIAL INDIA PRIVATE LIMITED",
+   "date": "15-Oct-2026",
+   "name": "SS Retail Limited",
+   "qty": "454793",
+   "remarks": "-",
+   "symbol": "SSRETAIL",
+   "watp": "761.41"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "QE SECURITIES LLP",
+   "date": "15-Oct-2026",
+   "name": "SS Retail Limited",
+   "qty": "586254",
+   "remarks": "-",
+   "symbol": "SSRETAIL",
+   "watp": "764.54"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "HRTI PRIVATE LIMITED",
+   "date": "15-Oct-2026",
+   "name": "SS Retail Limited",
+   "qty": "437110",
+   "remarks": "-",
+   "symbol": "SSRETAIL",
+   "watp": "763.73"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "ARIHANT CAPITAL MARKETS LIMITED",
+   "date": "15-Oct-2026",
+   "name": "Sunshine Pictures Limited",
+   "qty": "41239",
+   "remarks": "-",
+   "symbol": "SUNSHINE",
+   "watp": "466.39"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "WEALTH 4 U HOSPITALITY CONSULTANCY PRIVATE LIMITED",
+   "date": "15-Oct-2026",
+   "name": "Swastika Infra Limited",
+   "qty": "133503",
+   "remarks": "-",
+   "symbol": "SWASTIKAIN",
+   "watp": "228.41"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "JYOTHI KAILASH KABRA",
+   "date": "15-Oct-2026",
+   "name": "Swastika Infra Limited",
+   "qty": "188896",
+   "remarks": "-",
+   "symbol": "SWASTIKAIN",
+   "watp": "234.91"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "VAIBHAV RAJENDRA DOSHI",
+   "date": "15-Oct-2026",
+   "name": "Swastika Infra Limited",
+   "qty": "315639",
+   "remarks": "-",
+   "symbol": "SWASTIKAIN",
+   "watp": "228.15"
+  },
+  {
+   "buySell": "BUY",
+   "clientName": "JUNOMONETA FINSOL PRIVATE LIMITED",
+   "date": "15-Oct-2026",
+   "name": "Teamlease Services Ltd.",
+   "qty": "88972",
+   "remarks": "-",
+   "symbol": "TEAMLEASE",
+   "watp": "1145.38"
+  }
+ ],
+ "BULK_DEALS": "193",
+ "SHORT_DEALS": "82",
+ "BLOCK_DEALS": "2",
+ "SHORT_DEALS_DATA": [
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "360 ONE WAM LIMITED",
+   "qty": "500",
+   "remarks": null,
+   "symbol": "360ONE",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "ADITYA BIRLA REAL EST LTD",
+   "qty": "950",
+   "remarks": null,
+   "symbol": "ABREL",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "ADANI POWER LTD",
+   "qty": "150",
+   "remarks": null,
+   "symbol": "ADANIPOWER",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "ANGEL ONE LTD",
+   "qty": "1",
+   "remarks": null,
+   "symbol": "ANGELONE",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "APOLLO MICRO SYSTEMS LTD",
+   "qty": "50",
+   "remarks": null,
+   "symbol": "APOLLO",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "ASHOK LEYLAND LTD",
+   "qty": "200",
+   "remarks": null,
+   "symbol": "ASHOKLEY",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "ASTRAL POLY TECHNIK LIMITED",
+   "qty": "50",
+   "remarks": null,
+   "symbol": "ASTRAL",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "ATHER ENERGY LIMITED",
+   "qty": "2625",
+   "remarks": null,
+   "symbol": "ATHERENERG",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "AXIS BANK LIMITED",
+   "qty": "7143",
+   "remarks": null,
+   "symbol": "AXISBANK",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "BANDHAN BANK LIMITED",
+   "qty": "8",
+   "remarks": null,
+   "symbol": "BANDHANBNK",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "BATA INDIA LTD",
+   "qty": "3",
+   "remarks": null,
+   "symbol": "BATAINDIA",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "BHARAT ELECTRONICS LTD",
+   "qty": "7440",
+   "remarks": null,
+   "symbol": "BEL",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "BHARTI AIRTEL LIMITED",
+   "qty": "12822",
+   "remarks": null,
+   "symbol": "BHARTIARTL",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "BHEL",
+   "qty": "7",
+   "remarks": null,
+   "symbol": "BHEL",
+   "watp": null
+  },
+  {
+   "buySell": null,
+   "clientName": null,
+   "date": "15-Oct-2026",
+   "name": "BSE LIMITED",
+   "qty": "3",
+   "remarks": null,
+   "symbol": "BSE",
+   "watp": null
+  }
+ ],
+ "BLOCK_DEALS_DATA": [
+  {
+   "buySell": "BUY",
+   "clientName": "BOFA SECURITIES EUROPE SA",
+   "date": "15-Oct-2026",
+   "name": "ETERNAL LIMITED",
+   "qty": "5337584",
+   "remarks": null,
+   "symbol": "ETERNAL",
+   "watp": "316"
+  },
+  {
+   "buySell": "SELL",
+   "clientName": "GOLDMAN SACHS BANK EUROPE SE ODI",
+   "date": "15-Oct-2026",
+   "name": "ETERNAL LIMITED",
+   "qty": "5337584",
+   "remarks": null,
+   "symbol": "ETERNAL",
+   "watp": "316"
+  }
+ ]
+}

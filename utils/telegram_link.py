@@ -6,10 +6,11 @@ instead of a single shared TELEGRAM_CHAT_ID.
 Flow: app.py's "Connect Telegram" button calls generate_link_code(user_id),
 which mints a short-lived code and shows a t.me/<bot>?start=<code> deep
 link. The user taps it, Telegram opens a chat with the bot and sends
-"/start <code>" automatically. A background long-polling thread (started
-once at app startup via start_polling_thread()) reads that update via
-Telegram's getUpdates API, resolves the code back to a user_id, and stores
-the chat_id — no webhook/public HTTPS endpoint needed, which matters since
+"/start <code>" automatically. poll_once() reads that update via Telegram's
+getUpdates API, resolves the code back to a user_id, and stores the chat_id.
+It runs as the `telegram_poller` service in worker.py (REL-05): exactly one
+process holds that job's lock, because Telegram allows one getUpdates
+poller per bot (two replicas used to fight with 409s) — no webhook/public HTTPS endpoint needed, which matters since
 this app may run behind no public URL at all (local dev) or one that
 doesn't warrant standing up a webhook route.
 """
@@ -18,8 +19,6 @@ from __future__ import annotations
 
 import logging
 import secrets
-import threading
-import time
 from datetime import UTC, datetime, timedelta
 
 import requests
@@ -33,10 +32,6 @@ _LINK_CODE_TTL_MINUTES = 15
 _POLL_TIMEOUT_S = (
     20  # Telegram long-poll — server holds the request open until an update arrives or this elapses
 )
-_POLL_ERROR_BACKOFF_S = 5
-
-_state_lock = threading.Lock()
-_started = False
 _offset = 0
 
 
@@ -62,10 +57,12 @@ def _send(chat_id, text: str):
             timeout=10,
         )
     except Exception as e:
-        log.warning(f"[telegram_link] confirmation send failed: {e}")
+        # The text can contain the request URL, i.e. the bot token; the log
+        # filter masks it (SEC-11).
+        log.warning("[telegram_link] confirmation send failed: %s", e)
 
 
-def _poll_once():
+def poll_once() -> None:
     global _offset
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
     resp = requests.get(  # timeout passed below  # nosec B113
@@ -94,25 +91,7 @@ def _poll_once():
             )
             continue
         telegram_chat_id_set(user_id, str(chat_id))
+        from utils.audit import audit
+
+        audit("settings.telegram_linked", actor_user_id=user_id)
         _send(chat_id, "✅ Connected! ARIA will send your alerts to this chat from now on.")
-
-
-def _poll_loop():
-    log.info("[telegram_link] polling thread started")
-    while True:
-        try:
-            _poll_once()
-        except Exception as e:
-            log.warning(f"[telegram_link] poll failed: {e}")
-            time.sleep(_POLL_ERROR_BACKOFF_S)
-
-
-def start_polling_thread():
-    """Idempotent — safe to call on every app startup. No-ops if no bot
-    token is configured (alerts/Telegram are optional features)."""
-    global _started
-    with _state_lock:
-        if _started or not TELEGRAM_BOT_TOKEN:
-            return
-        _started = True
-    threading.Thread(target=_poll_loop, daemon=True, name="telegram-link-poller").start()

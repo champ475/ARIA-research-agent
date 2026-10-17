@@ -16,6 +16,736 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-17 — Not hosted: docker-compose is the reference deployment (OPS-03)
+**Problem.** PRD OPS-03 asks for a production host: managed Postgres with PITR, TLS, a CDN or WAF, autoscaling replicas, and a deploy target for the release pipeline. The owner decided (2026-10-15) that ARIA is a production-grade project and will not be launched as a public product. So hosting, and its running cost, are out of scope.
+
+**Alternatives considered.**
+- A free PaaS (Hugging Face Spaces, Render, Fly.io free tiers): sleeps, gives no worker process, and a public URL would still need the legal and data-licensing sign-offs that are pending (COMP-05, DATA-02).
+- A small VPS with Caddy for TLS: it costs money and needs an operator on call, which the owner rejected.
+- Kubernetes manifests with no cluster behind them: untested config that would rot.
+
+**Final decision.** ARIA is not hosted. `docker-compose.yml` is the reference deployment:
+- `app` (FastAPI + Gradio) and `worker` (advisory-locked jobs);
+- Postgres with a named volume;
+- an optional `staging` profile (OPS-01) and an `observability` profile with Prometheus and Grafana (OBS-03);
+- `compose.test.yml`, the offline stack that releases are verified on (TEST-07).
+
+Everything a host would need is already in place and has been exercised locally:
+- stateless replicas (OPS-02, REL-05);
+- `/healthz`, `/readyz` and graceful drain (OPS-04);
+- metrics, alerts and a runbook (OBS-03/04);
+- backups and a restore drill (REL-08);
+- a release, promote and rollback pipeline whose deploy step is a documented no-op hook (TEST-07);
+- the environment guard against pointing at the production database (OPS-01).
+
+**Trade-offs.**
+- Nothing is reachable from the internet.
+- TLS termination, a WAF, rate limiting at the edge and DDoS protection are not configured. The app enforces only its own per-user and per-IP limits (SEC-05, SEC-12).
+- Neon PITR and the restore drill against Neon are operator tasks (TODO_ARIA.md).
+- The 2-replica behaviour was tested in-process, not behind a real load balancer.
+
+**Future improvements.** If the owner ever launches:
+1. Pick a host that runs two containers plus a managed Postgres.
+2. Put a TLS proxy in front (Caddy, or the platform's), setting `TRUSTED_PROXIES` and `Secure` cookies.
+3. Point the `deploy` step at it.
+4. Run the restore drill on the managed database.
+5. Get the COMP-05 and DATA-02 licences first.
+
+## 2026-10-17 — Releases: one image per tag, verify by digest, promote and roll back by retag (TEST-07)
+**Problem.** No path from a commit to a running build was repeatable. There was nothing to roll back to, and nothing stopped a migration from breaking the previous release (TEST-07).
+
+**Alternatives considered.**
+- Rebuild on deploy: the image that runs isn't the image that was tested.
+- Promote with a deploy tool: there is no host (OPS-03).
+- Down-migrations for rollback: they destroy data written since, and they are rarely tested.
+
+**Final decision.**
+- A `vX.Y.Z` tag runs `.github/workflows/release.yml`:
+  1. Build once and push to GHCR, with an SBOM, max provenance and a GitHub attestation.
+  2. Verify that exact digest with `compose.test.yml` (offline fake LLM and data): the Playwright smoke journeys plus the golden-set eval.
+  3. Promote by retagging `:stable` in a `release` environment, which can be gated by an approval. The deploy step is a no-op hook.
+- Rollback is `scripts/rollback.sh vX.Y.Z`, which retags `:stable` to an earlier image without a rebuild.
+- The database only ever moves forward. Migrations are expand/contract: a destructive upgrade after 0021 must declare `CONTRACT:` (`tests/test_migration_policy.py`). See docs/RELEASING.md.
+
+**Trade-offs.**
+- The registry path (push, attest, approval) runs only on a real tag, and only the owner pushes tags. The local drill covers build → verify → promote → rollback with local images.
+- Contract steps need two releases and discipline. The test only checks that the step is declared.
+
+**Future improvements.**
+- A canary or blue-green deploy once there is a host.
+- Verify image signatures (cosign) on pull.
+- Run the smoke subset against the restored backup in the restore drill.
+
+## 2026-10-16 — End-to-end tests in a real browser, with a deterministic offline mode (TEST-04)
+**Problem.** UI regressions were found by hand. The first real-browser run against a real Postgres checkpointer showed that every research turn with a dependency crashed (TEST-04).
+**Alternatives considered.**
+- Gradio's own client in Python tests: doesn't exercise the browser (rendering, JS, cookies).
+- Selenium: slower, and its tracing is weaker.
+- Running e2e against real LLMs and data: slow, flaky, and costly.
+
+**Final decision.**
+- `tests/e2e` (pytest-playwright, headless Chromium) runs 15 journeys. Each journey drives a real `python app.py` server on a throwaway `aria_e2e` database, which is seeded with a fundamentals snapshot.
+- Two new switches make runs deterministic and offline:
+  - `ARIA_FAKE_LLM`: `agents/providers/fake_llm.py` answers each graph node by rule, and the answer restates the verified conclusions, so it stays grounded.
+  - `ARIA_FAKE_DATA`: the FakeProvider plus `utils/fake_http.py`, which serves recorded responses from `data/fake/` and returns 503 for anything else.
+- Both switches are refused in prod. `ARIA_NO_DOTENV` keeps a developer's `.env` out of the run.
+- `compose.test.yml` runs the same stack in Docker. CI's `e2e` job keeps Playwright traces of failures.
+
+**Production bugs the suite found and fixed:**
+1. `fetch_financials` returns a dict of DataFrames, and a research Send's context carried restored DataFrames. Postgres checkpointing raised on both.
+2. numpy scalars and Plotly Figures in graph state could not be serialised either.
+3. Verification's sane-range check flagged absolute rupee amounts, which gated every equity turn behind a "could not be verified" confirmation.
+4. Download buttons were separate `gr.HTML` components whose updates raced the sidebar's re-render. Two times in three the links never appeared.
+
+The fixes:
+- Payloads stay checkpoint-safe (recursive, with stringified labels) through Send. `execute_task` restores them just before calling the tool.
+- Charts travel as Plotly JSON.
+- The range check applies to ratio fields only.
+- Download links are Markdown inside the answer.
+
+**Trade-offs.**
+- Flakiness was measured over 10 local runs of the whole module. 8 were fully green. One failure was a test bug, now fixed: Telegram link codes can start with `-`. One was a single `wait_for_function` timeout, 1 of 140 test executions (about 0.7%). It did not reproduce in 16 more targeted turns.
+- The PRD asked for a 50-run flake estimate and got 10.
+- WeasyPrint isn't present on Windows dev boxes, so the PDF check accepts 503 there.
+
+**Future improvements.** Visual snapshots, a mobile viewport, and a 50-run nightly flake report.
+
+## 2026-10-16 — Data contracts, recorded responses and a live canary (TEST-05)
+**Problem.** yfinance, NSE, AMFI and news feeds change their responses without notice, and nothing tested the fetchers against real responses. Recording them proved it: NSE had retired `/api/bulk-deal-data` and `/api/block-deal-data`, which now answer 404. Our fetcher read a 404 as "no deals", so bulk-deal answers and alerts had been silently empty. AMFI's NAVAll also lists wound-up schemes with NAV 0, and the parser kept them (TEST-05).
+**Alternatives considered.**
+- vcrpy cassettes. These are harder to review and trim than plain response bodies.
+- Mocks hand-written from memory. They would have missed exactly the drift above.
+- Live tests in CI only. They are flaky, and NSE blocks GitHub's IP ranges at times.
+
+**Final decision.**
+- `tools/data/contracts.py` holds pydantic models and check functions per source, covering only the fields ARIA reads (extra fields allowed).
+- `scripts/record_http_fixtures.py` records real responses, trimmed, into `tests/fixtures/http/` with an `index.json` (URL, status, time). BSE's CDN refuses scripted clients with a 403, so its fixture is a clearly-marked synthetic one.
+- `tests/test_data_contracts.py` replays each recording through its fetcher with `responses` and validates it against its contract.
+- Fetchers that read NSE JSON validate in-line, so drift raises `SourceUnavailable` ("NSE data is temporarily unavailable") instead of returning an empty table.
+- Deals now come from `/api/snapshot-capital-market-largedeal`, with columns normalised.
+- `parse_navall` drops NAV ≤ 0.
+- `scripts/data_canary.py` runs one live query per source (Yahoo quote and bars, NSE movers, deals and bhavcopy, AMFI, mfapi, news). It runs as the worker's `data_canary` job every 30 minutes in market hours (two failures page via OBS-04) and as a scheduled GitHub workflow. Its first run passed 8 of 8.
+
+**Trade-offs.**
+- yfinance's HTTP layer isn't requests-based, so it's contract-tested on frozen data, plus the live canary.
+- Recordings age; the runbook says refresh monthly.
+- The BSE fixture stays synthetic until access works.
+
+**Future improvements.** A monthly scheduled re-record that opens a PR with the diff.
+
+## 2026-10-16 — Two-copy backups and a recorded restore drill (REL-08)
+**Problem.** Nothing documented restore steps, RPO or RTO, and nothing had ever been restored. Losing `SECRET_KEY` would make every stored BYO key unreadable (REL-08).
+**Alternatives considered.**
+- Rely on Neon point-in-time restore alone. That gives a single provider and a single copy, and has only 7 days on the free tier.
+- A managed backup service. That adds cost and another processor.
+- Physical/WAL backups. Not possible on Neon, and too much to run by hand.
+
+**Final decision.**
+- Two independent copies: Neon point-in-time restore, plus nightly logical `pg_dump` custom-format dumps. `scripts/backup_db.py` writes them to `BACKUP_DIR` with a `.sha256` and keeps 14; the runbook says to copy them off-host.
+- `scripts/pg_tools.py` runs local client tools, or the `postgres` image (`PG_CLIENT_IMAGE`) when they're absent.
+- `scripts/restore_drill.py` restores a dump into a throwaway container, times it, and checks: schema at head, table row counts, the app's own readiness check, and that stored BYO keys decrypt with the escrowed `SECRET_KEY`. It writes a dated record to `docs/drills/`.
+- `docs/RUNBOOK.md#backups` documents RPO ≤ 24 h, RTO ≤ 4 h, Neon PITR and dump restore steps, and secret escrow (two holders).
+- The first drill passed on 16 Oct 2026: 6.6 s end to end, on a seeded local database.
+
+**Trade-offs.**
+- Dumps are logical, so a restore takes longer on a large database. That's fine at this scale.
+- The drill on production data and the off-host copy schedule are the owner's tasks.
+- Point-in-time restore depends on the Neon plan.
+
+**Future improvements.**
+- Ship dumps to object storage from the worker as a scheduled job.
+- Encrypt dumps at rest with age or GPG.
+- Run the drill quarterly from CI against a staging branch.
+
+## 2026-10-16 — Database-driven ops watchdog with runbook-linked pages (OBS-04)
+**Problem.** Outages (exhausted LLM keys, NSE blocking, a stalled alert checker, the database filling up) were found by users, not the operator (OBS-04).
+**Alternatives considered.**
+- Grafana alerting or Better Stack. Both need the observability stack or a SaaS to run and be reachable all the time, which isn't true for a project that isn't hosted.
+- Alertmanager only. That has the same dependency, and its rules only see one replica's in-memory metrics.
+
+**Final decision.**
+- `utils/watchdog.py` runs as the worker's `ops_watchdog` job every 5 minutes. Its rules read the shared database, so they see every replica: turns, job heartbeats, Postgres stats and the fundamentals snapshot. Rules:
+  - error rate above 5% over 10 minutes (at least 10 turns);
+  - equity p95 TTFT above 2× the SLO over 15 minutes;
+  - alert-check heartbeat stale for more than 15 minutes in market hours;
+  - any job, or the data canary, failing twice in a row (new `consecutive_failures` column);
+  - LLM exhaustion (3 or more turns in 15 minutes);
+  - DB connections above 80%;
+  - DB size above 80% of `DB_SIZE_LIMIT_MB`;
+  - stale fundamentals snapshot.
+- Pages go to `OPERATOR_TELEGRAM_CHAT_ID` (via the bot) and/or `OPERATOR_EMAIL` (via the mailer), with a `docs/RUNBOOK.md` anchor in each.
+- The `ops_alerts` table (migration 0020) deduplicates: one page, a reminder every `ALERT_REMINDER_MINUTES`, and one "resolved" message. A check that fails to run never resolves anything.
+- `ops/prometheus/alerts.yml` has equivalent rules for a Prometheus + Alertmanager setup.
+
+**Trade-offs.**
+- The 5-minute cadence plus Telegram delivery meets "arrives within 5 minutes" only at the boundary; worst case is about 5 minutes plus send time.
+- If the database itself is down, the watchdog can't page. The `/readyz` probe and the host's own monitoring have to cover that.
+- "Fired once in staging by fault injection" was done in integration tests against a real Postgres (every rule), not in a hosted staging environment.
+
+**Future improvements.**
+- An external heartbeat ping (healthchecks.io) so a dead worker also pages.
+- Alertmanager routing and silences once the stack is hosted.
+
+## 2026-10-16 — Prometheus metrics, SQL views and SLOs (OBS-03)
+**Problem.** None of the release-bar targets (availability, time to first output, cost per turn, fallback rate) could be measured. The `turns` table had the raw data, but there were no live metrics, dashboard or SLO definition (OBS-03).
+**Alternatives considered.**
+- Grafana or Metabase reading SQL only. That gives history but no live view or alert rules, and every panel becomes a query against the primary database.
+- A hosted APM (Datadog, New Relic). That means cost and another processor of user data.
+- OpenTelemetry metrics. That is heavier than needed for one process.
+
+**Final decision.**
+- `prometheus-client` runs on its own registry, `utils/metrics.py`, served at `GET /metrics`. The route needs `Authorization: Bearer METRICS_TOKEN` and is off (404) outside dev/test when no token is set.
+- Counters and histograms are fed at the source: one observation per finished turn (`tracing.turn`), per LLM call (`LLMClient._observe`, which also counts fallbacks) and per feedback rating.
+- Gauges for the DB pool, job heartbeats and data-source breakers are read at scrape time.
+- Labels are low-cardinality only: never a user, symbol or turn id.
+- History comes from SQL views over `turns` (migration 0019: `turn_stats_hourly`, `slo_daily`).
+- SLOs are 99.5% monthly availability and equity p95 TTFT ≤ 15 s (docs/SLO.md, settings `SLO_*`). Refusals, gates and cancellations count as answers. `scripts/slo_report.py` reports the weekly and monthly error budget and burn rate.
+- The `ops/grafana` dashboard has 16 panels, generated by `build_dashboard.py`. A compose `observability` profile runs Prometheus v2.53.0 and Grafana 11.1.0.
+
+**Trade-offs.**
+- Metrics are per process and reset on restart; Prometheus's `rate()` absorbs that.
+- With several replicas, each one is scraped separately.
+- The "production data" part of the PRD's done-when needs a running production instance (hosting was skipped). The panels were checked against the exposed metric names in tests.
+
+**Future improvements.**
+- Exemplars that link a slow bucket to its turn id.
+- A Grafana SLO burn-rate panel driven by recording rules.
+- Pushgateway or remote-write if jobs run outside the app.
+
+## 2026-10-16 — Environment separation and the production-database guard (OPS-01)
+**Problem.** There was one `.env` and one Neon database. Testing a change meant testing against real users' data and the real Telegram bot, and nothing stopped a dev process from pointing at production (OPS-01).
+**Alternatives considered.** One option was separate repos or deployments per environment, which is heavy for one maintainer. Another was a convention-only rule ("don't use the prod URL locally"), which fails silently the first time someone copies a `.env`.
+**Final decision.**
+- Four `APP_ENV` profiles (dev, test, staging, prod), documented in `docs/ENVIRONMENTS.md`.
+- A boot check (`config.prod_db_problem`): any non-prod process refuses to start if `DATABASE_URL` or `JOBS_DATABASE_URL` points at a host listed in `PROD_DATABASE_HOSTS`.
+- `.env.staging.example` and `.env.prod.example` list what each environment sets: its own secret key, a second Telegram bot, separate LLM keys and an SMTP test inbox. Production values live only in its secret store.
+- Real `.env.*` files are git- and docker-ignored; the `*.example` files are kept.
+- A compose `staging` profile adds `db-staging`, `app-staging` on :7861 and `worker-staging`.
+- `scripts/seed_staging.py` creates synthetic, PII-free verified users with watchlists, alerts, portfolio lots, profiles and chats. It is idempotent and refuses prod.
+
+**Trade-offs.**
+- The guard only works if the operator fills `PROD_DATABASE_HOSTS` in non-prod env files. Without it, a non-prod process isn't protected.
+- Staging here is the local compose profile. A hosted staging environment that TEST-07 deploys to automatically needs a host (OPS-03 skipped).
+
+**Future improvements.**
+- A scrub script for a Neon branch copy of production.
+- A GitHub "production" environment with required reviewers once there is a deploy target.
+
+## 2026-10-16 — Stateless downloads: re-render from Postgres or a downloads table (OPS-02)
+**Problem.** Report PDF/Markdown files and screener CSVs were written to the temp directory of the replica that ran the turn, and handed to Gradio DownloadButtons. Gradio serves those files only from that replica's file cache, so behind a load balancer the click could reach another replica and get a 404. A restart broke every link (OPS-02).
+**Alternatives considered.**
+- Sticky sessions. A stopgap that still breaks on restart.
+- Object storage (S3/R2) with signed URLs. That adds a cloud dependency and credentials, and the project isn't hosted (OPS-03).
+- Storing rendered PDFs in Postgres. Reports can be re-rendered from `reports.content`, so storing them would only duplicate data.
+
+**Final decision.**
+- CommunicationLayer no longer renders or writes files. A saved report yields `/download/report/<id>.pdf|.md` links, and `web/download_routes.py` re-renders `reports.content` in memory on whichever replica serves the click (`render_report(content) -> (md_bytes, pdf_bytes)`).
+- Content with no durable source (screener results) is stored in a new `downloads` table (migration 0018). Each row is keyed by a 32-byte URL-safe token, owned by a user, capped at 5 MB, and expires after 24 h; housekeeping purges expired rows.
+- Both routes need the session cookie and return the same 404 for "missing" and "not yours".
+- The chat tab shows plain anchor links, and `_download_link` renders only our own route shapes.
+- GraphState's `pdf_path/md_path/csv_path` became `pdf_url/md_url/csv_url`.
+- Together with VAL-10 (pending confirmations in the DB), REL-03 (orchestrators rebuilt from `chat_history`) and REL-05 (single-owner jobs and Telegram poller), any replica can now serve any request.
+
+**Trade-offs.**
+- A PDF is re-rendered on each download, which costs CPU. That's fine at this scale.
+- A screener CSV link lasts 24 h.
+- The Parquet OHLCV and bhavcopy caches stay per replica. They are caches, so correctness doesn't depend on them (DATA-10 is Phase 3).
+- The PRD's 2-replica staging run with a replica killed is shown with two app instances sharing one database in tests, not on a staging host (hosting was skipped).
+
+**Future improvements.** Cache rendered PDFs, keyed by a hash of the report. Move the market-data caches to Postgres or Redis (DATA-10).
+
+## 2026-10-16 — Single-owner background jobs with heartbeats (REL-05)
+**Problem.** Every app process started its own Telegram getUpdates poller and its own housekeeping thread. Telegram allows only one poller per bot, so two replicas fight with 409 errors. Alert checks ran only on GitHub Actions cron, which can start late, is disabled after 60 days without repo activity, and installed the whole app (LangGraph, Gradio, WeasyPrint) on every run. Nothing recorded whether any job had run (REL-05).
+**Alternatives considered.**
+- APScheduler with a job store. That adds another dependency and still needs an external lock across processes.
+- A Telegram webhook route. That needs a public HTTPS URL, and the project isn't hosted (OPS-03).
+- A cron container per job. That means more moving parts and still no single owner.
+- Keeping GitHub Actions only. Its timing problems remain and other jobs have nowhere to run.
+
+**Final decision.**
+- `utils/jobs.py`: each job runs under `pg_try_advisory_lock(hashtext('aria.jobs'), hashtext(job))`, taken on a dedicated autocommit connection. Whether a job is due is decided from its `job_heartbeats` row (migration 0017) and re-checked under the lock, so a job another process just ran is not repeated.
+- `run_service` keeps a lock for a whole loop (the Telegram poller); standbys retry every minute and take over if the owner dies.
+- `worker.py` schedules `alert_check` (every 5 min, market open per DATA-06), `housekeeping` (hourly, now also purging expired link codes), `fundamentals_snapshot` (19:30 IST on trading days) and `mf_refresh` (23:30 IST). Jobs run on a small pool so a long refresh never delays alerts.
+- The app runs the same scheduler in-process only when `RUN_JOBS_IN_APP` is set (default: dev only). Compose adds a `worker` service.
+- The GitHub Actions alert check takes the same `alert_check` lock and writes the heartbeat. It installs only `requirements-alerts.lock`, a third hashed lock produced by `scripts/lock.py` and constrained by the runtime lock.
+- `JOBS_DATABASE_URL` gives the lock a direct connection when `DATABASE_URL` is a transaction-mode pooler.
+
+**Trade-offs.**
+- One extra Postgres connection is held per running job, plus one for the poller.
+- If the database is unreachable no jobs run. That is acceptable because every job needs the database anyway.
+- Instrument-master refresh stays a manual step that the owner commits, because the vendored files live in the image.
+- The PRD's "two replicas, 1 hour, no 409s" is demonstrated by lock and failover tests and a local worker run, not by an hour-long run with a real bot.
+
+**Future improvements.** Run the ops watchdog (OBS-04) and data canary (TEST-05) as jobs here. Add per-job metrics (OBS-03). Use a Telegram webhook once the app is hosted behind HTTPS.
+
+## 2026-10-16 — Portfolio of lots with exact amounts, tab, import and chat tool (UX-05)
+**Problem.** A `portfolio_pnl` alert could be created, but no screen or tool could add holdings, so the alert never fired. Quantities and prices were stored as REAL (float4, about 7 significant digits) (UX-05).
+**Alternatives considered.** One option was to remove `portfolio_pnl` until a portfolio feature existed; the owner chose to build it. Another was to store one row per symbol, but lots (buy date, price per purchase) are what users import from brokers. A third was to keep floats and round on display, which means sums and averages drift.
+**Final decision.**
+- Migration 0016: `portfolio.qty` and `avg_price` become NUMERIC(18,4), with an optional `buy_date`, CHECK constraints and a (user_id, symbol) index. Python uses Decimal end to end.
+- `utils/db.py` gets add, update, remove-lot and remove-symbol functions, plus an all-or-nothing `portfolio_import`. A cap of `MAX_PORTFOLIO_LOTS`=500 is enforced under a per-user advisory lock.
+- `tools/portfolio.py` validates input (VAL-09 numbers, VAL-02 symbols), aggregates lots per symbol with a weighted average price, and values them at live prices. A missing price means the holding is valued at cost and flagged. It also imports broker CSVs: Zerodha and Groww headers, ISIN lookup, a title block skipped, and problems reported per row.
+- A 📊 Portfolio tab shows the summary, allocation and P&L chart and the lots, with add, edit, remove and CSV import.
+- `portfolio_view` is a user-scoped, non-cacheable chat tool. It is planned when the user says "my portfolio" or "my holdings", runs once with no company, and its claims become conclusions.
+- `check_alerts` computes `portfolio_pnl` with Decimal.
+
+**Trade-offs.** P&L is before tax and charges, with no realised P&L or dividends. Prices come from the yfinance quote and can be delayed (DATA-06 labels them). The CSV mapping covers common header names only; other brokers' exports need a column rename.
+**Future improvements.** Record sells and realised P&L (FIFO). Track XIRR using buy dates. Import contract notes. Apply DATA-09 NUMERIC to alerts and plans.
+
+## 2026-10-16 — Analysis tools offered on request; DCF dropped (UX-04)
+**Problem.** Backtesting, peer comparison, risk scoring and sentiment existed in `tools/analysis/`, but no catalogue tool reached them. The README promised them, so users got made-up answers. Adding catalogue tools changes the Planner's prompt, and with it every recorded eval fixture. No working LLM key was available to re-record (UX-04).
+**Alternatives considered.**
+- Add the four tools to the catalogue for every turn. That invalidates all Planner fixtures, and the model might still skip "backtest".
+- Remove the modules and the README claims. That loses useful, cheap features.
+- A separate intent or route per analysis. That is too heavy, because these are equity sub-questions.
+
+**Final decision.**
+- `graph/analysis_tools.py` holds four tools: `peer_comparison` (same-industry peers closest in market cap from the snapshot, else the curated sector quoted live), `risk_assessment`, `news_sentiment`, and `backtest` (5 years of daily bars, parameters parsed from the question, `BACKTEST_COST_PCT`=0.15% per side).
+- Each payload carries deterministic `claims`, which ConclusionBuilder turns into conclusions. The evidence renderer shows the peer table, method notes and the backtest assumptions.
+- `triggered_tools(query, intent)` uses explicit phrase patterns, on equity and report turns only. A triggered tool is planned by the Planner itself, even for "simple" questions. Untriggered analysis tools are hidden from the model's catalogue, so every other Planner prompt stays byte-identical and the recorded fixtures stay valid.
+- The backtest's assumptions and a past-performance caveat are appended by code.
+- The DCF was dropped until its inputs are validated, together with dead helpers (`get_sector_peers` with its Technology fallback, `sector_heatmap`, `backtest_chart`).
+
+**Trade-offs.**
+- Phrase triggers miss unusual wordings, such as "who else makes cars like Maruti".
+- The macro factor in the risk score is a neutral baseline. Leverage and liquidity are not scored for lenders.
+- The three new golden cases are unrecorded, so only their guard and entity checks run until someone re-records with working keys. The PRD's ≥4/5 judge score is pending.
+
+**Future improvements.** Re-record the eval fixtures and show the analysis tools to the Planner on all equity turns. Add an equity-curve chart to the backtest. Use a real macro feed for the risk factor.
+
+## 2026-10-16 — Full-universe screener over a nightly fundamentals snapshot (DATA-05)
+**Problem.** The screener checked only the first 30 of about 100 hand-picked stocks, fetching each one live and in sequence. "PE below 20" ignored most of the market and took more than 30 s (DATA-05).
+**Alternatives considered.**
+- Parallel live fetch of the whole universe per question. That is about 2,350 Yahoo calls per screen, which hits rate limits and takes minutes.
+- An external screener API (Screener.in, Tickertape). Their terms are unclear and they are another dependency.
+- Cache each `info` in the evidence cache. That still needs a full first pass, and JSONB filtering is slow.
+
+**Final decision.**
+- A `fundamentals_snapshot` table (migration 0015), one row per NSE EQ-series symbol, holding the screen fields in filter units, plus sector, industry, a lender flag and `as_of`.
+- `scripts/refresh_fundamentals.py` fills it from the instrument master through the provider (DATA-02). It uses 4 threads, a per-call delay and batched upserts. It resumes by skipping rows fresher than `--resume-hours`.
+- `tools/screener.run` is one parameterised query (`db.fundamentals_screen`). Fields and operators come from a whitelist, and values are bound parameters. Results are ordered by market cap.
+- When the table is empty or unreachable, the screener falls back to the old live curated path. The answer says which universe was screened, and when the oldest row is more than `FUNDAMENTALS_MAX_AGE_HOURS` (26) old, it says that too.
+- Lenders store NULL ROCE and D/E, so those filters exclude them (DATA-03).
+
+**Trade-offs.**
+- Figures are up to a day old. That's fine for valuation screens, but not for intraday price filters.
+- Yahoo is still the source, with its gaps (DATA-03 README).
+- The nightly schedule and the stale alert belong to REL-05 and OBS-04.
+- A full run is about 8 minutes, measured at 60 symbols in 12 s.
+
+**Future improvements.** Get the snapshot from a licensed bulk-fundamentals feed in one call. Add BSE-only listings. Keep per-day history so screens can be run "as of" a date.
+
+## 2026-10-16 — Market data provider interface, source health, licensing pending (DATA-02)
+**Problem.**
+- yfinance is unofficial and rate-limited.
+- NSE's site API needs browser cookies and blocks cloud IPs with 401/403.
+- The NSE fetchers swallowed every failure and returned an empty table, so a blocked NSE looked like "no movers today". The breaker also counted a 403 as a success.
+- Tools imported scrapers directly, so a licensed source could not be swapped in, and there was no offline data for end-to-end tests (DATA-02).
+
+**Alternatives considered.**
+- Keep direct imports and only fix the error handling. That leaves no seam for a vendor or a fake.
+- A full plugin registry configured by env var. That is over-built for two sources.
+- Switch to a licensed or broker API now. That is the owner's commercial decision (see below), not an engineering one.
+
+**Final decision.**
+- `tools/data/providers/` defines a `MarketDataProvider` protocol with quote, ohlcv, financials, corporate_actions, movers, bulk_deals and block_deals. Implementations:
+  - `YFinanceProvider` wraps fetcher.py, keeping its bhavcopy fallback.
+  - `NseProvider` uses new strict fetchers.
+  - `FakeProvider` is deterministic and offline, enabled with `ARIA_FAKE_DATA=1`.
+  - `RoutedProvider` sends each method to the provider that owns it.
+- The catalogue's market tools call `market_data()`.
+- The strict NSE fetchers (`nse_scraper.api_json` / `fetch_*`) raise `SourceUnavailable("nse")` on a block, a 5xx or a non-JSON page. A 404 means no data. The old `get_*` functions keep their quiet empty-frame contract for other callers.
+- `CircuitOpen` now carries `.source`. A failed task records `source`.
+- `data_gaps_note` leads with "NSE data is temporarily unavailable." when a source is down or its breaker is open.
+- The HTTP breaker counts 401/403 as failures.
+- Breakers keep success and failure counts and last-success and last-failure times. These are exposed by `resilience.breaker_states()` and by `GET /health/data`, which also shows the provider routes and the sources currently degraded.
+- Evidence built from a `_degraded_source` payload gets `DEGRADED_CONFIDENCE` (0.6).
+
+**Licensing.** Undecided, and the owner's call before any public launch. NSE's terms restrict automated access to its site. Yahoo's terms don't allow redistributing its data. Candidates are a broker market-data API (Kite Connect, Upstox, Dhan) or a commercial vendor. The project isn't hosted publicly (OPS-03), so the current sources are acceptable for development and demos only. A new source plugs in as one provider class plus a route.
+
+**Trade-offs.**
+- Health is per process and resets on restart.
+- The nightly per-source success-rate job from a production host belongs to the data canary (TEST-05) and the worker (REL-05). There is no production host.
+- Corporate actions are wired through the provider but no tool uses them yet (DATA-07).
+
+**Future improvements.**
+- Persist source health in `job_heartbeats` or metrics (OBS-03).
+- Add a licensed provider and route quotes to it.
+- Route quotes to a second source for live failover instead of falling back to end-of-day bhavcopy.
+
+## 2026-10-16 — Vendored NSE calendar and as-of times on market evidence (DATA-06)
+**Problem.** NSE trading holidays weren't modelled. The alert checker ran on holidays. "Today" answers on a weekend or holiday showed the last session's numbers without saying so. Quotes, which can be cached or delayed, were presented as current, with no time attached (DATA-06).
+**Alternatives considered.**
+- `exchange_calendars` (XBOM): a heavy dependency whose Indian holiday updates lag NSE circulars. For example, the 15 Jan 2026 civic-poll closure was announced three days ahead. It also models no special sessions such as Muhurat or a Budget Sunday.
+- Scraping NSE's holiday API at runtime: another fragile live dependency on the hot path.
+- Keep weekday-only logic: simply wrong on about 15 days a year.
+
+**Final decision.**
+- A vendored `data/market/nse_holidays.csv`, checked against NSE's circulars. It has `holiday` rows and `special` rows; a special row has its own IST hours, and blank hours mean "announced, timing TBA".
+- `utils/market_clock.py` reads it and provides `session_state`, `is_open`, `is_trading_day`, `last_session`, `next_open`, `as_of_line` and `closed_today_note`. Naive datetimes are read as IST.
+- Every Evidence item gets `as_of`. That is the quote's `regularMarketTime` when the source gives one, otherwise the fetch time. A cache hit keeps the original `fetched_at`, which `evidence_cache.get` now returns.
+- `graph/freshness.py` appends "🕒 Data as of … IST (session state)" to any answer that contains market figures, placed before the advice footer. The date is taken from the oldest figure. On a closed day, a quote or movers answer opens with "Markets are closed today (…); these figures are from the last session, …". Both lines are written by code, not by the model.
+- `check_alerts.market_is_open` and the bhavcopy date walk-back use the calendar.
+
+**Trade-offs.**
+- The CSV must be refreshed each December. When it runs out, `calendar_covers()` logs a warning once and weekdays are treated as open.
+- Special-session hours that NSE has not announced yet (such as Muhurat on 8 Nov 2026) count as closed until the CSV is edited.
+- The as-of time is the fetch time for sources without an exchange timestamp.
+- The BSE instrument refresh still skips only weekends.
+
+**Future improvements.** Have the ops watchdog (OBS-04) alert when the calendar has less than 30 days left. Use OHLCV's last bar date as `as_of` for history-based figures. Add a BSE calendar if BSE data becomes primary.
+
+## 2026-10-16 — Configurable model routes with retirement detection (LLM-08)
+**Problem.**
+- Model ids were hard-coded, and nodes passed a Groq-only "fast model" name per call.
+- When Groq retired both Llama models (Aug 2026) and Google retired gemini-2.0-flash, every request failed until a code change. The local `.env` trial keys showed exactly that 404.
+
+**Alternatives considered.**
+- *Bump the constants.* Rejected: it fixes today and breaks on the next retirement.
+- *A model gateway (LiteLLM / OpenRouter).* Rejected: an extra network hop, a processor and a dependency for something a small routing table solves.
+
+**Final decision.**
+- Per-node ordered `provider:model` routes, in two classes (fast, synthesis), overridable by environment per node or per class.
+- Health is tracked per `provider:model`. Retirement errors are classified, skipped and logged.
+- A background startup probe of every routed model.
+- Defaults moved to the providers' recommended successors.
+
+**Trade-offs.**
+- A new route only takes effect for clients built after the change. Compiled graphs (REL-03) hold their clients until the process restarts or the graph is evicted.
+- The probe spends one token per model per start.
+- BYO users are unaffected: their one configured model is always used.
+
+**Future improvements.**
+- Record eval results per model (LLM-01) before switching defaults.
+- Expose model health on `/health/data` (DATA-02) and alert on it (OBS-04).
+
+## 2026-10-16 — Versioned prompt registry (LLM-07)
+**Problem.**
+- About 20 prompts lived as string constants across 9 modules. They changed without review or a version.
+- A bad answer could only be traced to an anonymous hash of its system prompt.
+
+**Alternatives considered.**
+- *A prompt-management SaaS* (LangSmith Hub, PromptLayer). Rejected: a network dependency on every turn, and prompts leave the repo's review flow.
+- *A typed Python registry module.* Workable, but editing long prose inside Python string literals makes review harder than Markdown files.
+
+**Final decision.**
+- One file per prompt version, under `prompts/`, loaded by `prompts.get()`.
+- The returned `Prompt` str subclass carries the `name@vN` id that LLMClient records on each turn.
+- Changes go through CODEOWNERS and the eval job.
+- Moved text is byte-identical, so the recorded eval fixtures stay valid.
+
+**Trade-offs.**
+- Prompt *builders* that interleave data and instructions (the synthesis prompt, the verification judge prompt, the strategy prompt) are still assembled in code from registry pieces and data.
+- Versions are bumped by hand.
+
+**Future improvements.**
+- A CI check that a changed `prompts/` file comes with a version bump and re-recorded fixtures.
+- Per-version eval history (LLM-01).
+
+## 2026-10-16 — Per-conversation state in a bounded cache, rebuilt from Postgres (REL-03, VAL-10)
+**Problem.**
+- One `GraphOrchestrator` was built per user who had ever chatted, each with its own compiled graph and LLM clients, and kept forever, so memory grew with total users.
+- It was keyed by user, so two tabs shared conversation memory and a pending confirmation: a "yes" typed in one tab resumed the other tab's plan.
+- A restart forgot every pending confirmation.
+
+**Alternatives considered.**
+- *Keep one orchestrator per user and lock it.* Rejected: two chats would still share memory.
+- *Store conversation memory only in Postgres and keep no cache.* That works, but every turn would re-read and re-summarise history, which is slower and costs LLM calls for summaries.
+- *Build a graph per conversation.* Rejected: it multiplies compile cost and memory by conversations, not by provider configurations.
+
+**Final decision.**
+- A bounded TTL cache of orchestrators keyed by `(user, chat session)`.
+- Each orchestrator rebuilds itself from the database on a miss: transcript from `chat_history`, pending thread from `chat_sessions.pending_thread_id`, and graph state from the Postgres checkpointer.
+- Compiled graphs are shared per provider-config fingerprint. Node LLM calls are stateless, and per-call usage is thread-local, to make that safe.
+
+**Trade-offs.**
+- History rebuilt after eviction starts as raw messages: an earlier rolling summary is not persisted.
+- A BYO-config graph stays in the LRU until evicted, holding the decrypted key in memory. The same was true before.
+- State is now stateless across replicas except the 30 s session cache (SEC-04).
+
+**Future improvements.**
+- Persist the rolling summary.
+- ARCH-04: in-memory checkpoints except for interrupted turns.
+
+## 2026-10-15 — Versioned consent with re-acceptance gate (COMP-02)
+**Problem.** Consent was a bare timestamp. After the terms changed, nobody could say who had agreed to which text, and "continued use = acceptance" is weak consent under DPDP.
+
+**Alternatives considered.**
+- *Hash LEGAL.md and treat any change as a new version.* Rejected: a typo fix would force every user to re-consent.
+- *Keep versions in config only.* Rejected: the history of what was published, and when, belongs in the database next to the acceptance records.
+
+**Final decision.**
+- LEGAL.md declares its version.
+- `terms_versions` records every published version with a material flag and an effective date.
+- Users store the version they accepted.
+- The session lookup computes whether the newest effective material version is accepted. If it isn't, the app (including the Gradio API) is blocked until the user re-accepts at `/terms/accept`.
+- Publishing new terms means editing LEGAL.md and adding a migration row. A test fails if the two disagree.
+
+**Trade-offs.**
+- Version ids are compared as strings, which works for the date format used.
+- A consent change on another replica takes effect within the session-cache window (30 s).
+
+**Future improvements.**
+- Show a diff of the material change.
+- Email users ahead of a material change's effective date.
+
+## 2026-10-15 — Brute-force and enumeration defences on auth (SEC-05)
+**Problem.**
+- The login limit was per email only, so credential stuffing across many emails from one IP was unlimited.
+- Signup told anyone which emails had accounts.
+- `auth_attempts` grew forever.
+
+**Alternatives considered.**
+- *Reverse-proxy rate limiting only (nginx or Cloudflare).* Useful, but there is no hosted proxy (OPS-03 is skipped), and it can't do per-account backoff.
+- *Lock out an account after N failures.* Rejected: an attacker could lock out any user at will. Exponential backoff slows guessing without a hard lock.
+- *An always-on CAPTCHA.* Rejected: it puts friction on every login. Here it appears only after repeated failures, and only when configured.
+
+**Final decision.**
+- Postgres-backed limits per email and per IP.
+- The IP comes from `X-Forwarded-For` only behind `TRUSTED_PROXIES`.
+- Exponential per-account backoff over 24 hours.
+- Signup always answers "check your email" and never logs in; an existing owner is emailed instead.
+- Constant-work login and signup paths.
+- Optional Turnstile CAPTCHA.
+- Hourly purge of old attempts.
+
+**Trade-offs.**
+- Signup now takes one more step (log in after signup) even in dev.
+- Users behind one carrier-grade NAT share the IP limit (20 per 5 minutes).
+- The CAPTCHA script is loaded from Cloudflare when enabled, and a strict CSP (SEC-15) must allow it.
+
+**Future improvements.**
+- Count only failures toward the IP limit.
+- Breached-password checks (SEC-07).
+- Device-level risk signals.
+
+## 2026-10-15 — Email verification, reset tokens and hard account deletion (SEC-06)
+**Problem.**
+- Anyone could sign up with someone else's email address.
+- A forgotten password meant a lost account.
+- Users could not delete their accounts, which India's DPDP Act requires.
+
+**Alternatives considered.**
+- *A transactional email API (Resend, Postmark).* Rejected for now: each needs a verified domain or a paid plan. The user chose the least-setup free option. SMTP works with a Gmail app password, and later with any provider.
+- *Magic links instead of passwords.* That would be a bigger change to the login model, and SEC-07 keeps passwords.
+- *Soft delete.* Rejected: DPDP erasure means the data is actually gone.
+
+**Final decision.**
+- Mail goes through `utils/mailer.py`: a console backend for dev/test, SMTP everywhere else (enforced at boot).
+- Tokens are single-use and hashed, in `auth_tokens`. Verification links last 24 h and reset links 30 min. A new token voids older unused ones.
+- Verification gates the app at the auth dependency.
+- Reset revokes all sessions.
+- Deletion is one transaction that relies on the `ON DELETE CASCADE` foreign keys from migration 0002. The audit trail (no FK) is kept.
+
+**Trade-offs.**
+- Gmail SMTP has sending limits (about 500 a day) and may land in spam. It is fine for a project and not for a launched product.
+- Kept after deletion: the user id in `audit_log` and the operator's backups (REL-08). The privacy notice must say so (COMP-03).
+
+**Future improvements.**
+- A domain-verified email provider.
+- An email change flow.
+- A deletion grace period with "undo" if counsel wants one.
+
+## 2026-10-15 — Append-only audit log enforced by the database (COMP-04)
+**Problem.** There was no tamper-evident record of who did what. That record is needed for security investigations, for disputes ("I never set that alert"), and for any regulated posture.
+
+**Alternatives considered.**
+- *Log lines only.* Rejected: logs rotate, have no query interface, and anyone with log access can edit them.
+- *An external audit service.* Rejected: we have no hosted environment (OPS-03 is skipped) and it adds a processor under DPDP.
+- *A separate audit database role.* That is the right production setup, but it needs the operator to create roles on Neon. The trigger enforces append-only regardless of role.
+
+**Final decision.**
+- An `audit_log` table, append-only by trigger and revoke.
+- One `audit()` helper with a fixed vocabulary of actions. It is called at each action's single choke point: auth routes, settings handlers, write tools, report/plan generation and the Telegram link handler.
+- Actor ids have no foreign key, so the trail outlives the account.
+
+**Trade-offs.**
+- `TRUNCATE` and the table owner dropping the trigger are not prevented. The table owner can still do anything.
+- Audit writes are best-effort. A failure is logged at ERROR, but the user's action still succeeds.
+- The trail keeps the user id after account deletion, which counsel should confirm under DPDP (COMP-03).
+
+**Future improvements.**
+- A dedicated low-privilege app role without TRUNCATE.
+- Periodic hash-chaining of rows for tamper evidence.
+- An admin view (OBS-05).
+- A retention job (COMP-06, 5 years by default).
+
+## 2026-10-15 — Liveness, readiness and draining shutdown (OPS-04)
+**Problem.** The platform couldn't tell a hung app from a healthy one, and a deploy cut off answers mid-stream.
+
+**Alternatives considered.**
+- *A single `/health`.* Rejected: liveness (restart me) and readiness (route to me) need different answers. A database outage should stop traffic, but it shouldn't restart every replica.
+- *Rely on uvicorn's graceful shutdown alone.* Rejected: it waits for connections, but it keeps accepting new chat turns on existing keep-alive connections, and readiness stays green.
+
+**Final decision.**
+- `/healthz` for liveness. `/readyz` checks the database, schema head, an LLM provider, and that the instance isn't draining.
+- A process-wide lifecycle with an in-flight turn counter.
+- SIGTERM sets draining first. New turns get a polite refusal. Shutdown waits up to 30 s for running turns before closing the pools.
+
+**Trade-offs.**
+- A turn longer than 30 s (a local-LLM report) can still be cut off at shutdown.
+- Both endpoints are unauthenticated. They return only a pass/fail per check.
+
+**Future improvements.**
+- Make the grace period track `TURN_DEADLINE_SECONDS`.
+- Expose `in_flight` as a metric (OBS-03).
+- Add a pre-stop hook on the host (OPS-03 is skipped).
+
+## 2026-10-15 — FastAPI wrapper with cookie sessions checked on every Gradio request (SEC-04)
+**Problem.** After login, the token was discarded and `gr.State` held the user id. A refresh logged the user out. There was no logout. Expiry was never checked after login. Tokens were stored in plaintext.
+
+**Alternatives considered.**
+- *Keep the Gradio auth gate and pass a one-time ticket to a cookie-setting route through a JS redirect.* It works, but it adds a second round trip and keeps the login form inside a framework that can't set cookies.
+- *Gradio's built-in `auth=`.* Rejected: it takes a username and password callback only. It has no signup, consent, verification or reset, and its cookie is non-HttpOnly.
+
+**Final decision.**
+- FastAPI wraps the Gradio UI (`server.py`).
+- Login, signup and terms are server-rendered pages with CSRF tokens. They set an HttpOnly, SameSite=Lax, Secure cookie.
+- Gradio is mounted with `auth_dependency`, so the session is validated on every Gradio request, not only at page load. The user id reaches handlers as `gr.Request.username`.
+- The DB stores only `sha256(token)`, with expiry, last use and client info.
+- Logout and "log out other devices" are available.
+
+**Trade-offs.**
+- A revoked session can keep working on *another* replica for up to `SESSION_CACHE_SECONDS` (30 s) because of the in-process cache.
+- The login page is now outside Gradio, so it has its own small template and CSS.
+- `HttpOnly` blocks reading the token from JS by design. Logout therefore goes through `POST /auth/logout`.
+
+**Future improvements.**
+- SEC-05 adds per-IP limits on these routes.
+- SEC-06 adds verification and reset pages beside them.
+- SEC-15 adds security headers via a middleware on the same FastAPI app.
+- A shared cache (Redis) would remove the 30 s revocation window.
+
+## 2026-10-15 — Typed user-safe errors at one boundary (SEC-08)
+**Problem.** Users could see raw exception text: SQL errors, provider responses, internal URLs, and file paths. It looked broken and helped an attacker map the system. One handler showed every `ValueError` as "API Key Required", with operator-only `.env` instructions.
+
+**Alternatives considered.**
+- *Sanitize exception strings with regexes.* Rejected: it is a blocklist, and it always misses something.
+- *Show a generic message for everything.* Rejected: users need actionable messages like "your saved key can't be read, enter it again in Settings".
+
+**Final decision.**
+- Typed errors whose user-facing text is written deliberately: `utils/errors.py`.
+- One rendering function, `render_error`.
+- One catch-all boundary in `respond` that logs the full exception against the error ID.
+- An AST test that keeps exception variables out of non-log strings.
+
+**Trade-offs.**
+- Library exceptions are not wrapped where they are raised; they surface as the generic message. That is safe but less specific until a call site adopts `DataUnavailableError` or `ProviderError` (REL-06 and UX-02 continue this).
+
+**Future improvements.** Map `DataUnavailableError` and `ProviderError` from the data and LLM layers to specific messages with fix-it links (UX-02).
+
+## 2026-10-15 — No pickle in the checkpointer (SEC-09)
+**Problem.** The checkpointer used `JsonPlusSerializer(pickle_fallback=True)`. Anyone who could write to the checkpoint tables could get code execution on the app server when a thread was resumed. That includes a leaked `DATABASE_URL`, an injection elsewhere, or a compromised replica.
+
+**Alternatives considered.**
+- *A custom serde that hand-reconstructs known types.* Rejected: LangGraph now ships a strict msgpack allowlist that already includes its internal `Send`, `Interrupt` and `Command` types, which were the original reason for the pickle fallback.
+- *An in-memory checkpointer for every non-HITL turn (ARCH-04).* Complementary, and planned for Phase 3. It shrinks how much is stored but does not make the stored data safe.
+
+**Final decision.**
+- Use `make_serializer()`: msgpack only, `SAFE_MSGPACK_TYPES` only, no pickle on read or write.
+- `GraphState` stays JSON-safe at its source.
+
+**Trade-offs.**
+- Checkpoints written with pickle by older code can't be resumed. Only HITL turns pending at deploy time are affected.
+- Any future state type outside the safe list must be added to the allowlist explicitly. That is the intended friction.
+
+**Future improvements.**
+- ARCH-04: in-memory checkpoints by default, with Postgres only for interrupted turns.
+- Encrypt or MAC checkpoint blobs, so tampering is detected even for allowed types.
+
+## 2026-10-15 — One Postgres driver, waiting pool, statement timeouts (REL-04)
+**Problem.**
+- The app ran two Postgres client libraries with two pools: psycopg2 for `utils/db.py`, psycopg 3 for the LangGraph checkpointer. Connection use against Neon's limits doubled.
+- psycopg2's pool raised `PoolError` immediately when exhausted. REL-01 papered over that with a semaphore.
+- No statement had a timeout.
+
+**Alternatives considered.**
+- *Keep psycopg2 and add a statement timeout.* That still leaves two drivers, and psycopg2 is in maintenance mode.
+- *SQLAlchemy Core with its pool.* Rejected: a third abstraction over the same SQL, for no gain.
+- *A single pool shared with the checkpointer.* PostgresSaver needs autocommit connections, while the app relies on explicit transactions (e.g. alert caps in one statement, multi-statement deletes). Mixing the two modes per checkout is error-prone.
+
+**Final decision.**
+- psycopg 3 everywhere: app, checkpointer, Alembic and scripts.
+- The app pool waits for a connection and checks it on checkout.
+- Connection settings shared by both pools: statement timeout, prepared statements off (for transaction-mode PgBouncer), dict rows, application name.
+- The checkpointer has a small separate autocommit pool. The process budget is `DB_POOL_MAX + 5`.
+
+**Trade-offs.**
+- Two pools still exist, but they share one driver and one configuration.
+- `statement_timeout` is sent as a startup option, which some poolers reject. The documented fallback is a role-level setting.
+- Long-running maintenance jobs open their own connections and are not subject to the 5 s cap.
+
+**Future improvements.**
+- Size the pool from measured concurrency (OBS-03 `pool_stats`).
+- Postgres row-level security with `SET app.user_id` per checkout (SEC-13 follow-up).
+
+## 2026-10-15 — Locked, scanned, non-root builds (SEC-14)
+**Problem.**
+- Every dependency was `>=`, so a build was whatever PyPI served that day. CI already ran WeasyPrint 70 while developers ran 68, and resolving fresh would silently move openai to v3.
+- The image ran as root on a mutable base tag, with a compiler in it.
+- Nothing scanned the image.
+
+**Alternatives considered.**
+- *pip-tools.* It works, but `uv pip compile` is about 10× faster and can resolve for Linux from a Windows dev machine (`--python-platform`).
+- *Poetry or PDM lock files.* Rejected: they would change how every contributor installs.
+- *Distroless runtime.* Rejected: WeasyPrint needs the Pango/Cairo system libraries from Debian.
+
+**Final decision.**
+- Hand-edited ranges stay in `requirements*.txt`. Generated hashed locks live in `requirements*.lock`.
+- Each lock is its own constraint file, so regeneration is stable. Upgrades are explicit (`--upgrade pkg`).
+- CI and the image install only from the locks.
+- The image is multi-stage, pinned by digest, non-root, and has a healthcheck.
+- Trivy, pip-audit and Dependabot run in CI.
+
+**Trade-offs.**
+- Developers on Windows still install from the ranges (a Linux lock can't be installed on Windows with hashes), so local versions can drift from the lock. `pip install -r requirements-dev.txt -c requirements-dev.lock` keeps them aligned.
+- Dependabot edits `requirements.txt`, and the lock must be regenerated on that PR.
+
+**Future improvements.**
+- A read-only root filesystem in the compose and host configs (only `data/` and `/tmp` need writes).
+- SBOM and provenance attestations at release time (TEST-07).
+
+## 2026-10-15 — Secret validation, rotation window and log redaction filter (SEC-11)
+**Problem.**
+- The app ran with the `.env.example` `SECRET_KEY`.
+- The key could not be rotated without losing every stored BYO key.
+- Telegram request URLs, which contain the bot token, could reach the logs through `requests` exception text. Only our JSON formatter redacted, and its token regex missed tokens inside URLs.
+
+**Alternatives considered.**
+- *A KMS / secret manager with envelope encryption.* This is the right long-term answer, but there is no hosted environment to attach it to (OPS-03 is skipped).
+- *Re-encrypting at boot.* Rejected: every replica would race to write the same rows.
+
+**Final decision.**
+- **Boot validation.** The boot check rejects a weak `SECRET_KEY`.
+- **Rotation window.** A `MultiFernet` rotation window driven by `SECRET_KEY_PREVIOUS`. The one-off `scripts/rotate_secret_key.py` re-encrypts rows with compare-and-set.
+- **Log redaction.** Redaction is a `logging.Filter` on every handler, so it covers any formatter.
+
+**Trade-offs.**
+- The key derivation is still SHA-256 of the secret, with no KDF salt. That is fine for a high-entropy key, and the boot check now enforces the length.
+- Rotation is operator-driven, not scheduled.
+
+**Future improvements.** Move `SECRET_KEY` into a managed secret store with two named holders (REL-08 escrow), and alert if `SECRET_KEY_PREVIOUS` is still set N days after a rotation.
+
+## 2026-10-15 — Typed, validated configuration (ARCH-03)
+**Problem.** Configuration was ~25 `os.getenv` calls with ad-hoc `int()`/`float()` casts spread over five modules. A typo'd value crashed on first use (or silently fell back), and shared constants had been copy-pasted and drifted: the trial limit lived in two places, and the user-facing message hard-coded "5".
+
+**Alternatives considered.**
+- *Keep `os.getenv` and add asserts.* No single place lists the settings, and errors still surface one at a time.
+- *dynaconf / hydra.* Heavier, and it adds its own file formats. We already depend on pydantic.
+
+**Final decision.**
+- `config.Settings` (pydantic-settings) is the one typed source of truth, loaded once by `get_settings()`.
+- Type and range errors exit at import with a readable list.
+- Deployment checks (`boot_problems`/`check_boot`) run at process start, not at import, so tests and scripts can import modules freely.
+- Module-level names remain as re-exports for compatibility.
+- `APP_ENV` (dev|test|staging|prod) is introduced here; OPS-01 builds on it.
+
+**Trade-offs.**
+- The re-exports are snapshots taken at import time. Tests that need a different value still monkeypatch the consuming module.
+- A few runtime-toggled values (`BYO_ALLOW_PRIVATE_HOSTS`, `ARIA_TRACING`, `RUN_MIGRATIONS_ON_START`) are still read dynamically. They are declared in `Settings` for documentation and validation.
+
+**Future improvements.** Inject `Settings` into the services layer once ARCH-02 splits `app.py`, and drop the re-exports.
+
 ## 2026-10-14 — Golden-set evaluation with record/replay LLM fixtures (LLM-01)
 
 **Problem.** Prompt, model and graph changes shipped with no measurement of

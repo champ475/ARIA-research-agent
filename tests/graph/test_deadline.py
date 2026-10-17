@@ -111,5 +111,46 @@ def test_cutoff_and_note_helpers():
             {"tool": "fetch_top_movers", "entity": "market", "status": "skipped"},
         ]
     )
-    assert "quarterly results for TCS (source temporarily unavailable)" in note
-    assert "top movers (skipped to answer in time)" in note
+    assert "quarterly results filing for TCS (source temporarily unavailable)" in note
+    assert "top movers (NSE) (skipped to answer in time)" in note
+
+
+# ── REL-06: one line naming what's missing, never exception text ──────────────
+
+
+def _task(tool, entity, status="failed", error=None):
+    t = {"tool": tool, "entity": entity, "status": status}
+    if error:
+        t["error"] = error
+    return t
+
+
+def test_one_failed_tool():
+    note = data_gaps_note([_task("fetch_info", "TCS", "done"), _task("fetch_news", "TCS", error="timeout")])
+    assert note == "\n\n⚠️ *Data not available this time:* news for TCS (timed out)."
+
+
+def test_two_failures_grouped_by_tool_and_reason():
+    note = data_gaps_note(
+        [
+            _task("fetch_news", "TCS", error="timeout"),
+            _task("fetch_news", "INFY", error="timeout"),
+            _task("fetch_quarterly_results", "TCS", error="circuit_open"),
+        ]
+    )
+    assert "news for TCS, INFY (timed out)" in note
+    assert "quarterly results filing for TCS (source temporarily unavailable)" in note
+    assert note.count(";") == 1
+
+
+def test_all_tools_failing_still_reads_cleanly():
+    tasks = [
+        _task("fetch_info", "TCS", error="error"),
+        _task("fetch_financials", "TCS", error="error"),
+        _task("compute_fundamentals", "TCS", "skipped"),
+    ]
+    note = data_gaps_note(tasks)
+    assert note.startswith("\n\n⚠️ *Data not available this time:*")
+    for label in ("price and quote", "financial statements", "fundamental ratios"):
+        assert label in note
+    assert "Traceback" not in note and "Error" not in note

@@ -85,6 +85,12 @@ class RecordReplayClient:
         if key in self.store.data:
             return self.store.data[key]
         if self.mode != "record":
+            from utils.llm_json import REPAIR_MARKER
+
+            if REPAIR_MARKER in prompt:
+                # LLM-05's one repair retry after an unusable recorded reply:
+                # replay it as another unusable reply, i.e. the node's fallback.
+                return ""
             raise MissingFixture(key)
         if self._live is None:
             from agents.llm_client import LLMClient

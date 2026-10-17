@@ -1,5 +1,5 @@
 # Developer shortcuts. Windows users without make: run the commands directly.
-.PHONY: eval eval-record eval-baseline test lint
+.PHONY: eval eval-record eval-baseline test lint lock lock-check
 
 eval:  ## golden-set eval against the baseline (replay; no network) — PRD LLM-01
 	python evals/runner.py --replay --compare evals/baseline.json
@@ -15,3 +15,9 @@ test:
 
 lint:
 	ruff check . && ruff format --check . && mypy
+
+lock:  ## regenerate the hashed lock files after editing requirements*.txt — PRD SEC-14
+	python scripts/lock.py
+
+lock-check:
+	python scripts/lock.py --check

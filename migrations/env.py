@@ -1,7 +1,7 @@
 """Alembic environment (ARCH-01).
 
 Migrations are plain SQL (op.execute) — there are no SQLAlchemy models; the
-app talks to Postgres through psycopg2 (utils/db.py). SQLAlchemy is only
+app talks to Postgres through psycopg 3 (utils/db.py). SQLAlchemy is only
 Alembic's connection layer here.
 
 Database URL, first match wins:
@@ -35,11 +35,11 @@ def _url() -> str:
         url = DATABASE_URL
     if not url:
         raise RuntimeError("No database URL: set DATABASE_URL or pass -x url=...")
-    # psycopg2 is the driver the app already ships with.
+    # psycopg (v3) is the app's one Postgres driver (REL-04).
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://") :]
     if url.startswith("postgresql://"):
-        url = "postgresql+psycopg2://" + url[len("postgresql://") :]
+        url = "postgresql+psycopg://" + url[len("postgresql://") :]
     return url
 
 

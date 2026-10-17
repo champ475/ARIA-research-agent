@@ -28,13 +28,16 @@ import json
 import logging
 from collections.abc import Callable
 
+import prompts
 from agents.llm_client import LLMClient, LLMProvidersExhausted
-from config import EVIDENCE_PROMPT_CHAR_BUDGET, GROQ_MODEL_FAST, TOKENS_AGENT
+from config import EVIDENCE_PROMPT_CHAR_BUDGET, TOKENS_AGENT
 from graph.deadline import past_research_cutoff
 from graph.journal import log_decision
 from graph.nodes.evidence_summarizer import cap_evidence_for_prompt
-from graph.prompt_safety import UNTRUSTED_NOTICE, wrap_untrusted
+from graph.prompt_safety import wrap_untrusted
+from graph.schemas import VerificationResult
 from graph.state import Evidence, GraphState, VerificationIssue
+from utils.llm_json import ParseFailure, extract_json, json_reply
 
 log = logging.getLogger(__name__)
 
@@ -53,15 +56,7 @@ _CONFIDENCE_FLOOR = 0.5
 _CONTRADICTION_TOLERANCE = 0.05  # 5% relative difference
 _VALID_ISSUE_TYPES = {"unsupported", "contradiction", "low_confidence", "missing_citation"}
 
-_SYSTEM = (
-    "You judge whether collected evidence actually supports answering a "
-    "financial-research objective for ARIA. Respond with ONLY a JSON object, "
-    'no prose, no markdown fences: {"issues": [{"claim": "...", '
-    '"issue_type": "unsupported|contradiction|low_confidence|missing_citation", '
-    '"evidence_ids": ["..."]}]}. An empty issues list means the evidence is '
-    "sufficient and consistent. Be conservative — only flag a genuine "
-    "problem, not a stylistic preference." + UNTRUSTED_NOTICE
-)
+_SYSTEM = prompts.get("verification.system") + prompts.get("safety.untrusted_notice")
 
 
 def _numeric_fields(payload) -> dict[str, float]:
@@ -82,6 +77,19 @@ def _is_missing(value) -> bool:
     if value is None:
         return True
     return isinstance(value, str) and value == ""
+
+
+# The ratios a sane-range check applies to. The same payload also carries
+# absolute amounts in rupees (revenue, market cap, assets), which are always
+# far above any ratio bound — flagging those gated every real equity turn
+# behind a "could not be verified" confirmation (found by TEST-04).
+_RATIO_FIELDS = frozenset(
+    {
+        "pe", "pb", "ps", "peg", "ev_ebitda", "roe", "roa", "roce", "de", "current_ratio", "quick_ratio",
+        "net_margin", "op_margin", "ebitda_margin", "gross_margin", "div_yield", "payout", "beta",
+        "rev_growth", "earn_growth", "analyst_upside", "nim_proxy",
+    }
+)  # fmt: skip
 
 
 def _stage1_deterministic(evidence: list[Evidence], tasks: list[dict]) -> list[VerificationIssue]:
@@ -127,7 +135,7 @@ def _stage1_deterministic(evidence: list[Evidence], tasks: list[dict]) -> list[V
                         "evidence_ids": [ev["id"]],
                     }
                 )
-            elif abs(value) > 1e6:
+            elif field in _RATIO_FIELDS and abs(value) > 1e6:
                 issues.append(
                     {
                         "claim": f"{ev['entity']} {field}={value} is out of a sane range",
@@ -178,21 +186,11 @@ def _stage2_semantic(evidence: list[Evidence]) -> list[VerificationIssue]:
     return issues
 
 
-def _strip_code_fence(raw: str) -> str:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text[3:]
-        if text.lower().startswith("json"):
-            text = text[4:]
-        text = text.rsplit("```", 1)[0]
-    return text.strip()
-
-
 def _parse_llm_issues(raw: str) -> list[VerificationIssue]:
     try:
-        parsed = json.loads(_strip_code_fence(raw))
+        parsed = extract_json(raw)
         raw_issues = parsed.get("issues", [])
-    except (json.JSONDecodeError, AttributeError, TypeError):
+    except (ParseFailure, AttributeError, TypeError):
         log.warning("Verification: failed to parse LLM judge output: %r", raw)
         return []
 
@@ -224,7 +222,7 @@ def build_verification_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
-    client = client or LLMClient(_SYSTEM, provider_config)
+    client = client or LLMClient(_SYSTEM, provider_config, node="verification")
 
     def verification(state: GraphState) -> dict:
         evidence = state.get("evidence", [])
@@ -262,9 +260,11 @@ def build_verification_node(
 
         max_loops = state.get("max_loops", 2)
         try:
-            raw = client.ask(
+            raw = json_reply(
+                client,
+                VerificationResult,
+                "verification",
                 _build_judge_prompt(state.get("objective", ""), state.get("evidence_summary", {})),
-                model=GROQ_MODEL_FAST,
                 max_tokens=TOKENS_AGENT,
                 temperature=0.0,
             )
@@ -285,7 +285,9 @@ def build_verification_node(
                     }
                 ],
                 "loop_count": max_loops,
-                **log_decision("Verification", "llm_judge skipped — all providers exhausted", str(e)),
+                **log_decision(
+                    "Verification", "llm_judge skipped — all providers exhausted", type(e).__name__
+                ),
             }
         stage3_issues = _parse_llm_issues(raw)
         # loop_count is a shared budget incremented by whichever side (Reflection

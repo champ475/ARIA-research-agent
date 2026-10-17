@@ -12,7 +12,9 @@ pipeline the rest of the graph uses.
 from __future__ import annotations
 
 import json
+import logging
 
+import prompts
 from config import TOKENS_COMPLEX, TOKENS_FAST
 from tools.data.amfi import format_fund_search_results, get_category_funds
 from tools.data.fetcher import get_macro
@@ -21,52 +23,17 @@ from utils.financial_profile import REQUIRED_FIELDS as _PROFILE_REQUIRED
 from utils.financial_profile import is_complete, rejected_note, validate_updates
 from utils.helpers import now_ist
 
+log = logging.getLogger(__name__)
+
 # Minimum fields needed before a first strategy can be generated at all
 # (VAL-05: the schema and the build trigger live in utils/financial_profile.py).
 REQUIRED_FIELDS = list(_PROFILE_REQUIRED)
 
 # Full field vocabulary shown to the intake LLM so it knows what's worth
 # asking about — not a rigid checklist, it decides pacing/phrasing itself.
-FIELD_GUIDE = """
-MINIMUM (must have before any plan can be built):
-- age (years)
-- capital (lump sum available now, in INR)
-- horizon_years (investment horizon in years — convert "long term"/"30 years" etc to a number)
-- goal (retirement, house, child's education, wealth-building, no fixed goal, ...)
-- risk_tolerance (self-rated: conservative/moderate/aggressive — flag if it seems mismatched with age/horizon)
+FIELD_GUIDE = prompts.get("planning.field_guide")
 
-NICE-TO-HAVE (refine the plan, ask opportunistically, don't block on these):
-- monthly_sip (ongoing monthly investment capacity, if any)
-- dependents (spouse, kids, aging parents — affects emergency fund & insurance sizing)
-- income_stability (salaried / business / freelance)
-- existing_investments (what they already hold, to avoid duplicate exposure)
-- existing_debts (loans/EMIs — affects how much should go to debt paydown vs investing)
-- tax_regime (old/new — affects ELSS/80C relevance)
-- insurance_cover (term life + health — flag if missing, this matters before equity investing)
-- emergency_fund (do they have 6+ months expenses set aside already)
-- liquidity_needs (any known withdrawal needed before the horizon ends)
-- behavioral_notes (e.g. panic-sold in a past crash — affects how aggressive to actually recommend)
-"""
-
-_INTAKE_PROMPT = """{field_guide}
-
-CURRENT KNOWN PROFILE (JSON, may be empty):
-{profile_json}
-
-USER'S LATEST MESSAGE: "{message}"
-
-Task: (1) extract any fields above you can confidently fill in from this
-message, (2) decide if the MINIMUM fields are now all known, (3) write a
-natural, conversational reply — NOT a robotic numbered form. If minimum
-fields are missing, ask for 1-3 of the missing ones that flow naturally from
-what the user just said (prioritize MINIMUM over nice-to-have, don't ask for
-fields already known). If minimum fields are now complete, say so and offer
-to build the plan now while inviting any nice-to-have detail they want to add
-first.
-
-Return ONLY valid JSON, no markdown fences:
-{{"updates": {{...fields extracted this turn...}}, "minimum_complete": true or false, "reply": "..."}}
-"""
+_INTAKE_PROMPT = prompts.get("planning.intake")
 
 # Standard fund categories to ground the strategy in real AMFI data —
 # refined slightly by risk tolerance/horizon inside fetch_fund_data().
@@ -105,11 +72,14 @@ def intake_turn(client, msg: str, profile: dict) -> tuple[dict, bool, str]:
         message=msg,
     )
     try:
-        raw = client.ask(prompt, temperature=0.4, max_tokens=TOKENS_FAST)
-        from utils.helpers import strip_code_fence
+        from utils.llm_json import IntakeReply, ask_json
 
-        raw = strip_code_fence(raw)
-        data = json.loads(raw)
+        reply_obj = ask_json(
+            client, prompt, IntakeReply, node="planning_intake", temperature=0.4, max_tokens=TOKENS_FAST
+        )
+        if reply_obj is None:
+            return {}, is_complete(profile), fallback_question(profile)
+        data = reply_obj.model_dump()
         proposed = data.get("updates") or {}
         if not isinstance(proposed, dict):
             proposed = {}
@@ -142,7 +112,8 @@ def fetch_fund_data(profile: dict) -> str:
             funds = get_category_funds(cat, top_n=5, horizon_years=_horizon(profile))
             blocks.append(f"--- {cat.title()} (AMFI NAV data) ---\n{format_fund_search_results(funds)}")
         except Exception as e:
-            blocks.append(f"--- {cat.title()} ---\nUnavailable: {e}")
+            log.warning("[planning] fund data for %s unavailable: %s", cat, e)
+            blocks.append(f"--- {cat.title()} ---\nUnavailable (data source error).")
     return "\n\n".join(blocks)
 
 
@@ -154,12 +125,14 @@ def fetch_macro_news() -> str:
             for k, v in macro.items()
         )
     except Exception as e:
-        macro_txt = f"Unavailable: {e}"
+        log.warning("[planning] macro data unavailable: %s", e)
+        macro_txt = "Unavailable (data source error)."
     try:
         news = market_news()
         news_txt = "\n".join(f"- {n['title']}" for n in news[:6])
     except Exception as e:
-        news_txt = f"Unavailable: {e}"
+        log.warning("[planning] market news unavailable: %s", e)
+        news_txt = "Unavailable (data source error)."
     return f"MACRO:\n{macro_txt}\n\nHEADLINES:\n{news_txt}"
 
 
@@ -256,7 +229,8 @@ def build_strategy(client, profile: dict) -> str:
     from graph.grounding import REGENERATE_INSTRUCTION, check, record, unverified_note
 
     prompt = build_strategy_prompt(profile)
-    out = client.chat(prompt, temperature=0.4, max_tokens=TOKENS_COMPLEX)
+    # Stateless call: node clients are shared across conversations (REL-03).
+    out = client.ask(prompt, temperature=0.4, max_tokens=TOKENS_COMPLEX)
     result = check(out, prompt, mode="planning")
     if not result.ok:
         out = client.ask(

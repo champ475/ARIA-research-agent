@@ -191,29 +191,6 @@ def get_macro() -> dict:
     return out
 
 
-def get_sector_peers(symbol: str, info: dict) -> list[dict]:
-    from config import SECTOR_UNIVERSE
-    sector = info.get("sector", "")
-    peers  = []
-    for sec, syms in SECTOR_UNIVERSE.items():
-        if sec.lower() in sector.lower() or sector.lower() in sec.lower():
-            peers = [s for s in syms if s != symbol][:8]
-            break
-    if not peers:
-        peers = SECTOR_UNIVERSE.get("Technology", [])[:6]
-
-    result = []
-    for p in peers:
-        try:
-            hist = _yf(yf.Ticker(f"{p}.NS").history, period="5d", interval="1d")
-            if len(hist) >= 2:
-                chg = ((hist["Close"].iloc[-1] - hist["Close"].iloc[-2]) / hist["Close"].iloc[-2]) * 100
-                result.append({"symbol": p, "change": round(float(chg), 2), "price": round(float(hist["Close"].iloc[-1]), 2)})
-        except Exception:
-            continue
-    return result
-
-
 def get_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     cached = cache_read(symbol, period, interval)
     if cached is not None:

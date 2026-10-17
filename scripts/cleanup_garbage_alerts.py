@@ -25,8 +25,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 
 from config import DATABASE_URL, STOCK_UNIVERSE
 from utils.helpers import TICKER_ALIASES
@@ -35,7 +35,7 @@ _KNOWN_SYMBOLS = set(STOCK_UNIVERSE) | set(TICKER_ALIASES.values())
 
 
 def _fetch_all_alerts(conn) -> list[dict]:
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor(row_factory=dict_row)
     cur.execute(
         "SELECT id, user_id, symbol, alert_type, condition, threshold, active, created_at "
         "FROM alerts ORDER BY created_at"
@@ -62,7 +62,7 @@ def main():
     )
     args = parser.parse_args()
 
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = psycopg.connect(DATABASE_URL)
     try:
         rows = _fetch_all_alerts(conn)
         suspect = [r for r in rows if r["symbol"] not in _KNOWN_SYMBOLS]
