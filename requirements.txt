@@ -58,4 +58,4 @@ urllib3>=2.0.0                   # utils/http.py retry policy
 langsmith>=0.1.0                 # utils/tracing.py (only touched when tracing is on)
 cachetools>=5.5.0                # bounded TTL caches: sessions (SEC-04), orchestrators (REL-03)
 prometheus-client>=0.26.0        # /metrics for dashboards and alerts (OBS-03)
-pytz>=2024.1
+pytz>=2026.5
