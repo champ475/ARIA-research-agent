@@ -252,6 +252,10 @@ def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
         log.info("[respond] rejected: server draining for shutdown")
         yield busy_outputs(message, history, suggestions, text=_DRAINING_TEXT)
         return
+    if not chat_svc.chat_enabled():
+        log.info("[respond] rejected: chat switched off by the operator")
+        yield busy_outputs(message, history, suggestions, text=_PAUSED_TEXT)
+        return
     if not chat_svc.turn_allowed(user_id):
         log.info("[respond] rejected: per-user turn rate limit")
         yield busy_outputs(message, history, suggestions, text=_RATE_LIMITED_TEXT)
@@ -274,6 +278,7 @@ def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
 
 _BUSY_TEXT = "⏳ Still working on your previous question — send this again once that answer arrives."
 _DRAINING_TEXT = "🔄 ARIA is restarting for an update. Please send this again in a minute."
+_PAUSED_TEXT = "🛠 ARIA is paused for maintenance. Please try again shortly."
 _RATE_LIMITED_TEXT = (
     f"🐢 You're sending messages faster than ARIA can answer them (limit: {TURNS_PER_MINUTE} a minute). "
     "Please wait a moment and send this again."

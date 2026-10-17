@@ -18,6 +18,7 @@ from utils.logging_setup import configure_logging
 configure_logging()
 
 from config import check_boot  # noqa: E402
+from ui.admin import build_admin_tab  # noqa: E402
 from ui.alerts import build_alerts_tab  # noqa: E402
 from ui.auth import identify_user  # noqa: E402
 from ui.chat import CHAT_DEFAULTS, build_chat_tab, queue_kwargs  # noqa: E402
@@ -86,6 +87,9 @@ def build_ui() -> gr.Blocks:
                     build_alerts_tab(user_state, alerts_tab)
                 with gr.Tab("⚙️ Settings"):
                     build_settings_tab(user_state)
+                # OBS-05: shown to admins only; each handler checks on the server too
+                with gr.Tab("🛠 Admin", visible=False) as admin_tab:
+                    build_admin_tab(user_state, admin_tab)
 
             gr.HTML(FOOTER_HTML)
 

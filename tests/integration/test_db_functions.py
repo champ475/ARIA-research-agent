@@ -14,6 +14,7 @@ import pytest
 
 from tests.integration import (
     test_account_lifecycle,
+    test_admin_console,
     test_audit,
     test_brute_force,
     test_consent,
@@ -341,6 +342,9 @@ COVERED = {
     "ops_alert_fire": test_watchdog.test_error_rate_pages_once_reminds_and_resolves,
     "ops_alert_resolve": test_watchdog.test_error_rate_pages_once_reminds_and_resolves,
     "ops_alerts_open": test_watchdog.test_a_check_that_cannot_run_resolves_nothing,
+    "user_admin_view": test_admin_console.test_lookup_shows_support_facts_and_no_secrets,
+    "flags_all": test_admin_console.test_flags_default_on_change_and_are_audited,
+    "flag_upsert": test_admin_console.test_flags_default_on_change_and_are_audited,
     "ohlcv_cache_get": test_shared_caches.test_ohlcv_cache_round_trips_through_postgres_without_disk,
     "ohlcv_cache_put": test_shared_caches.test_ohlcv_cache_round_trips_through_postgres_without_disk,
     "ohlcv_cache_clear": test_shared_caches.test_ohlcv_cache_round_trips_through_postgres_without_disk,

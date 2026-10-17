@@ -124,6 +124,20 @@ def test_alerts(db, two_users):
     assert db.alert_get(a, aid)["threshold"] == 4000
 
 
+def test_admin_console_scope(db, two_users):
+    """OBS-05: these functions cross tenants on purpose; services/admin.py only calls them
+    for an admin (tests/integration/test_admin_console.py proves a non-admin is refused)."""
+    a, b = two_users
+    assert db.user_is_admin(a) is False
+    db.user_set_admin(a, True)
+    assert db.user_is_admin(a) is True and db.user_is_admin(b) is False
+    assert (
+        db.turns_recent(a) == []
+        and db.user_set_disabled(b, True) is True
+        and db.user_set_disabled(b, False) is True
+    )
+
+
 def test_notifications(db, two_users):
     a, b = two_users
     nid = db.notification_add(a, "TCS above 4000")
@@ -311,6 +325,10 @@ COVERED = {
     "alert_list": test_alerts,
     "alert_remove": test_alerts,
     "alert_pause": test_alerts,
+    "user_is_admin": test_admin_console_scope,
+    "user_set_disabled": test_admin_console_scope,
+    "user_set_admin": test_admin_console_scope,
+    "turns_recent": test_admin_console_scope,
     "session_rename": test_sessions_and_chat_history,
     "session_get_title": test_sessions_and_chat_history,
     "session_search": test_sessions_and_chat_history,

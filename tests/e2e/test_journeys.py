@@ -208,6 +208,28 @@ def test_chat_history_rename_search_and_export(page: Page, base_url, email):
     assert body.startswith("# TCS deep dive") and "**You**" in body and "Analyse TCS" in body
 
 
+# 9d ────────────────────────────────────────────────────────────────────────────
+def test_admin_tab_is_for_admins_only(page: Page, base_url, email, db):
+    """OBS-05: a normal user has no Admin tab; an admin finds a user and sees the facts."""
+    new_user(page, base_url, email)
+    expect(page.get_by_role("tab", name="💬 Chat")).to_be_visible()
+    assert page.get_by_role("tab", name="🛠 Admin").count() == 0
+
+    db.execute("UPDATE users SET is_admin=TRUE WHERE email=%s", (email,))
+    page.reload()
+    expect(page.get_by_role("tab", name="🛠 Admin")).to_be_visible(timeout=15_000)
+    open_tab(page, "🛠 Admin")
+    page.locator("#admin-email input, #admin-email textarea").first.fill(email)
+    page.locator("#admin-find").click()
+    expect(page.locator("#admin-card")).to_contain_text(email, timeout=10_000)
+    expect(page.locator("#admin-card")).to_contain_text("free messages today")
+    page.locator("#admin-turns").click()
+    expect(page.locator("#admin-detail")).to_be_visible()
+    expect(page.locator("#admin-flags")).to_contain_text("signups_open", timeout=10_000)
+    page.locator("#admin-disable").click()
+    expect(page.locator("#admin-detail")).to_contain_text("can't disable your own account", timeout=10_000)
+
+
 # 10 ────────────────────────────────────────────────────────────────────────────
 def test_planning_intake_to_strategy(page: Page, base_url, email, db):
     new_user(page, base_url, email)

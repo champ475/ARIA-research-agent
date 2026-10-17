@@ -221,7 +221,7 @@ def authenticate(email: str, password: str, ip: str | None = None) -> int:
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, password_hash FROM users WHERE email=%s", (email,))
+        cur.execute("SELECT id, password_hash, disabled_at FROM users WHERE email=%s", (email,))
         row = cur.fetchone()
     finally:
         release_conn(conn)
@@ -230,6 +230,10 @@ def authenticate(email: str, password: str, ip: str | None = None) -> int:
         if ip:
             auth_attempt_record(f"ipfail:{ip}")
         raise AuthError("Invalid email or password.")
+    if row["disabled_at"] is not None:
+        raise AuthError(
+            "This account has been disabled. Contact the operator if you think that is a mistake."
+        )
     _clear_rate_limit(key)
     if _needs_rehash(row["password_hash"]):
         try:

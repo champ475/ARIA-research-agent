@@ -93,6 +93,13 @@ def user_turn_lock(user_id: int | None, session_id: int | None = None) -> thread
         return lock
 
 
+def chat_enabled() -> bool:
+    """The operator's `chat_enabled` switch (OBS-05): off during maintenance."""
+    from utils import flags
+
+    return flags.enabled("chat_enabled")
+
+
 def turn_allowed(user_id: int | None) -> bool:
     """SEC-12: at most TURNS_PER_MINUTE turns per user per minute, counted in
     Postgres so every replica shares the budget. Fails open if the database

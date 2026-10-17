@@ -151,6 +151,22 @@ Useful everywhere:
 
 ---
 
+## Support: the Admin tab
+
+Give an operator access with `python scripts/make_admin.py you@example.com` (add `--revoke` to take it back). They then see a **🛠 Admin** tab. Every handler checks `users.is_admin` on the server, so a non-admin who calls one gets "403"; everything an admin looks up or changes is in `audit_log` (`admin.*` actions) with their id.
+
+The three questions support gets most, each answered in a minute or two:
+
+| Question | Do this |
+|---|---|
+| "My alert didn't fire." | Find the user, **Their alerts**. Read *Status* (paused?), *Last checked* (blank means the checker never evaluated it; stale means the `alert_check` job is down: see `heartbeat-stale`), *Last fired* and *Delivery* (a "Waiting in your inbox" alert fired but Telegram failed; *Last error* says why). |
+| "Why did my quota run out?" | Find the user: *Quota* shows messages used today, or "own key". **Recent turns** lists each turn's LLM calls, tokens and ₹ cost; a few expensive report turns or a retry loop explains it. |
+| "I can't log in." | Find the user: *verified* (no: they never confirmed the email), **DISABLED** (an operator locked it; **Enable account** undoes it), *Live sessions*. A turn's *Error ID* goes to `python scripts/find_turn.py <id>` for the trace. |
+
+Other controls: **Disable account** locks a user out and ends their sessions (you can't disable yourself). **Feature flags**: `signups_open` and `chat_enabled` (turn it off for maintenance: chat answers "paused for maintenance"); a change reaches every replica within 15 seconds.
+
+---
+
 ## Backups
 
 **Targets:** RPO ≤ 24 h (at most a day of data lost), RTO ≤ 4 h (back serving within four hours). Test them every quarter, and after any schema or backup change, with `scripts/restore_drill.py`. Each drill leaves a dated record in `docs/drills/`.

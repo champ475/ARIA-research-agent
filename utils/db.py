@@ -1423,7 +1423,8 @@ def auth_session_lookup(token_hash: str) -> dict | None:
         "  COALESCE(u.accepted_terms_version >= ("
         "    SELECT max(version) FROM terms_versions WHERE material AND effective_at <= now()"
         "  ), TRUE) AND u.accepted_terms_version IS NOT NULL AS consent_ok "
-        "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash=%s AND s.expires_at > now()",
+        "FROM sessions s JOIN users u ON u.id = s.user_id "
+        "WHERE s.token_hash=%s AND s.expires_at > now() AND u.disabled_at IS NULL",
         (token_hash,),
         fetch="one",
     )
@@ -1982,6 +1983,79 @@ def ops_alerts_open() -> list[dict]:
 
 
 # ── Onboarding (UX-01) ───────────────────────────────────────────────────────
+
+
+# ── Admin console (OBS-05; services/admin.py checks the actor first) ──────────
+
+
+def user_is_admin(user_id: int) -> bool:
+    row = _query(
+        "SELECT is_admin AND disabled_at IS NULL AS ok FROM users WHERE id=%s", (user_id,), fetch="one"
+    )
+    return bool(row and row["ok"])
+
+
+def user_admin_view(email: str) -> dict | None:
+    """What support needs to see about one account, found by email. Never a
+    password hash, key or token."""
+    return _query(
+        "SELECT u.id, u.email, u.created_at, u.email_verified_at, u.disabled_at, u.is_admin, "
+        "  u.free_msgs_used_today, u.free_msgs_reset_at, u.onboarded_at, "
+        "  (u.telegram_chat_id IS NOT NULL) AS telegram_linked, "
+        "  EXISTS (SELECT 1 FROM user_llm_config c WHERE c.user_id = u.id) AS byo, "
+        "  (SELECT count(*) FROM alerts a WHERE a.user_id = u.id AND a.active) AS active_alerts, "
+        "  (SELECT count(*) FROM sessions s WHERE s.user_id = u.id AND s.expires_at > now()) AS live_sessions, "
+        "  (SELECT max(t.created_at) FROM turns t WHERE t.user_id = u.id) AS last_turn_at "
+        "FROM users u WHERE u.email = %s",
+        (email.strip().lower(),),
+        fetch="one",
+    )
+
+
+def user_set_disabled(user_id: int, disabled: bool) -> bool:
+    """Lock or unlock an account. Locking also ends every live session. False if no such user."""
+    row = _query(
+        "UPDATE users SET disabled_at = CASE WHEN %s THEN COALESCE(disabled_at, now()) ELSE NULL END "
+        "WHERE id=%s RETURNING id",
+        (disabled, user_id),
+        fetch="one",
+        commit=True,
+    )
+    if row and disabled:
+        _query("DELETE FROM sessions WHERE user_id=%s", (user_id,), fetch=None, commit=True)
+    return row is not None
+
+
+def user_set_admin(user_id: int, is_admin: bool) -> bool:
+    row = _query(
+        "UPDATE users SET is_admin=%s WHERE id=%s RETURNING id", (is_admin, user_id), fetch="one", commit=True
+    )
+    return row is not None
+
+
+def turns_recent(user_id: int | None, limit: int = 25) -> list[dict]:
+    """The latest turns (of one user, or of everyone): what happened and what it cost."""
+    return _query(
+        "SELECT turn_id::text AS turn_id, user_id, created_at, intent, status, error_id, latency_ms, "
+        "  llm_calls, tokens_in + tokens_out AS tokens, cost_inr, data_gaps, trace_url "
+        "FROM turns WHERE (%s::int IS NULL OR user_id = %s) ORDER BY created_at DESC LIMIT %s",
+        (user_id, user_id, limit),
+        fetch="all",
+    )
+
+
+def flags_all() -> dict[str, bool]:
+    return {r["key"]: r["enabled"] for r in _query("SELECT key, enabled FROM feature_flags", fetch="all")}
+
+
+def flag_upsert(key: str, enabled: bool, updated_by: int | None) -> None:
+    _query(
+        "INSERT INTO feature_flags (key, enabled, updated_by) VALUES (%s,%s,%s) "
+        "ON CONFLICT (key) DO UPDATE SET enabled=EXCLUDED.enabled, updated_at=now(), updated_by=EXCLUDED.updated_by",
+        (key, enabled, updated_by),
+        fetch=None,
+        commit=True,
+    )
 
 
 def user_onboarding(user_id: int, today: "date") -> dict:
