@@ -7,3 +7,6 @@ useDefault = true
 [allowlist]
 description = "Fake credentials used to test log redaction"
 paths = ['''tests/test_logging_setup\.py''']
+# An empty `NAME=` line in .env.example (e.g. GROQ_API_KEY_2=) is read as the
+# value of the line above it. A bare variable name is never a secret.
+regexes = ['''^[A-Z][A-Z0-9_]*=$''']
