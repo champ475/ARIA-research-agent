@@ -25,6 +25,7 @@ from config import (
     DB_POOL_MAX,
     DB_POOL_MIN,
     DB_STATEMENT_TIMEOUT_MS,
+    db_host,
 )
 
 log = logging.getLogger(__name__)
@@ -45,13 +46,19 @@ OperationalError = psycopg.OperationalError
 InterfaceError = psycopg.InterfaceError
 
 
+def _behind_neon_pooler(url: str) -> bool:
+    """Neon's PgBouncer endpoint ("ep-...-pooler.") refuses `options` at connect."""
+    return "-pooler." in db_host(url)
+
+
 def connection_kwargs() -> dict[str, Any]:
     """Settings every app connection is opened with (REL-04).
 
     - dict rows, like psycopg2's RealDictCursor;
     - `statement_timeout` so a runaway query is cancelled server-side instead
-      of pinning a pooled connection (0 disables it, e.g. behind a pooler that
-      rejects startup options — then set it per role);
+      of pinning a pooled connection (0 disables it). Neon's `-pooler` host
+      rejects it as a startup option, so it is skipped there and set per role
+      instead (`ALTER ROLE ... SET statement_timeout`, docs/RUNBOOK.md);
     - prepared statements off (`prepare_threshold=None`): Neon's `-pooler`
       endpoint is PgBouncer in transaction mode, where server-side prepared
       statements break;
@@ -63,7 +70,7 @@ def connection_kwargs() -> dict[str, Any]:
         "connect_timeout": DB_CONNECT_TIMEOUT,
         "application_name": "aria",
     }
-    if DB_STATEMENT_TIMEOUT_MS > 0:
+    if DB_STATEMENT_TIMEOUT_MS > 0 and not _behind_neon_pooler(DATABASE_URL):
         kwargs["options"] = f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}"
     return kwargs
 

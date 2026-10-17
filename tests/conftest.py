@@ -6,7 +6,19 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
+from dotenv import dotenv_values
 from hypothesis import settings
+
+# The suite runs as in CI, without the developer's .env: a local APP_ENV=prod
+# (Secure cookies over the test client's http) or a missing SECRET_KEY would
+# otherwise fail tests that pass in CI. .env's TEST_DATABASE_URL still counts,
+# and its DATABASE_URL is kept aside so the integration fixture can refuse it.
+_DOTENV = dotenv_values(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+os.environ["ARIA_NO_DOTENV"] = "1"
+if _DOTENV.get("TEST_DATABASE_URL"):
+    os.environ.setdefault("TEST_DATABASE_URL", _DOTENV["TEST_DATABASE_URL"] or "")
+DOTENV_DATABASE_URL = (_DOTENV.get("DATABASE_URL") or "").strip()
+os.environ.setdefault("SECRET_KEY", "tests-only-not-a-secret-0123456789abcdef")  # as CI sets one
 
 # Tests never send traces anywhere: a developer's .env may switch on LangChain
 # auto-tracing (LANGSMITH_TRACING=true); load_dotenv() doesn't override these.

@@ -108,6 +108,9 @@ Useful everywhere:
 - Lower `DB_POOL_MAX` per replica.
 - Kill a runaway query with `pg_cancel_backend`.
 
+**Statement timeout on Neon.** Neon's `-pooler` host (PgBouncer) refuses `statement_timeout` as a connect option, so ARIA doesn't send it there (`utils/db.py::connection_kwargs`). Set it once per role instead, in the Neon SQL editor:
+`ALTER ROLE neondb_owner SET statement_timeout = '5s';` Check it with `SHOW statement_timeout;` on a new connection. Migrations and backups are unaffected: Alembic's DDL here runs well under 5 s, and `pg_dump` sets its own timeout to 0.
+
 ## db-size
 
 **Means:** the database is above 80% of `DB_SIZE_LIMIT_MB`. On Neon's free tier, writes fail at the limit.

@@ -36,8 +36,10 @@ def pg_url():
         container.start()
         url = container.get_connection_url()
     import config
+    from tests.conftest import DOTENV_DATABASE_URL
 
-    if config.DATABASE_URL and url.strip() == config.DATABASE_URL.strip():
+    app_urls = {u.strip() for u in (config.DATABASE_URL, DOTENV_DATABASE_URL) if u and u.strip()}
+    if url.strip() in app_urls:
         pytest.fail("TEST_DATABASE_URL equals the app's DATABASE_URL — refusing to run tests against it")
     yield url
     if container is not None:

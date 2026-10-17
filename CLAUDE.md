@@ -61,7 +61,7 @@ A LangGraph `StateGraph` (see `docs/RFC_AGENTIC_RESEARCH_GRAPH.md`) is the sole 
 - `ARIA_FAKE_LLM=1` swaps in `agents/providers/fake_llm.py` (tests, demos)
 - Optional last-resort local LLM (`agents/providers/local_llm.py`) when `LOCAL_LLM_BASE_URL` is set — any OpenAI-compatible server (e.g. llama.cpp from `..\local-llm`, `.\start-server.ps1` → `http://127.0.0.1:8080/v1`). Tried after Groq/Gemini (or a BYO key) fail, once per call, output capped by `LOCAL_LLM_MAX_TOKENS`. Tests disable it via an autouse fixture in `tests/conftest.py`.
 
-Defaults: synthesis `openai/gpt-oss-120b` (Groq), fast `openai/gpt-oss-20b` (Groq), Gemini `gemini-2.5-flash` / `gemini-2.5-flash-lite`. (`llama-3.3-70b-versatile`, `llama-3.1-8b-instant` and `gemini-2.0-flash` are retired; recorded eval fixtures still use them until re-recorded.)
+Defaults: synthesis `openai/gpt-oss-120b` (Groq), fast `openai/gpt-oss-20b` (Groq), Gemini `gemini-3.6-flash` / `gemini-3.5-flash-lite`. (`llama-3.3-70b-versatile`, `llama-3.1-8b-instant` and `gemini-2.0-flash` are retired, and `gemini-2.5-*` is closed to new keys; recorded eval fixtures still use them until re-recorded.)
 
 ### Tools Layer (`tools/`)
 - `tools/data/` — Data fetchers behind one interface, `providers/market_data()` (DATA-02: yfinance + NSE, or `FakeProvider` with `ARIA_FAKE_DATA`): `fetcher.py` (yfinance wrapper), `nse_scraper.py` (bhavcopy, large deals, corporate actions), `news_fetcher.py` (RSS + Google News), `amfi.py` / `mf_data.py` (fund NAVs), `cache.py` (Parquet caching), `contracts.py` (pydantic schemas each source must match, TEST-05). Every source is listed in `docs/DATA_SOURCES.md` (a test enforces it).

@@ -47,15 +47,17 @@ class Settings(BaseSettings):
     GROQ_API_KEY_4: str = ""
     GROQ_API_KEY_5: str = ""
     # LLM-08: Groq retired llama-3.3-70b-versatile and llama-3.1-8b-instant on
-    # 2026-08-16 and Google gemini-2.0-flash in 2026; these are their
-    # recommended successors. Override per node with ARIA_MODEL_<NODE>.
+    # 2026-08-16; these are their recommended successors. Override per node
+    # with ARIA_MODEL_<NODE>.
     GROQ_MODEL: str = "openai/gpt-oss-120b"
     GROQ_MODEL_FAST: str = "openai/gpt-oss-20b"
 
     # ── Gemini fallback ───────────────────────────────────────────────────────
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash"
-    GEMINI_MODEL_FAST: str = "gemini-2.5-flash-lite"
+    # Google retired gemini-2.0-flash and closed gemini-2.5-* to new API keys
+    # (Oct 2026); gemini-3.5-flash is deprecated (aliased to 3.6).
+    GEMINI_MODEL: str = "gemini-3.6-flash"
+    GEMINI_MODEL_FAST: str = "gemini-3.5-flash-lite"
     PREFERRED_PROVIDER: Literal["groq", "gemini"] = "groq"
 
     # ── Local LLM fallback (any OpenAI-compatible server; empty = disabled) ───
@@ -428,6 +430,8 @@ REFLECTION_SKIP_WHEN_COMPLETE = settings.REFLECTION_SKIP_WHEN_COMPLETE
 MODEL_PRICES_USD_PER_M: dict[str, tuple[float, float]] = {
     "openai/gpt-oss-120b": (0.15, 0.60),
     "openai/gpt-oss-20b": (0.075, 0.30),
+    "gemini-3.6-flash": (1.50, 7.50),  # list price from 2027-01-01 (half until then)
+    "gemini-3.5-flash-lite": (0.30, 2.50),
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.5-flash-lite": (0.10, 0.40),
     "llama-3.3-70b-versatile": (0.59, 0.79),
@@ -653,7 +657,7 @@ STOCK_UNIVERSE = [s for stocks in SECTOR_UNIVERSE.values() for s in stocks]
 # provider has retired is detected (startup check, or its first 404) and
 # skipped, so a deprecation degrades to the next entry instead of failing
 # every request. Change a model without a code change:
-#   ARIA_MODEL_PLANNER="groq:openai/gpt-oss-20b,gemini:gemini-2.5-flash"
+#   ARIA_MODEL_PLANNER="groq:openai/gpt-oss-20b,gemini:gemini-3.5-flash-lite"
 #   ARIA_MODELS_FAST=... / ARIA_MODELS_SYNTHESIS=...   (whole classes)
 MODEL_CLASSES: dict[str, list[str]] = {
     "fast": [f"groq:{GROQ_MODEL_FAST}", f"gemini:{GEMINI_MODEL_FAST}", f"gemini:{GEMINI_MODEL}"],
