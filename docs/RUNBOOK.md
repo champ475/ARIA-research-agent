@@ -136,6 +136,19 @@ Useful everywhere:
 **Fix:**
 - `python scripts/refresh_fundamentals.py`. It resumes and skips fresh rows. A full run takes about 8 minutes.
 
+## retention-overdue
+
+**Means:** a table still holds rows older than its retention period (`utils/retention.py`, COMP-06). The nightly `retention` job (02:30 IST) should have removed them.
+
+**First checks:**
+1. `python scripts/retention_report.py` lists each class, its limit and its oldest row.
+2. The `retention` row in `job_heartbeats`: did it run, did it fail? A failing class is logged as `[retention] <class> failed` and the other classes still run.
+3. Is a class far behind? One run purges at most 40 batches (200,000 rows) per class, so a big backlog clears over several nights.
+
+**Fix:**
+- Fix the failing class, then run `python -c "from utils.retention import run_retention; print(run_retention())"` from the app environment.
+- `audit_log` is special: its trigger refuses any delete of a row younger than 5 years, so it can only be late if the migration 0024 trigger is missing.
+
 ---
 
 ## Backups

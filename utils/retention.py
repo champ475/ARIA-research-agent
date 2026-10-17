@@ -73,6 +73,32 @@ def schedule() -> list[Rule]:
         _checkpoint_rule(timedelta(days=7)),
         _table_rule("auth_attempts", "auth_attempts", "attempted_at", timedelta(days=1)),
         _table_rule("telegram_link_codes", "telegram_link_codes", "created_at", timedelta(days=1)),
+        # COMP-06: user data. The periods are in docs/PRIVACY.md (section 4).
+        _table_rule(
+            "chat_history",
+            "chat_sessions",
+            "updated_at",
+            timedelta(days=730),
+            note="24 months after last activity",
+        ),
+        _table_rule("reports", "reports", "created_at", timedelta(days=730)),
+        _table_rule("answer_feedback", "answer_feedback", "created_at", timedelta(days=730)),
+        _table_rule("turns", "turns", "created_at", timedelta(days=30), note="the per-turn traces"),
+        _table_rule("notifications", "notifications", "created_at", timedelta(days=180)),
+        _table_rule(
+            "ops_alerts",
+            "ops_alerts",
+            "resolved_at",
+            timedelta(days=180),
+            extra_where="resolved_at IS NOT NULL",
+        ),
+        _table_rule(
+            "audit_log",
+            "audit_log",
+            "at",
+            timedelta(days=5 * 365),
+            note="a database trigger enforces the floor",
+        ),
     ]
 
 

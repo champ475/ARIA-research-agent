@@ -856,6 +856,14 @@ _PURGEABLE = {
     ("ohlcv_cache", "fetched_at"),
     ("auth_attempts", "attempted_at"),
     ("telegram_link_codes", "created_at"),
+    # COMP-06: user data past its retention period
+    ("chat_sessions", "updated_at"),  # deleting a session cascades to its chat_history
+    ("reports", "created_at"),
+    ("answer_feedback", "created_at"),
+    ("turns", "created_at"),
+    ("notifications", "created_at"),
+    ("ops_alerts", "resolved_at"),
+    ("audit_log", "at"),  # the table trigger only lets rows older than 5 years go
 }
 
 

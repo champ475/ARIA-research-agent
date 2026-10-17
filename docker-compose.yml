@@ -1,3 +1,10 @@
+# COMP-06: container logs rotate by size (about 90 days at normal volume).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "10"
+
 services:
   db:
     image: postgres:16-alpine
@@ -15,6 +22,7 @@ services:
       retries: 10
 
   app:
+    logging: *default-logging
     build: .
     restart: unless-stopped
     ports:
@@ -36,6 +44,7 @@ services:
   # refreshes — each job under an advisory lock, so `docker compose up
   # --scale worker=2` is safe (one owner per job, the other on standby).
   worker:
+    logging: *default-logging
     build: .
     restart: unless-stopped
     command: ["python", "worker.py"]
@@ -73,6 +82,7 @@ services:
       retries: 10
 
   app-staging:
+    logging: *default-logging
     profiles: ["staging"]
     build: .
     restart: unless-stopped
@@ -90,6 +100,7 @@ services:
         condition: service_healthy
 
   worker-staging:
+    logging: *default-logging
     profiles: ["staging"]
     build: .
     restart: unless-stopped

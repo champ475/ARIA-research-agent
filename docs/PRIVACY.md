@@ -56,9 +56,16 @@ under the DPDP Rules.
 | Account and everything it owns | until the user deletes the account | `/account/delete` (one transaction) |
 | Login sessions | until expiry (14 days) or logout | hourly housekeeping |
 | Verification / reset tokens | 1 day after expiry | hourly housekeeping |
-| `auth_attempts` | 1 day | hourly housekeeping |
-| `audit_log` | 5 years (or as counsel advises); survives account deletion with the numeric user id only | append-only table (COMP-04); retention job: COMP-06 |
-| Logs | per log sink (stderr by default); emails and secrets are redacted | `utils/logging_setup.py` |
+| `auth_attempts`, `telegram_link_codes` | 1 day | hourly housekeeping and the nightly retention job |
+| Chat history (`chat_sessions` and its messages) | 24 months after the chat's last activity | nightly `retention` job (COMP-06) |
+| Saved reports, answer feedback | 24 months | nightly `retention` job |
+| Per-turn traces (`turns`: tokens, latency, models; no message text) | 30 days | nightly `retention` job |
+| Alert inbox (`notifications`) | 180 days | nightly `retention` job |
+| Cached market data, LangGraph checkpoints | 7 days (PDF text 30); a chat paused on a yes/no keeps its checkpoint | nightly `retention` job (DATA-10) |
+| Operator alerts (`ops_alerts`) | 180 days after they resolve | nightly `retention` job |
+| `audit_log` | 5 years; survives account deletion with the numeric user id only | append-only table (COMP-04); its trigger only lets rows older than 5 years be deleted; nightly `retention` job |
+| Logs | 90 days: container logs rotate by size (`logging:` in `docker-compose.yml`), and a hosted log sink must be set to 90 days; emails and secrets are redacted | `utils/logging_setup.py`, operator |
+| LangSmith traces (only if tracing is on) | 30 days; set the project's retention in LangSmith | operator; redacted data only (OBS-02) |
 | Backups | per the backup schedule (REL-08) | operator |
 
 ## 5. User rights and how they are met
