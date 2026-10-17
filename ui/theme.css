@@ -298,3 +298,38 @@ footer { display: none !important; }
 }
 .wl-table tr:last-child td { border-bottom: none; }
 .wl-empty { color: var(--aria-muted); font-size: 13px; padding: 10px 2px; }
+
+/* UX-08: below 768px the page is one column. The chat history drawer sits above the
+   conversation (collapsed to a thin bar by APP_JS on first paint, a tap opens it),
+   the input row wraps, wide tables scroll inside their own box, and nothing makes
+   the page itself scroll sideways. */
+@media (max-width: 767px) {
+    html, body, .gradio-container { max-width: 100vw; overflow-x: hidden; }
+    .gradio-container { padding-left: 0 !important; padding-right: 0 !important; }
+    #aria-header { padding: 8px 12px; }
+    .aria-tagline { display: block; margin-left: 0; }
+    .tab-nav button { padding: 10px 12px !important; }
+    .chat-shell { flex-direction: column !important; flex-wrap: nowrap !important; }
+    .chat-main { max-width: 100% !important; width: 100% !important; min-width: 0 !important; }
+    .chat-sidebar,
+    .chat-sidebar.collapsed {
+        order: -1;
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: 100% !important;
+        max-height: none;
+        border-right: none !important;
+        border-bottom: 1px solid var(--aria-border) !important;
+    }
+    .chat-sidebar:not(.collapsed) .sidebar-expanded-panel { max-height: 40vh; overflow-y: auto; }
+    #chatbot-chat { height: 55vh !important; min-height: 280px; }
+    #input-row-chat { flex-wrap: wrap !important; }
+    /* the textbox sits in a "form" wrapper that is the row's flex child */
+    #input-row-chat > .form { flex: 1 1 100% !important; min-width: 100% !important; }
+    #msg-chat { width: 100% !important; min-width: 0 !important; }
+    #input-row-chat .send-btn, #input-row-chat .clear-btn { flex: 1 1 40% !important; }
+    .tf-radio { overflow-x: auto; }
+    .wl-table { display: block; max-width: 100%; overflow-x: auto; }
+    .message.bot table { display: block; max-width: 100%; overflow-x: auto; }
+    .sugg-btn { flex: 1 1 45% !important; min-width: 0 !important; }
+}

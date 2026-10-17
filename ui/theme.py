@@ -34,6 +34,7 @@ APP_JS = """(() => {
   };
   const NAMES = {'◧': 'Show or hide chat history', '✎': 'New chat', '✕': 'Delete this chat'};
   let queued = false;
+  let collapsedOnce = false;
   const label = () => {
     queued = false;
     document.querySelectorAll('button').forEach((b) => {
@@ -50,6 +51,12 @@ APP_JS = """(() => {
     });
     const btn = document.getElementById('theme-btn');
     if (btn && !btn.hasAttribute('aria-pressed')) apply();
+    // UX-08: on a phone the chat history starts collapsed (once per page load).
+    if (!collapsedOnce && window.matchMedia('(max-width: 767px)').matches) {
+      const side = document.querySelector('.chat-sidebar:not(.collapsed)');
+      const toggle = side && side.querySelector('.sidebar-icon-btn');
+      if (toggle) { collapsedOnce = true; toggle.click(); }
+    }
   };
   new MutationObserver(() => {
     if (!queued) { queued = true; requestAnimationFrame(label); }
