@@ -3,7 +3,7 @@
 
 # Lint, format, types
 ruff==0.17.0          # pinned: formatter output must match CI and pre-commit
-mypy>=1.11.0
+mypy>=2.4.0
 types-pytz
 types-requests
 
