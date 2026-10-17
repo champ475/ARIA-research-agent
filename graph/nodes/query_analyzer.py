@@ -33,10 +33,11 @@ import logging
 from collections.abc import Callable
 
 import prompts
+from agents.conversation_memory import strip_badge
 from agents.llm_client import LLMClient
 from config import MAX_ENTITIES_PER_TURN, TOKENS_FAST
 from graph.data_questions import min_complexity
-from graph.entity_resolution import add_llm_mentions, history_entities, resolve_mentions
+from graph.entity_resolution import add_llm_mentions, ambiguous_reference, history_carry, resolve_mentions
 from graph.journal import log_decision
 from graph.schemas import QueryAnalysis
 from graph.state import GraphState
@@ -66,7 +67,7 @@ def _build_prompt(query: str, entities: list[str], history: list[dict]) -> str:
     if history:
         lines.append("Recent conversation (oldest first):")
         for msg in history[-_HISTORY_TURNS_IN_PROMPT:]:
-            lines.append(f"{msg.get('role', 'user')}: {msg.get('content', '')[:300]}")
+            lines.append(f"{msg.get('role', 'user')}: {strip_badge(msg.get('content', ''))[:300]}")
         lines.append("")
     lines.append(entity_line)
     lines.append(f"User query: {query}")
@@ -124,8 +125,13 @@ def build_query_analyzer_node(
         )
         classification = _parse(raw)
         add_llm_mentions(resolved, classification["companies"])
-        entities = resolved.entities if resolved.mentioned else history_entities(history)
         unresolved = list(resolved.unresolved)
+        if resolved.mentioned:
+            entities = resolved.entities
+        else:
+            entities, ambiguous = history_carry(history)
+            if ambiguous:  # LLM-10: "its RSI" after comparing two companies
+                unresolved.append(ambiguous_reference(ambiguous))
         if len(entities) > MAX_ENTITIES_PER_TURN:
             # VAL-03: tasks = companies x tools; past the cap, ask instead of
             # fanning out dozens of fetches (blocking, like an ambiguous name).
