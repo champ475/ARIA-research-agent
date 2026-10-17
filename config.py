@@ -175,6 +175,10 @@ class Settings(BaseSettings):
     SMTP_STARTTLS: bool = True
     # Block the app until the email address is verified; unset = on except dev/test.
     REQUIRE_EMAIL_VERIFICATION: bool | None = None
+    # SEC-15: who may frame the app (CSP frame-ancestors); none unless it is embedded.
+    FRAME_ANCESTORS: str = "'none'"
+    # SEC-15: send Strict-Transport-Security; unset = on except dev/test (plain http there).
+    HSTS_ENABLED: bool | None = None
     # SEC-05: proxies whose X-Forwarded-For is trusted (comma-separated IPs/CIDRs).
     TRUSTED_PROXIES: str = ""
     # Optional Cloudflare Turnstile CAPTCHA after repeated failures (SEC-05).
@@ -202,6 +206,7 @@ class Settings(BaseSettings):
         "RUN_JOBS_IN_APP",
         "COOKIE_SECURE",
         "REQUIRE_EMAIL_VERIFICATION",
+        "HSTS_ENABLED",
         "TURN_DEADLINE_SECONDS",
         mode="before",
     )
@@ -238,6 +243,12 @@ class Settings(BaseSettings):
     def require_email_verification(self) -> bool:
         if self.REQUIRE_EMAIL_VERIFICATION is not None:
             return self.REQUIRE_EMAIL_VERIFICATION
+        return self.APP_ENV not in ("dev", "test")
+
+    @property
+    def hsts_enabled(self) -> bool:
+        if self.HSTS_ENABLED is not None:
+            return self.HSTS_ENABLED
         return self.APP_ENV not in ("dev", "test")
 
     @property
@@ -423,6 +434,8 @@ SMTP_PASSWORD = settings.SMTP_PASSWORD
 SMTP_FROM = settings.SMTP_FROM
 SMTP_STARTTLS = settings.SMTP_STARTTLS
 REQUIRE_EMAIL_VERIFICATION = settings.require_email_verification
+FRAME_ANCESTORS = settings.FRAME_ANCESTORS.strip() or "'none'"
+HSTS_ENABLED = settings.hsts_enabled
 TRUSTED_PROXIES = [p.strip() for p in settings.TRUSTED_PROXIES.split(",") if p.strip()]
 TURNSTILE_SITE_KEY = settings.TURNSTILE_SITE_KEY
 TURNSTILE_SECRET = settings.TURNSTILE_SECRET
