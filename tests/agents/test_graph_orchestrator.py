@@ -15,7 +15,7 @@ def _build_orchestrator(fake_graph):
     past the `with` block construction happens in."""
     with (
         patch("agents.graph_orchestrator.shared_graph", return_value=fake_graph),
-        patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None),
+        patch("agents.graph_orchestrator.get_turn_checkpointer", return_value=None),
         patch.object(GraphOrchestrator, "_resolve_byo_config", return_value=None),
     ):
         orch = GraphOrchestrator(user_id=1)
@@ -263,7 +263,7 @@ class TestGraphOrchestratorResolveByoConfig:
         }
         with (
             patch("agents.graph_orchestrator.build_graph", return_value=MagicMock()),
-            patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None),
+            patch("agents.graph_orchestrator.get_turn_checkpointer", return_value=None),
             patch("utils.db.llm_config_get", return_value=fake_row),
             patch("utils.crypto.decrypt", side_effect=ValueError("Stored API key could not be decrypted")),
         ):
@@ -279,7 +279,7 @@ class TestGraphOrchestratorResolveByoConfig:
         }
         with (
             patch("agents.graph_orchestrator.build_graph", return_value=MagicMock()),
-            patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None),
+            patch("agents.graph_orchestrator.get_turn_checkpointer", return_value=None),
             patch("utils.db.llm_config_get", return_value=fake_row),
             patch("utils.crypto.decrypt", return_value="sk-real-key"),
         ):

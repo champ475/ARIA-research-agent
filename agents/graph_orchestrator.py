@@ -77,7 +77,7 @@ from agents.conversation_memory import ConversationMemory, strip_badge
 from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT, TRIAL_DAILY_TOKENS
 from graph.analysis_tools import analysis_notes
-from graph.checkpointer import get_postgres_checkpointer
+from graph.checkpointer import get_turn_checkpointer
 from graph.confirmation import REASK_TEXT as CONFIRM_REPROMPT
 from graph.confirmation import classify_reply
 from graph.deadline import CUT_OFF_NOTE, data_gaps_note, new_deadline
@@ -267,7 +267,7 @@ def shared_graph(provider_config: dict | None) -> Any:
         if graph is not None:
             _graphs.move_to_end(key)
             return graph
-        graph = build_graph(checkpointer=get_postgres_checkpointer(), provider_config=provider_config)
+        graph = build_graph(checkpointer=get_turn_checkpointer(), provider_config=provider_config)
         _graphs[key] = graph
         while len(_graphs) > _GRAPH_CACHE_SIZE:
             _graphs.popitem(last=False)
@@ -364,6 +364,9 @@ class GraphOrchestrator:
         if pending:
             self._thread_id = pending
             self._awaiting_confirmation = True
+            ckpt = get_turn_checkpointer()
+            if ckpt is not None:  # ARCH-04: this thread's checkpoint is in Postgres, not memory
+                ckpt.mark_resumable(pending)
 
     def _set_pending(self, thread_id: str | None) -> None:
         """Persist (or clear) the paused thread on the session row."""
@@ -521,6 +524,9 @@ class GraphOrchestrator:
                 raise
             finally:
                 self._charge_trial_tokens(rec)
+                ckpt = get_turn_checkpointer()
+                if ckpt is not None:
+                    ckpt.release(self._thread_id)  # ARCH-04: the turn's in-memory checkpoints
 
     def _process_stream(self, message: str, rec):
         """Yields (text, chart, pdf_url, md_url, csv_url, tab_used), text
@@ -606,6 +612,9 @@ class GraphOrchestrator:
                 rec.status = "gated"
                 self._awaiting_confirmation = True
                 self._set_pending(self._thread_id)
+                ckpt = get_turn_checkpointer()
+                if ckpt is not None:  # ARCH-04: only a paused turn is worth a Postgres write
+                    ckpt.persist(self._thread_id)
                 gate = result["__interrupt__"][0].value
                 from utils import metrics
 
@@ -618,6 +627,9 @@ class GraphOrchestrator:
 
             if self._awaiting_confirmation:
                 self._set_pending(None)
+                ckpt = get_turn_checkpointer()
+                if ckpt is not None:
+                    ckpt.finish(self._thread_id)  # the paused copy is no longer needed
             self._awaiting_confirmation = False
             chart = _figure(result.get("chart_html"))
             pdf_url = result.get("pdf_url")

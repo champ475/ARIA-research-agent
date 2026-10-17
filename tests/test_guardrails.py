@@ -187,7 +187,7 @@ def _orch(fake_graph):
 
     with (
         patch("agents.graph_orchestrator.build_graph", return_value=fake_graph),
-        patch("agents.graph_orchestrator.get_postgres_checkpointer", return_value=None),
+        patch("agents.graph_orchestrator.get_turn_checkpointer", return_value=None),
         patch.object(GraphOrchestrator, "_resolve_byo_config", return_value=None),
     ):
         orch = GraphOrchestrator(user_id=1)

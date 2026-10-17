@@ -16,6 +16,40 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-17 — Checkpoints live in memory; Postgres only holds a paused turn (ARCH-04)
+**Problem.** Every chat turn mints a new LangGraph `thread_id` and the graph wrote its checkpoints (several rows per superstep) to Postgres. `scripts/growth_sim.py` measured about 350 KiB of checkpoint data per turn, so at 100 daily active users and ten turns a day a seven-day retention window alone would hold about 2.4 GB, against a 0.5 GB Neon free tier. The same writes sat on the critical path of every turn. The only feature that needs them is resuming a turn that paused for a yes/no (research confirmation, verification gate), which is a small share of turns.
+
+**Alternatives considered.**
+- Keep Postgres checkpoints and shorten retention to one day: it still pays the write latency on every turn and still stores 100% of turns to serve a few percent.
+- Redis as the checkpoint store: a new service to run for a project whose reference deployment is compose with one database.
+- Disable checkpointing: loses the human-in-the-loop resume, a trust contract (the user is asked before an expensive or unverified answer).
+
+**Final decision.** `graph/checkpointer.py::TurnCheckpointer` subclasses LangGraph's `InMemorySaver`, with the strict msgpack serializer from SEC-09. Graphs compile against one process-wide instance. When a turn pauses, `GraphOrchestrator` calls `persist(thread_id)`, which copies the newest checkpoint and its pending writes to Postgres, and the orchestrator already records the paused thread on `chat_sessions.pending_thread_id` (VAL-10). A restored session calls `mark_resumable`, and only those threads read from the database on `get_tuple`. A finished turn calls `finish` (deletes the durable copy) and every turn ends with `release` (frees memory). If the Postgres write fails, the thread stays in memory so the same process can still resume it.
+
+**Measured** (30 stubbed-LLM equity turns, local Postgres, so it understates a remote database): p50 1,788 ms with the Postgres saver, 367 ms with this one. Checkpoint growth per turn went from about 350 KiB to 0. A paused turn resumes in a fresh saver with a freshly compiled graph (`tests/integration/test_turn_checkpointer.py`).
+
+**Trade-offs.** A process that dies mid-turn loses that turn's progress (it was never resumable, since only a pause is). A paused turn costs one extra Postgres write. The in-memory saver holds a turn's checkpoints until it ends, so memory per concurrent turn rises slightly (bounded by `CHAT_CONCURRENCY`). Only the newest checkpoint is persisted, which is enough for `Command(resume=...)` but means a paused thread cannot be time-travelled.
+
+**Future improvements.** Drop the 7-day checkpoint retention to 1 day for threads that are not paused. Persist when the app receives SIGTERM mid-turn.
+
+## 2026-10-17 — Shared market-data caches and a retention schedule (DATA-10, COMP-06)
+**Problem.** The OHLCV Parquet cache and the rolling bhavcopy history lived on each container's disk: gone on restart and not shared between replicas, which defeats the bhavcopy fallback that exists for a yfinance outage. Meanwhile every table grew without a limit, which raises breach impact and conflicts with data minimisation (COMP-06).
+
+**Alternatives considered.**
+- S3/R2 Parquet objects: a new dependency and credentials, for data that is a few hundred kilobytes.
+- A shared volume between replicas: not available on the managed hosts ARIA might run on, and it ties the app to a filesystem.
+- Per-table cron SQL in the host: invisible to the repo, untested, easy to forget.
+
+**Final decision.**
+- `ohlcv_cache` (Parquet bytes per symbol, period and interval) and `bhavcopy_bars` (`NUMERIC` bars, newest 300 per symbol) in Postgres, migration 0023. The local files remain only as a fallback when the database is unreachable.
+- `utils/retention.py` holds one schedule of retention rules (cache 7 days, PDF text 30, checkpoints 7 days except a paused thread, `turns` 30, notifications 180, chat history 24 months after last activity, reports and feedback 24 months, resolved ops alerts 180, `audit_log` 5 years). The worker's nightly `retention` job applies it in bounded batches, one failing class never stops the rest, and an hourly watchdog check (`retention_overdue`) pages if any table holds rows past its limit.
+- `audit_log` stays append-only: migration 0024 changes its trigger to refuse UPDATE always and DELETE unless the row is older than 5 years, so the job can age rows out and nobody can erase recent history.
+- Split and bonus adjustment (DATA-07) is applied when the bhavcopy history is read, never stored, so a stored bar is always as traded and one series never mixes adjusted and unadjusted bars.
+
+**Trade-offs.** OHLCV reads and writes now cost a database round trip. A 40-batch cap per class means a very large backlog clears over several nights. Thirty days of `turns` is exactly the SLO report's 30-day window, with no slack for a longer look-back. The chat-history period (24 months) is a product decision pending counsel review (COMP-03), and chat history, not checkpoints, is now the dominant growth: roughly 40 MB a week at 100 daily active users, which fills a 0.5 GB database in a few months.
+
+**Future improvements.** A compaction option for old chat sessions (keep titles, drop messages). Per-user inactive-account deletion once counsel sets the period.
+
 ## 2026-10-17 — Not hosted: docker-compose is the reference deployment (OPS-03)
 **Problem.** PRD OPS-03 asks for a production host: managed Postgres with PITR, TLS, a CDN or WAF, autoscaling replicas, and a deploy target for the release pipeline. The owner decided (2026-10-15) that ARIA is a production-grade project and will not be launched as a public product. So hosting, and its running cost, are out of scope.
 

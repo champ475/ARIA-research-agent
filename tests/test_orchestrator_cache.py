@@ -51,7 +51,7 @@ def test_compiled_graph_is_shared_per_provider_config():
     go.clear_graph_cache()
     with (
         patch.object(go, "build_graph", side_effect=lambda **kw: MagicMock()) as bg,
-        patch.object(go, "get_postgres_checkpointer", return_value=None),
+        patch.object(go, "get_turn_checkpointer", return_value=None),
     ):
         trial_a, trial_b = go.shared_graph(None), go.shared_graph(None)
         byo = go.shared_graph({"provider": "openai_compatible", "api_key": "k", "model": "m"})
