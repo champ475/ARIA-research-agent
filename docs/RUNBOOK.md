@@ -143,7 +143,7 @@ Useful everywhere:
 **Targets:** RPO ≤ 24 h (at most a day of data lost), RTO ≤ 4 h (back serving within four hours). Test them every quarter, and after any schema or backup change, with `scripts/restore_drill.py`. Each drill leaves a dated record in `docs/drills/`.
 
 **Two independent copies:**
-1. **Neon point-in-time restore** is the first line. Point-in-time history is 7 days on the free tier, longer on paid plans. Check it's enabled in the Neon console: Project → Settings → Storage → History retention.
+1. **Neon point-in-time restore** is the first line. The history window is 6 hours on the free plan (at most 1 GB of changes, not extendable) and longer on paid plans. Check it in the Neon console: Settings → Postgres → History window (older consoles: Settings → Instant restore). The free plan also includes 1 manual snapshot. Take one before risky changes such as migrations.
 2. **Nightly logical dumps** run `python scripts/backup_db.py` (cron, or the host's scheduler, at about 02:00 IST). It writes `aria-<timestamp>.dump` and a `.sha256` to `BACKUP_DIR` and keeps 14 dumps. Copy `BACKUP_DIR` off the machine (object storage or another disk), because a backup on the database's host isn't a backup.
 
 **Restore: Neon (minutes):**
