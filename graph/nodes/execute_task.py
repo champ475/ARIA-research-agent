@@ -116,8 +116,20 @@ def from_cacheable(payload: Any) -> Any:
     return payload
 
 
-def _evidence_id(tool_name: str, entity: str, evidence_type: str) -> str:
-    blob = f"{tool_name}:{entity}:{evidence_type}:{datetime.now(UTC).isoformat()}"
+# EVAL-01: the answer eval pins the clock and makes evidence ids depend only on
+# what was fetched, so the prompts built from them replay byte for byte.
+# Never changed in app code.
+REPLAYABLE = False
+PINNED_NOW: datetime | None = None
+
+
+def _now() -> datetime:
+    return PINNED_NOW or datetime.now(UTC)
+
+
+def _evidence_id(tool_name: str, entity: str, evidence_type: str, key: str = "") -> str:
+    salt = key if REPLAYABLE else datetime.now(UTC).isoformat()
+    blob = f"{tool_name}:{entity}:{evidence_type}:{salt}"
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
@@ -130,7 +142,7 @@ def _blocked_evidence(task: Task, evidence_type: str, reason: str) -> Evidence:
         "entity": task["entity"],
         "evidence_type": evidence_type,
         "payload": {"action": action, "symbol": task["entity"], "result": "blocked", "reason": reason},
-        "timestamp": datetime.now(UTC),
+        "timestamp": _now(),
         "confidence": 1.0,
         "citation_key": evidence_type,
     }
@@ -147,7 +159,7 @@ def _as_of(payload: Any, fetched_at: datetime, evidence_type: str = "") -> datet
     last session's close while the market is shut; else the fetch time."""
     if isinstance(payload, dict):
         t = payload.get("regularMarketTime")
-        now = datetime.now(UTC)
+        now = _now()
         if isinstance(t, (int, float)) and not isinstance(t, bool) and 0 < t <= now.timestamp():
             return datetime.fromtimestamp(t, UTC)
     if isinstance(payload, list) and payload and isinstance(payload[0], dict) and "as_of" in payload[0]:
@@ -228,9 +240,9 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
     if cached is not None:
         cacheable_payload = cached["payload"]
         confidence = cached["confidence"]
-        fetched_at = cached.get("fetched_at") or datetime.now(UTC)
+        fetched_at = cached.get("fetched_at") or _now()
     else:
-        fetched_at = datetime.now(UTC)
+        fetched_at = _now()
         # Dependency outputs arrive checkpoint-safe (see research_executor);
         # the tool gets the real objects back.
         context = {k: (v if k.startswith("_") else from_cacheable(v)) for k, v in context.items()}
@@ -253,7 +265,7 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
             )
 
     evidence: Evidence = {
-        "id": _evidence_id(task["tool"], task["entity"], spec.evidence_type),
+        "id": _evidence_id(task["tool"], task["entity"], spec.evidence_type, repr(sorted(key_parts.items()))),
         "source": task["tool"],
         "tool": task["tool"],
         "entity": task["entity"],
@@ -261,7 +273,7 @@ def execute_task(task: Task, context: dict[str, Any]) -> Evidence:
         # Kept in checkpoint-safe form here (not the raw DataFrame) — see
         # module docstring. Callers needing the real object use from_cacheable().
         "payload": cacheable_payload,
-        "timestamp": datetime.now(UTC),
+        "timestamp": _now(),
         "as_of": _as_of(cacheable_payload, fetched_at, spec.evidence_type),
         "confidence": confidence,
         # Fine-grained per-ratio citation keys (matching fundamental.py's

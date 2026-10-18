@@ -60,6 +60,17 @@ class _KeyRotator:
 
 _groq_rotator = _KeyRotator(GROQ_API_KEYS)
 
+# EVAL-01: the answer eval (evals/answers) installs a record/replay provider
+# factory, called as factory(system_prompt, node), for every client the graph
+# builds. Never set in app code.
+_provider_override = None
+
+
+def set_provider_override(factory) -> None:
+    """Install (or clear, with None) the EVAL-01 provider factory."""
+    global _provider_override
+    _provider_override = factory
+
 
 # ── Error classification & provider health ────────────────────────────────────
 # Confirmed in production: Reflection/Verification prompts routinely 413'd
@@ -652,6 +663,17 @@ class LLMClient:
         )
 
     def __init__(self, system_prompt: str = "", provider_config: dict | None = None, node: str | None = None):
+        self._setup(system_prompt, provider_config, node, _provider_override)
+
+    @classmethod
+    def live(cls, system_prompt: str = "", node: str | None = None) -> "LLMClient":
+        """A client on the real provider chain even while an EVAL-01 override
+        is installed — the recorder's source for replies it hasn't seen."""
+        client = cls.__new__(cls)
+        client._setup(system_prompt, None, node, None)
+        return client
+
+    def _setup(self, system_prompt: str, provider_config: dict | None, node: str | None, override) -> None:
         # LLM-08: `node` picks the model route (config.model_route) on the
         # trial path; a BYO user's own configured model is always used.
         self._node = node
@@ -666,6 +688,11 @@ class LLMClient:
         self._is_byo = bool(provider_config)
         from config import ARIA_FAKE_LLM
 
+        if override is not None:
+            self._local = None
+            self._primary = override(self._system, node)
+            self._active = self._primary.name
+            return
         if ARIA_FAKE_LLM:
             # TEST-04: deterministic answers for e2e tests and demos; no network.
             from agents.providers.fake_llm import FakeLLMProvider

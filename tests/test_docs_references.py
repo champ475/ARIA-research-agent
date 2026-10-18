@@ -14,8 +14,9 @@ DOCS = [
     *(ROOT / n for n in ("CLAUDE.md", "README.md", "CONTRIBUTING.md", "LEGAL.md")),
     *sorted((ROOT / "docs").glob("*.md")),
 ]
-# Snapshots and records of their time, not maintained docs.
-HISTORICAL = {"PRD_PRODUCTION_READINESS.md", "RFC_AGENTIC_RESEARCH_GRAPH.md"}
+# Snapshots and records of their time, not maintained docs. PRD_V3.md also
+# names files its requirements will create.
+HISTORICAL = {"PRD_PRODUCTION_READINESS.md", "PRD_V3.md", "RFC_AGENTIC_RESEARCH_GRAPH.md"}
 _TOP = r"(?:agents|graph|tools|utils|web|prompts|scripts|tests|migrations|evals|docs|data|ops|\.github)"
 _PATH = re.compile(rf"`({_TOP}/[\w./-]+?|[\w-]+\.(?:py|md|yml|yaml|toml|txt|lock))(?:::[\w.]+|\(\))?`")
 

@@ -139,11 +139,19 @@ jobs:
       - name: Golden-set eval (replay)
         id: eval
         run: python evals/runner.py --replay --compare evals/baseline.json --out evals/results/${{ github.sha }}.json --markdown eval.md
+      - name: Answer eval (replay, v3 EVAL-01)
+        # The whole graph on recorded replies and frozen data; fails when any
+        # count (wrong figures, claims, breaches, missing replies) rises above
+        # evals/answers/baseline.json or a rate slips more than 2 points.
+        if: always()
+        run: python evals/answers/run.py --compare evals/answers/baseline.json --out evals/results/answers-${{ github.sha }}.json --markdown answers.md
       - name: Comment the eval diff on the PR
         if: always() && github.event_name == 'pull_request' && hashFiles('eval.md') != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh pr comment ${{ github.event.pull_request.number }} --body-file eval.md --edit-last || gh pr comment ${{ github.event.pull_request.number }} --body-file eval.md
+        run: |
+          if [ -f answers.md ]; then printf '\n\n' >> eval.md; cat answers.md >> eval.md; fi
+          gh pr comment ${{ github.event.pull_request.number }} --body-file eval.md --edit-last || gh pr comment ${{ github.event.pull_request.number }} --body-file eval.md
 
   security:
     runs-on: ubuntu-latest

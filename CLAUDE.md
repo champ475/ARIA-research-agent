@@ -87,11 +87,18 @@ Every company mention resolves against the vendored NSE/BSE instrument master (`
 
 ## Roadmap
 
-Work follows the production-readiness PRD, which is a living Claude Doc:
+Current work follows the **v3 PRD**, a living Claude Doc:
+https://claude.ai/code/artifact/865a4490-cc0f-4ff5-afb6-62c022abec12.
+
+- An offline snapshot is at `docs/PRD_V3.md`. Re-export it from the doc if the doc has changed; the doc's Status dropdowns are the tracker.
+- Four phases, by priority, each shipped only when its gate passes: Phase 1 v2.1 Correct (P0), Phase 2 v2.2 Continuous (P1), Phase 3 v3.0 Companion (P2 + new surfaces), Phase 4 v3.1 Scale. Requirement IDs: CORR-, EVAL-, CONV-, PERF-, SURF-, FEED-, PLAT-, BIZ-. Branch per requirement (`corr-01-dividend-field`); the PRD's "Engineering contracts for v3 work" section applies on top of the contracts below.
+- Source review (2026-10-18 product + AI engineering review, probe results, trace stats): https://claude.ai/code/artifact/6b6718f8-a692-4d54-96f5-84e77af58974.
+
+The production-readiness PRD (Phases 0–3, done) is the previous plan, also a living Claude Doc:
 https://claude.ai/code/artifact/9bae50e1-07a3-44c1-a152-133336d4b915.
 
-- An offline snapshot is at `docs/PRD_PRODUCTION_READINESS.md`. Re-export it from the doc if the doc has changed.
-- The PRD's "Roadmap and release gates" section lists the items for each phase, by ID (SEC-, VAL-, LLM-, DATA-, REL-, TEST-, OBS-, ARCH-, UX-, COMP-, OPS-).
+- An offline snapshot is at `docs/PRD_PRODUCTION_READINESS.md`.
+- Its "Roadmap and release gates" section lists the items for each phase, by ID (SEC-, VAL-, LLM-, DATA-, REL-, TEST-, OBS-, ARCH-, UX-, COMP-, OPS-).
 - Phases 0 and 1 are done (PR #1, PR #2). Phase 2 is done on branch `phase2-production-ready` (PR #3); deviations are listed in the PR and the PRD's Phase 2 status note. Hosting (OPS-03) is skipped by the owner's decision: docker-compose is the reference deployment.
 - Phase 3 is done on branch `phase3-scale-polish` (20 items, one commit each): see the PRD's Phase 3 status note. Migrations 0022–0027 are new and not yet applied to Neon (steps in the owner TODO file named above). Cost model and capacity plan: `docs/CAPACITY.md`; load results: `docs/load/`.
 - The live smoke test (2026-10-17, re-run 2026-10-18) found and fixed the issues listed in `docs/smoke/2026-10-17-live-smoke.md` (branch `smoke-test-fixes`, no new migrations). Evals were re-recorded; the only open items are listed there.
@@ -112,7 +119,7 @@ https://claude.ai/code/artifact/9bae50e1-07a3-44c1-a152-133336d4b915.
 - **Verification severity** (smoke-test fixes): deterministic and semantic issues are `hard` (evidence withheld, the yes/no gate asks, naming the claim); LLM-judge issues are `soft` (answer shown with a note from `graph/caveats.py`). An unusable judge reply is `judge_status="unavailable"`, never "clean".
 - **No company, no tools**: company-bound tools (`graph/analysis_tools.py::COMPANY_BOUND_TOOLS`) are never planned without a company; the turn asks which one (`missing_company`). Tools that read the user's words (`_query`, fund names) must key their cache on them (`tests/graph/test_cache_contract.py`).
 - **Advice boundary** (COMP-01 / LLM-09): education-only (`docs/ADVICE_POLICY.md`). Requests go through `graph/guardrails.py::check_input` before the graph (refuse / reframe); every answer goes through `finalize` (removes promise / buy-sell-call sentences, appends the footer from `graph/advice_policy.py`). Never ask the LLM to add disclaimers, and never prompt for personal picks.
-- **Evaluation** (LLM-01): `make eval` (or `python evals/runner.py --replay --compare evals/baseline.json`) must stay green; CI blocks a >2-point drop. Changing a node prompt invalidates its recorded fixtures — re-record with `python evals/runner.py --record`, then `make eval-baseline`. Add golden cases in `evals/build_golden.py` and re-run it.
+- **Evaluation** (LLM-01): `make eval` (or `python evals/runner.py --replay --compare evals/baseline.json`) must stay green; CI blocks a >2-point drop. Changing a node prompt invalidates its recorded fixtures — re-record with `python evals/runner.py --record`, then `make eval-baseline`. Add golden cases in `evals/build_golden.py` and re-run it. The answer-level eval (v3 EVAL-01, `evals/answers/run.py`, `make eval-answers`) runs whole turns on recorded replies (`evals/fixtures/answers.jsonl`) and the frozen fixtures, and scores the final text. A change to a prompt, a node or rendered evidence needs `make eval-answers-record`, then `make eval-answers-baseline`. Add cases in `evals/answers/build_cases.py`.
 - **Schema** (ARCH-01): schema changes are new Alembic revisions in `migrations/versions/`; app code never runs DDL.
 - **Concurrency**: chat turns run concurrently (`CHAT_CONCURRENCY`), one per user (`respond_exclusive`); module-level mutable state must be thread-safe.
 - **Config** (ARCH-03): add settings to `config.Settings` (typed, validated at boot), never `os.getenv` in app code.

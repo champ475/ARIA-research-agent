@@ -6,6 +6,7 @@ fundamentals tests (DATA-03).
     python scripts/freeze_fundamentals.py TCS SBIN   # just these
     python scripts/freeze_fundamentals.py --references   # recompute references, offline
     python scripts/freeze_fundamentals.py --ohlcv        # 1y daily bars for the indicator tests
+    python scripts/freeze_fundamentals.py --merge-info   # add new INFO_FIELDS only, statements untouched
 
 For each company writes tests/fixtures/fundamentals/<SYMBOL>.json with:
 - `info`: the quote fields the ratio code reads, as Yahoo reported them;
@@ -62,6 +63,13 @@ INFO_FIELDS = [
     "currentRatio",
     "profitMargins",
     "totalRevenue",
+    # v3 CORR-01 / EVAL-01: dividend and analyst fields the answer eval checks.
+    "dividendYield",
+    "dividendRate",
+    "trailingAnnualDividendYield",
+    "payoutRatio",
+    "targetMeanPrice",
+    "numberOfAnalystOpinions",
 ]
 
 
@@ -135,6 +143,22 @@ def freeze(symbol: str) -> Path:
     return path
 
 
+def merge_info(symbol: str) -> Path:
+    """Add the INFO_FIELDS a fixture lacks, from today's quote, leaving the
+    frozen statements, prices and references untouched."""
+    import yfinance as yf
+
+    path = OUT / f"{symbol}.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    info = yf.Ticker(f"{symbol}.NS").info or {}
+    for k in INFO_FIELDS:
+        if k not in doc["info"] and info.get(k) is not None:
+            doc["info"][k] = info[k]
+    doc["info_merged_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    path.write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
 def freeze_ohlcv(symbol: str) -> Path:
     import yfinance as yf
 
@@ -160,6 +184,13 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["--ohlcv"]:
         for sym in OHLCV_SYMBOLS:
             log.info("froze %s", freeze_ohlcv(sym).name)
+        return 0
+    if argv[:1] == ["--merge-info"]:
+        for sym in argv[1:] or [s for group in COMPANIES.values() for s in group]:
+            try:
+                log.info("merged %s", merge_info(sym).name)
+            except Exception as e:  # keep going; report at the end
+                log.error("%s failed: %s", sym, type(e).__name__)
         return 0
     symbols = argv or [s for group in COMPANIES.values() for s in group]
     for s in symbols:
