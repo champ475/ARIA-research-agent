@@ -39,7 +39,7 @@ _DEFAULT_TTL_SECONDS = 900
 # Bumped whenever the key scheme changes, so rows written under an old (and
 # possibly under-specified) scheme can never be served again. v2 = DATA-01:
 # query-driven tools started adding their parsed inputs to the key.
-_KEY_VERSION = 3  # v3: statement currency, lender rows and fund names changed what is stored
+_KEY_VERSION = 4  # v4: calculation details lost their doubled rupee sign (v3: statement currency, lender rows, fund names)
 
 
 def compute_args_hash(entity: str, **kwargs: Any) -> str:

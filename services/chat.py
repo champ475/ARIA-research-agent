@@ -183,8 +183,10 @@ def download_link(url: str, label: str) -> str:
 
 def download_links(pdf_url: str | None, md_url: str | None, csv_url: str | None) -> str:
     """OPS-02: the answer's download links, as a line under it ("" if none)."""
+    from utils.report_files import pdf_available
+
     links = [
-        download_link(pdf_url or "", "⬇ Download PDF"),
+        download_link((pdf_url or "") if pdf_available() else "", "⬇ Download PDF"),
         download_link(md_url or "", "⬇ Download Markdown"),
         download_link(csv_url or "", "⬇ Export results (CSV)"),
     ]

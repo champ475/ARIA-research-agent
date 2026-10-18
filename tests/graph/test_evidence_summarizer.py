@@ -133,3 +133,12 @@ class TestCapEvidenceForPrompt:
 
     def test_empty_summary_returns_empty(self):
         assert cap_evidence_for_prompt({}, char_budget=6000) == {}
+
+
+def test_company_profile_noise_is_left_out_of_the_summary():
+    from graph.nodes.evidence_summarizer import _summarize_payload
+
+    out = _summarize_payload(
+        {"currentPrice": 10.0, "phone": "91 22", "address1": "x", "longBusinessSummary": "y"}
+    )
+    assert out == {"currentPrice": 10.0}

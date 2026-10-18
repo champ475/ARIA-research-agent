@@ -16,6 +16,13 @@ Trade-offs → Future improvements.
 
 ---
 
+## 2026-10-18 — Pointer-only company carry-over, no loop on soft judge issues
+**Problem.** Live traces showed a general question after a company chat ("What does a high P/E mean?", "Which stock should I buy?") inherited the earlier company and either found "no data" or researched a stock nobody named. The LLM judge flagged the user's own question as an uncited claim on 41% of calls, and each flag sent the turn through another Reflection and judge pass (2 to 3 LLM calls, extra tools, 20 to 39 s).
+**Alternatives considered.** Drop judge issues whose claim equals the objective: tried, reverted, the recorded calibration set shows true flags restate the objective too (recall 0.92 to 0.08). New judge prompt: needs live re-recording of the calibration fixtures and does not remove the loop cost. Carry the company only when the analyzer LLM says so: the analyzer was already right (empty companies); the fault was in code after it.
+**Final decision.** History supplies a company only when the message points at one or reads as a follow-up (`is_follow_up`). Verification routes to Reflection only for hard faults; soft judge issues go to the answer as a note, and a note that restates the question is shown generally. Reframed questions with no company use the direct path.
+**Trade-offs.** A follow-up phrased with no pointer word and more than four words ("and how about the valuation of that one") asks nothing of history and now lacks a company, so the turn asks which company. A real gap the judge finds is no longer retried; the answer carries the note.
+**Future improvements.** A judge prompt that names claims from the answer, re-recorded with calibration; score live flag rate from traces as a metric.
+
 ## 2026-10-18 — "Night Ledger" visual system: dark by default, web fonts, CSS-mask icons
 **Problem.** The UI used GitHub Primer colours, the system font and emoji as its only icons; the chat column stacked six controls above the input; the auth pages had their own unrelated stylesheet; and charts used a separate TradingView palette. The look had no identity, and several CSS selectors (`.tab-nav`) no longer matched Gradio 6's DOM.
 **Alternatives considered.** (1) A Gradio theme object only (`gr.themes.Base(...)` with hues): too coarse for the chat, sidebar and tables, and still emoji icons. (2) A custom Svelte/React front end: rewrites working, tested event wiring for a visual change. (3) Self-hosted fonts and an icon font via a new static route: a new `StaticFiles` mount and assets to maintain, when the CSP already allows Google Fonts and `data:` URIs.

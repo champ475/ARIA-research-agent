@@ -301,8 +301,19 @@ def blocking_resolutions(state: dict) -> list[dict]:
     if missing:
         return missing
     if not state.get("entities"):
-        return [u for u in unresolved if u["status"] == "not_found"]
+        return _without_fragments([u for u in unresolved if u["status"] == "not_found"])
     return []
+
+
+def _without_fragments(not_found: list[dict]) -> list[dict]:
+    """One phrase ("XYZ Widgets Ltd") can be found twice, as the whole name and as a
+    fragment ("XYZ"). Keep the longest, so the reply says it once."""
+    names = [normalise_name(u["query"]) for u in not_found]
+    return [
+        u
+        for u, n in zip(not_found, names, strict=True)
+        if not any(n != other and n and n in other for other in names)
+    ]
 
 
 def _option(c: dict) -> str:
@@ -455,6 +466,28 @@ _NOT_ABOUT_ONE_COMPANY = re.compile(
     r"holdings|watchlist|reports?|alerts?|gainers|losers|movers)\b",
     re.IGNORECASE,
 )
+
+
+_FOLLOW_UP_LEAD = re.compile(
+    r"^\s*(?:and|also|then|now|what\s+about|how\s+about|which\s+(?:one|has|is|of\s+(?:them|these|the\s+two)))\b",
+    re.IGNORECASE,
+)
+_SHORT_FOLLOW_UP_WORDS = 4  # "RSI?", "and the PE" — a bare metric reads as a follow-up
+
+
+def is_follow_up(query: str) -> bool:
+    """True when a company-less message continues the previous company's thread
+    ("its debt", "and the PE?", "RSI?"). A general question ("what does a high P/E
+    mean?", "which stock should I buy?") names no company and points at none, so
+    the earlier company must not be injected into it (live smoke 2026-10-18)."""
+    from graph.data_questions import DATA_WORDS, DEFINITIONAL
+
+    q = query or ""
+    if _COMPANY_POINTER.search(q) or _FOLLOW_UP_LEAD.search(q):
+        return True
+    if DEFINITIONAL.search(q) or _NOT_ABOUT_ONE_COMPANY.search(q):
+        return False
+    return len(q.split()) <= _SHORT_FOLLOW_UP_WORDS and bool(DATA_WORDS.search(q))
 
 
 def lacks_company(query: str, intent: str | None) -> bool:

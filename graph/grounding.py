@@ -190,13 +190,32 @@ _PLANNING_RETURN_CONTEXT = re.compile(
 )
 
 
+_ILLUSTRATIVE = re.compile(
+    r"\b(?:for\s+example|for\s+instance|e\.g\.|example|suppose|imagine|hypothetical(?:ly)?|illustrat\w+)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_concept_prompt(sources: str) -> bool:
+    """True for a no-live-data answer (a concept question): nothing was fetched, so the only
+    figures it can carry are worked examples."""
+    from graph.data_questions import NO_LIVE_DATA_INSTRUCTION
+
+    return bool(sources) and sources.lstrip().startswith(NO_LIVE_DATA_INSTRUCTION.strip()[:60])
+
+
 def check(text: str, sources: str, *, mode: str = "default") -> GroundingResult:
     """Which figures in `text` aren't supported by `sources`. mode="planning"
     checks rupee amounts and return/performance claims only — the allocation
     percentages of a model portfolio are its design, not data claims."""
     values, derived = _source_pool(sources)
     result = GroundingResult()
-    for sentence in re.split(r"(?<=[.!?])\s+|\n", text or ""):
+    concept = _is_concept_prompt(sources)
+    # A worked example in a concept answer ("Suppose a share trades at ₹500...") is not a data
+    # claim: skip the paragraphs that announce one. Elsewhere every figure is checked.
+    paragraphs = [p for p in re.split(r"\n\s*\n", text or "") if not (concept and _ILLUSTRATIVE.search(p))]
+    sentences = [s for p in paragraphs for s in re.split(r"(?<=[.!?])\s+|\n", p)]
+    for sentence in sentences:
         for fig in extract_figures(sentence):
             if mode == "planning" and fig.percent and not _PLANNING_RETURN_CONTEXT.search(sentence):
                 continue

@@ -58,7 +58,7 @@ def _build_row(sym: str) -> list:
         if not df.empty:
             ta = snapshot(compute_all(df.copy()))
             rsi = ta.get("RSI")
-            rsi = "N/A" if rsi is None else rsi
+            rsi = "N/A" if rsi is None else round(float(rsi), 1)
     except Exception:
         pass
 

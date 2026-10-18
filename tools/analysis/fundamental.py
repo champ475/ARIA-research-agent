@@ -129,8 +129,8 @@ def compute(info: dict, financials: dict, fx: float | None = None) -> dict:
         d["roce"] = round(roce_val * 100, 2)
         d["roce_detail"] = (
             f"ROCE = EBIT / (Total Assets − Current Liabilities)\n"
-            f"     = ₹{fmt_num(eb)} / (₹{fmt_num(assets)} − ₹{fmt_num(cl)})\n"
-            f"     = ₹{fmt_num(eb)} / ₹{fmt_num(assets - cl)}\n"
+            f"     = {fmt_num(eb)} / ({fmt_num(assets)} − {fmt_num(cl)})\n"
+            f"     = {fmt_num(eb)} / {fmt_num(assets - cl)}\n"
             f"     = {d['roce']:.2f}%\n"
             f"     Method: latest fiscal year, consolidated; annual reports may use average capital employed."
         )
@@ -144,7 +144,7 @@ def compute(info: dict, financials: dict, fx: float | None = None) -> dict:
     if ca and cl and cl != 0:
         d["current_ratio"] = round(ca / cl, 2)
         d["cr_detail"] = (
-            f"Current Ratio = ₹{fmt_num(ca)} / ₹{fmt_num(cl)} = {d['current_ratio']}\n"
+            f"Current Ratio = {fmt_num(ca)} / {fmt_num(cl)} = {d['current_ratio']}\n"
             f"     Method: latest fiscal-year balance sheet, consolidated."
         )
     else:
@@ -237,7 +237,7 @@ def compute(info: dict, financials: dict, fx: float | None = None) -> dict:
         nii, assets = raw.get("net_interest_income"), d["total_assets"]
         d["nim_proxy"] = _ratio(nii, assets)
         d["nim_detail"] = (
-            f"NII / Total Assets = ₹{fmt_num(nii)} / ₹{fmt_num(assets)} = {pct(d['nim_proxy'])}\n"
+            f"NII / Total Assets = {fmt_num(nii)} / {fmt_num(assets)} = {pct(d['nim_proxy'])}\n"
             "     Method: a proxy. Reported NIM divides by average interest-earning assets, "
             "so it reads higher."
             if d["nim_proxy"] is not None
@@ -377,7 +377,7 @@ def _compute_de(raw: dict, info: dict) -> dict:
         de_val = round(debt / equity, 2)
         detail = (
             f"D/E = Total Debt / Total Equity\n"
-            f"    = ₹{fmt_num(debt)} / ₹{fmt_num(equity)}\n"
+            f"    = {fmt_num(debt)} / {fmt_num(equity)}\n"
             f"    = {de_val:.2f}x\n"
             f"    Source: Balance sheet (recomputed)\n"
             f"    Method: total borrowings incl. lease liabilities ÷ shareholders' equity (excl. minority interest)."

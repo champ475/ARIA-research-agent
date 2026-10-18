@@ -573,6 +573,13 @@ class _GeminiProvider(ThreadLocalUsage):
 _DEFAULT_SYSTEM = prompts.get("llm.default_system")
 
 
+def _span_usage(span_out: dict, provider) -> None:
+    """Token usage on the LLM span, so a slow call can be told from a big one in the trace."""
+    usage = getattr(provider, "last_usage", None)
+    if isinstance(usage, tuple):
+        span_out["usage"] = {"prompt_tokens": usage[0], "completion_tokens": usage[1]}
+
+
 class LLMClient:
     """
     With no `provider_config`: tries Groq (with key rotation) first, falls
@@ -780,7 +787,12 @@ class LLMClient:
                     f"llm {provider.name}",
                     "llm",
                     inputs={"prompt": prompt},
-                    metadata={"model": model or "", "prompt_version": self._prompt_version, "stream": True},
+                    metadata={
+                        "model": model or str(getattr(provider, "model", "") or ""),
+                        "node": self._node or "",
+                        "prompt_version": self._prompt_version,
+                        "stream": True,
+                    },
                 ) as span_out:
                     for chunk in provider.stream(prompt, temperature, max_tokens, model):
                         started = True
@@ -788,6 +800,7 @@ class LLMClient:
                         streamed.append(chunk)
                         yield chunk
                     span_out["output"] = "".join(streamed)
+                    _span_usage(span_out, provider)
                 self._record_llm_call(
                     provider, prompt, "".join(streamed), streamed=True, ms=int((time.monotonic() - t0) * 1000)
                 )
@@ -844,10 +857,15 @@ class LLMClient:
                         f"llm {provider.name}",
                         "llm",
                         inputs={"prompt": prompt},
-                        metadata={"model": model or "", "prompt_version": self._prompt_version},
+                        metadata={
+                            "model": model or str(getattr(provider, "model", "") or ""),
+                            "node": self._node or "",
+                            "prompt_version": self._prompt_version,
+                        },
                     ) as span_out:
                         result = getattr(provider, method)(prompt, temperature, max_tokens, model)
                         span_out["output"] = result
+                        _span_usage(span_out, provider)
                     self._active = provider.name
                     self._record_llm_call(provider, prompt, result, ms=int((time.monotonic() - t0) * 1000))
                     return result

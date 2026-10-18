@@ -163,3 +163,12 @@ def test_real_render_never_fetches_and_pdf_has_no_hosts_content(tmp_path):
     assert "SECRET-HOSTS-LINE" not in text
     assert "document.cookie" not in text
     assert "24.3" in text
+
+
+def test_no_pdf_link_when_pdf_rendering_is_unavailable(monkeypatch):
+    from services import chat as chat_svc
+    from utils import report_files
+
+    monkeypatch.setattr(report_files, "pdf_available", lambda: False)
+    text = chat_svc.download_links("/download/report/1.pdf", "/download/report/1.md", None)
+    assert "PDF" not in text and "Markdown" in text

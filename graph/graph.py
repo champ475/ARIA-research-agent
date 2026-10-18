@@ -148,7 +148,14 @@ def build_graph(
         issues = state.get("verification_issues") or []
         loop_count = state.get("loop_count", 0)
         max_loops = state.get("max_loops", 2)
-        return "Reflection" if issues and loop_count < max_loops else "VerificationGate"
+        if not issues or loop_count >= max_loops:
+            return "VerificationGate"
+        # Only a hard fault (schema, contradiction, low confidence) is worth another
+        # research pass. The judge's issues are soft: the answer ships with a note. Looping
+        # on them re-ran Reflection and the judge for the same flag, 2 to 3 LLM calls and a
+        # tool fan-out (live traces 2026-10-18).
+        hard = any(i.get("severity", "hard") != "soft" for i in issues)
+        return "Reflection" if hard else "VerificationGate"
 
     graph.add_conditional_edges("Verification", _route_after_verification, ["Reflection", "VerificationGate"])
 
