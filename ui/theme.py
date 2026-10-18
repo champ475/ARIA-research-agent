@@ -73,6 +73,11 @@ APP_JS = """(() => {
     document.querySelectorAll('.tab-container.visually-hidden[aria-hidden="true"]').forEach((el) => {
       el.inert = true;
     });
+    // The conversation scrolls (the welcome note or a long answer can overflow it):
+    // keyboard users must be able to focus it to scroll (WCAG 2.1.1, axe scrollable-region-focusable).
+    document.querySelectorAll('.bubble-wrap[role="log"]:not([tabindex])').forEach((el) => {
+      el.setAttribute('tabindex', '0');
+    });
     const btn = document.getElementById('theme-btn');
     if (btn && !btn.hasAttribute('aria-pressed')) apply();
     // UX-08: on a phone the chat history starts collapsed (once per page load).
