@@ -119,3 +119,10 @@ class TestComputeEndToEnd:
         d = fundamental.compute(_info(), {})
         assert d["price"] == 150.0
         assert d["de"] is not None  # falls back to upstream debtToEquity
+
+
+def test_calculation_details_show_one_rupee_sign_per_amount():
+    """Live smoke 2026-10-18: "₹₹66714.00Cr" — fmt_num already adds the sign."""
+    out = fundamental._compute_de({"total_debt": 3e11, "total_equity": 6e11}, {})
+    assert "₹₹" not in out["detail"]
+    assert out["detail"].count("₹") == 2
