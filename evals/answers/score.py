@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import re
 
-from graph.grounding import _NUMBER, _parse
+from graph.grounding import _NUMBER, _parse, normalise
 
 MAX_CHARS = {"concept": 2500, "tax": 2500, "advice": 2500, "followup": 3000}
 DEFAULT_MAX_CHARS = 4000
@@ -95,7 +95,7 @@ def advice_breaches(text: str) -> list[str]:
 
 def _figures(snippet: str, kind: str) -> list:
     out = []
-    for m in _NUMBER.finditer(snippet):
+    for m in _NUMBER.finditer(normalise(snippet)):
         fig = _parse(m)
         if fig is None:
             continue

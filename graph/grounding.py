@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 
 import prompts
 from utils.numbers import UNIT_MULTIPLIERS
@@ -52,10 +53,49 @@ _BEFORE_NOT_A_FIGURE = re.compile(
     re.IGNORECASE,
 )
 _LIST_MARKER = re.compile(r"^\s*(?:[-*]\s*)?\d+[.)]\s")
+# "SMA 200", "EMA(50)": a moving average's period, not a figure (a level after it, "SMA 1,344.06", is).
+_MA_PERIOD_BEFORE = re.compile(r"\b[sedw]ma\s?\(?$", re.IGNORECASE)
 # A small bare integer is usually a count ("3 funds") — unless a metric word
 # sits right before it ("a P/E of 99", "RSI at 72", "target 95").
 _METRIC_BEFORE = re.compile(
     r"\b(?:p\s*/?\s*e|p\s*/?\s*b|pe|pb|roe|roce|rsi|eps|beta|ratio|yield|margin|multiple|target|price|nav|score)\b[^\d]{0,12}$",
+    re.IGNORECASE,
+)
+
+
+# CORR-02: models write minus as an en dash, a non-breaking hyphen, a figure
+# dash or U+2212, and group digits with no-break or thin spaces ("4 436").
+# Normalised on both sides before numbers are read. A dash between two
+# numbers ("150–200") stays a range.
+_DASH_MINUS = re.compile(r"(?<![\w.,])[‑‒–−](?=\s?(?:₹|rs\.?|inr)?\s?\d)", re.IGNORECASE)
+_SIGN_BEFORE_CURRENCY = re.compile(r"(?<![\w.,])-\s?(₹|rs\.?|inr)\s?(?=\d)", re.IGNORECASE)
+_GROUPING_SPACE = re.compile(r"(?<=\d)[   ](?=\d{2,3}(?!\d))")
+# "₹965 – ₹1,508", "10 % – 12 %", "150 cr – 200 cr": a dash after a figure joins a range.
+_RANGE_BEFORE = re.compile(r"[\d%)](?:\s?(?:crores?|cr|lakhs?|k|x))?\s*$", re.IGNORECASE)
+
+
+def _unless_range(text: str, replacement: Callable[[re.Match], str]) -> Callable[[re.Match], str]:
+    def sub(m: re.Match) -> str:
+        if _RANGE_BEFORE.search(text[max(0, m.start() - 12) : m.start()]):
+            return m.group(0)
+        return replacement(m)
+
+    return sub
+
+
+def normalise(text: str) -> str:
+    text = text or ""
+    text = _DASH_MINUS.sub(_unless_range(text, lambda m: "-"), text)
+    # "-₹1,200" -> "₹-1,200", so the currency and the sign both reach the figure.
+    return _GROUPING_SPACE.sub(
+        "", _SIGN_BEFORE_CURRENCY.sub(_unless_range(text, lambda m: f"{m.group(1)}-"), text)
+    )
+
+
+# A sentence about a fall may state the size of a negative figure without its sign
+# ("a drawdown of 34.5%" for -34.5).
+_LOSS = re.compile(
+    r"\b(?:drawdown|draw-down|fell|fall(?:s|en|ing)?|declin\w*|dropp?\w*|lost|loss(?:es)?|down|slump\w*|negative)\b",
     re.IGNORECASE,
 )
 
@@ -109,7 +149,7 @@ def extract_figures(text: str, *, all_numbers: bool = False) -> list[Figure]:
     """Figures worth checking in `text` (or, with all_numbers, every number —
     used for the source side)."""
     figures: list[Figure] = []
-    for line in (text or "").split("\n"):
+    for line in normalise(text).split("\n"):
         # A table separator or a "1." list marker isn't a figure.
         line_body = _LIST_MARKER.sub(" ", line) if not all_numbers else line
         for m in _NUMBER.finditer(line_body):
@@ -124,6 +164,8 @@ def extract_figures(text: str, *, all_numbers: bool = False) -> list[Figure]:
             if _BEFORE_NOT_A_FIGURE.search(before) or _AFTER_NOT_A_FIGURE.search(after):
                 continue
             if before.rstrip().endswith("[^") or before[-1:] == "(" and after[:1] == ")":
+                continue
+            if fig.decimals == 0 and 0 < fig.number <= 400 and _MA_PERIOD_BEFORE.search(before):
                 continue
             if not fig.percent and not fig.rupees and fig.decimals == 0 and 1900 <= fig.number <= 2100:
                 continue  # a year
@@ -154,6 +196,10 @@ def _close(fig: Figure, candidate: float, scales: tuple[float, ...] = _SCALES) -
             ):
                 return True
     return False
+
+
+def _supported(fig: Figure, values: list[float], derived: list[float]) -> bool:
+    return any(_close(fig, v) for v in values) or any(_close(fig, d, (1.0,)) for d in derived)
 
 
 def _source_pool(sources: str, limit: int = 60) -> tuple[list[float], list[float]]:
@@ -213,16 +259,25 @@ def check(text: str, sources: str, *, mode: str = "default") -> GroundingResult:
     concept = _is_concept_prompt(sources)
     # A worked example in a concept answer ("Suppose a share trades at ₹500...") is not a data
     # claim: skip the paragraphs that announce one. Elsewhere every figure is checked.
-    paragraphs = [p for p in re.split(r"\n\s*\n", text or "") if not (concept and _ILLUSTRATIVE.search(p))]
+    paragraphs = [
+        p for p in re.split(r"\n\s*\n", normalise(text)) if not (concept and _ILLUSTRATIVE.search(p))
+    ]
     sentences = [s for p in paragraphs for s in re.split(r"(?<=[.!?])\s+|\n", p)]
     for sentence in sentences:
+        loss = bool(_LOSS.search(sentence))
         for fig in extract_figures(sentence):
             if mode == "planning" and fig.percent and not _PLANNING_RETURN_CONTEXT.search(sentence):
                 continue
             result.checked += 1
             # Derivations are compared as-is: rescaling them too would let a
             # 5.0% move "support" a ₹5,000 figure.
-            if any(_close(fig, v) for v in values) or any(_close(fig, d, (1.0,)) for d in derived):
+            if _supported(fig, values, derived):
+                continue
+            if (
+                loss
+                and fig.number > 0
+                and _supported(replace(fig, value=-fig.value, number=-fig.number), values, [])
+            ):
                 continue
             if fig.raw not in result.unsupported:
                 result.unsupported.append(fig.raw)
