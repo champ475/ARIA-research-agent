@@ -153,7 +153,7 @@ def test_alerts_tab_create_in_chat_then_edit_and_delete(page: Page, base_url, em
     uid = _user_id(db, email)
     aid = db.execute("SELECT id FROM alerts WHERE user_id=%s", (uid,)).fetchone()["id"]
 
-    open_tab(page, "🔔 Alerts")
+    open_tab(page, "Alerts")
     table = page.locator("#alerts-table")
     expect(table).to_contain_text("TCS", timeout=ANSWER_TIMEOUT)
     expect(table).to_contain_text("Active")
@@ -215,13 +215,13 @@ def test_chat_history_rename_search_and_export(page: Page, base_url, email):
 def test_admin_tab_is_for_admins_only(page: Page, base_url, email, db):
     """OBS-05: a normal user has no Admin tab; an admin finds a user and sees the facts."""
     new_user(page, base_url, email)
-    expect(page.get_by_role("tab", name="💬 Chat")).to_be_visible()
-    assert page.get_by_role("tab", name="🛠 Admin").count() == 0
+    expect(page.get_by_role("tab", name="Chat")).to_be_visible()
+    assert page.get_by_role("tab", name="Admin").count() == 0
 
     db.execute("UPDATE users SET is_admin=TRUE WHERE email=%s", (email,))
     page.reload()
-    expect(page.get_by_role("tab", name="🛠 Admin")).to_be_visible(timeout=15_000)
-    open_tab(page, "🛠 Admin")
+    expect(page.get_by_role("tab", name="Admin")).to_be_visible(timeout=15_000)
+    open_tab(page, "Admin")
     page.locator("#admin-email input, #admin-email textarea").first.fill(email)
     page.locator("#admin-find").click()
     expect(page.locator("#admin-card")).to_contain_text(email, timeout=10_000)
@@ -250,8 +250,8 @@ def test_planning_intake_to_strategy(page: Page, base_url, email, db):
 # 11 ────────────────────────────────────────────────────────────────────────────
 def test_telegram_connect_link(page: Page, base_url, email):
     new_user(page, base_url, email)
-    open_tab(page, "⚙️ Settings")
-    page.get_by_role("button", name="🔗 Connect Telegram").click()
+    open_tab(page, "Settings")
+    page.get_by_role("button", name="Connect Telegram").click()
     link = page.get_by_role("link", name="Tap here to connect")
     expect(link).to_have_attribute(
         "href", re.compile(r"^https://t\.me/aria_e2e_bot\?start=[\w-]+$"), timeout=15_000
@@ -261,34 +261,34 @@ def test_telegram_connect_link(page: Page, base_url, email):
 # 12 ────────────────────────────────────────────────────────────────────────────
 def test_watchlist_add_and_remove(page: Page, base_url, email):
     new_user(page, base_url, email)
-    open_tab(page, "📌 Watchlist")
+    open_tab(page, "Watchlist")
     page.get_by_placeholder("Add symbol (e.g. TCS, RELIANCE)").fill("Infosys")
-    page.get_by_role("button", name="➕ Add").click()
+    page.get_by_role("button", name="Add", exact=True).click()
     expect(page.locator("#wl-table")).to_contain_text("INFY", timeout=30_000)
     page.get_by_placeholder("Add symbol (e.g. TCS, RELIANCE)").fill("<script>")
-    page.get_by_role("button", name="➕ Add").click()
+    page.get_by_role("button", name="Add", exact=True).click()
     expect(page.locator("body")).to_contain_text(
         re.compile(r"Couldn't find|enter the exact NSE symbol"), timeout=15_000
     )
     expect(page.locator("#wl-table")).not_to_contain_text("script")  # rejected, not stored
     page.get_by_placeholder("Remove symbol").fill("INFY")
-    page.get_by_role("button", name="➖ Remove").click()
+    page.get_by_role("button", name="Remove", exact=True).click()
     expect(page.locator("#wl-table")).not_to_contain_text("INFY", timeout=30_000)
 
 
 # 13 ────────────────────────────────────────────────────────────────────────────
 def test_byo_key_save_and_use(page: Page, base_url, email, db):
     new_user(page, base_url, email)
-    open_tab(page, "⚙️ Settings")
+    open_tab(page, "Settings")
     page.get_by_label("Model").fill("gpt-4o-mini")
     page.get_by_label("API Key").fill("sk-e2e-test-key")
-    page.get_by_role("button", name="💾 Save key").click()
+    page.get_by_role("button", name="Save key").click()
     expect(page.locator("body")).to_contain_text("Using your own key", timeout=15_000)
     row = db.execute(
         "SELECT model, api_key_encrypted FROM user_llm_config WHERE user_id=%s", (_user_id(db, email),)
     ).fetchone()
     assert row["model"] == "gpt-4o-mini" and "sk-e2e" not in row["api_key_encrypted"]
-    open_tab(page, "💬 Chat")
+    open_tab(page, "Chat")
     ask(page, "Analyse TCS")
     assert ERROR not in wait_answer(page)
 

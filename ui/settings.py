@@ -9,7 +9,7 @@ import logging
 import gradio as gr
 
 from services import settings as svc
-from ui.theme import LOGOUT_JS
+from ui.theme import LOGOUT_JS, page_header, section_header
 from utils.escaping import md_cell
 from utils.helpers import IST as IST_TZ
 
@@ -50,29 +50,40 @@ def build_settings_tab(user_state: gr.State):
     key configured, every user gets a small free trial on the app's own
     Groq/Gemini keys (agents/graph_orchestrator.py's quota check).
     """
-    gr.Markdown(
-        "## ⚙️ Settings\n"
-        "Bring your own LLM key — any OpenAI-compatible provider works. "
-        "Without one, you get a free daily trial on the app's shared keys."
+    gr.HTML(
+        page_header("Settings", "Your model key, where alerts reach you, and the devices signed in to ARIA.")
     )
 
-    status = gr.Markdown("")
-
-    with gr.Row():
-        model_box = gr.Textbox(
-            label="Model", placeholder="e.g. gpt-4o-mini, llama-3.3-70b-versatile", scale=2
+    gr.HTML(
+        section_header(
+            "Model and API key",
+            "Bring your own key from any OpenAI-compatible provider for unlimited use. "
+            "Without one, you get a free daily trial on ARIA's shared keys.",
         )
-        base_url_box = gr.Textbox(
-            label="Base URL (optional — leave blank for OpenAI itself)",
-            placeholder="e.g. https://openrouter.ai/api/v1",
-            scale=3,
-        )
-    api_key_box = gr.Textbox(label="API Key", type="password", placeholder="sk-...")
+    )
+    with gr.Column(elem_classes=["aria-panel"]):
+        status = gr.Markdown("", elem_classes=["status-line"])
+        with gr.Row():
+            model_box = gr.Textbox(
+                label="Model", placeholder="e.g. gpt-4o-mini, llama-3.3-70b-versatile", scale=2
+            )
+            base_url_box = gr.Textbox(
+                label="Base URL (optional — leave blank for OpenAI itself)",
+                placeholder="e.g. https://openrouter.ai/api/v1",
+                scale=3,
+            )
+        api_key_box = gr.Textbox(label="API Key", type="password", placeholder="sk-...")
 
-    with gr.Row():
-        save_btn = gr.Button("💾 Save key", variant="primary")
-        test_btn = gr.Button("🔌 Test connection", variant="secondary")
-        clear_btn = gr.Button("🗑️ Remove my key", variant="secondary")
+        with gr.Row(elem_classes=["toolbar"]):
+            save_btn = gr.Button(
+                "Save key", variant="primary", scale=0, elem_classes=["aria-ico", "ico-save"]
+            )
+            test_btn = gr.Button(
+                "Test connection", variant="secondary", scale=0, elem_classes=["aria-ico", "ico-plug"]
+            )
+            clear_btn = gr.Button(
+                "Remove my key", variant="stop", scale=0, elem_classes=["aria-ico", "ico-trash"]
+            )
 
     def _refresh_status(user_id):
         if not user_id:
@@ -109,14 +120,18 @@ def build_settings_tab(user_state: gr.State):
     clear_btn.click(_clear, inputs=[user_state], outputs=[status, model_box, base_url_box, api_key_box])
     user_state.change(_refresh_status, inputs=[user_state], outputs=[status], show_progress="hidden")
 
-    gr.Markdown(
-        "---\n### 🔔 Telegram Alerts\nConnect your own Telegram chat so alerts you create come straight to you."
+    gr.HTML(
+        section_header(
+            "Telegram alerts", "Connect your own Telegram chat so the alerts you create come straight to you."
+        )
     )
-    tg_status = gr.Markdown("")
-
-    with gr.Row():
-        tg_connect_btn = gr.Button("🔗 Connect Telegram", variant="primary")
-        tg_disconnect_btn = gr.Button("🔌 Disconnect", variant="secondary")
+    with gr.Column(elem_classes=["aria-panel"]):
+        tg_status = gr.Markdown("", elem_classes=["status-line"])
+        with gr.Row(elem_classes=["toolbar"]):
+            tg_connect_btn = gr.Button(
+                "Connect Telegram", variant="primary", scale=0, elem_classes=["aria-ico", "ico-link"]
+            )
+            tg_disconnect_btn = gr.Button("Disconnect", variant="secondary", scale=0)
 
     def _tg_refresh(user_id):
         return svc.telegram_status_md(user_id) if user_id else ""
@@ -137,11 +152,16 @@ def build_settings_tab(user_state: gr.State):
     # ── Alert inbox (DATA-08) ────────────────────────────────────────────────
     # Fallback delivery channel: alerts that fired while Telegram wasn't linked
     # (or kept failing) land here instead of being silently dropped.
-    gr.Markdown("---\n### 📥 Alert inbox\nAlerts that couldn't be sent to Telegram are kept here.")
-    inbox_view = gr.Markdown("")
-    with gr.Row():
-        inbox_refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
-        inbox_read_btn = gr.Button("✓ Mark all read", variant="secondary")
+    gr.HTML(section_header("Alert inbox", "Alerts that couldn't be sent to Telegram are kept here."))
+    with gr.Column(elem_classes=["aria-panel"]):
+        inbox_view = gr.Markdown("")
+        with gr.Row(elem_classes=["toolbar"]):
+            inbox_refresh_btn = gr.Button(
+                "Refresh", variant="secondary", scale=0, elem_classes=["aria-ico", "ico-refresh"]
+            )
+            inbox_read_btn = gr.Button(
+                "Mark all read", variant="secondary", scale=0, elem_classes=["aria-ico", "ico-check"]
+            )
 
     def _inbox_refresh(user_id, notify: bool = False):
         if not user_id:
@@ -172,11 +192,19 @@ def build_settings_tab(user_state: gr.State):
     )
 
     # ── Account security (SEC-04) ─────────────────────────────────────────────
-    gr.Markdown("---\n### 🔐 Signed-in devices")
-    sessions_view = gr.Markdown("")
-    with gr.Row():
-        logout_others_btn = gr.Button("Log out other devices", variant="secondary")
-        logout_here_btn = gr.Button("Log out", variant="secondary")
+    gr.HTML(section_header("Devices and your data"))
+    with gr.Column(elem_classes=["aria-panel"]):
+        sessions_view = gr.Markdown("")
+        with gr.Row(elem_classes=["toolbar"]):
+            logout_others_btn = gr.Button("Log out other devices", variant="secondary", scale=0)
+            logout_here_btn = gr.Button(
+                "Log out", variant="secondary", scale=0, elem_classes=["aria-ico", "ico-logout"]
+            )
+        gr.Markdown(
+            "**Your data:** [download everything ARIA stores about you](/account/export) (JSON).  \n"
+            "**Delete account:** permanently remove your account and all its data: "
+            "[delete my account…](/account/delete)"
+        )
 
     def _sessions(user_id):
         if not user_id:
@@ -195,12 +223,6 @@ def build_settings_tab(user_state: gr.State):
 
         n = svc.logout_other_devices(user_id, request.cookies.get(COOKIE_NAME))
         return f"✅ Logged out {n} other session(s).\n\n" + _sessions(user_id)
-
-    gr.Markdown(
-        "**Your data** — [download everything ARIA stores about you](/account/export) (JSON) · "
-        "**Delete account** — permanently remove your account and all its data: "
-        "[delete my account…](/account/delete)"
-    )
 
     logout_others_btn.click(_logout_others, inputs=[user_state], outputs=[sessions_view])
     logout_here_btn.click(None, js=LOGOUT_JS)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import gradio as gr
 
 from services import watchlist as wl
+from ui.theme import page_header
 from utils.errors import UserInputError
 from utils.escaping import html_text
 
@@ -24,11 +25,23 @@ def watchlist_table_html(rows: list[list]) -> str:
     plain HTML table has no such virtualization/diffing layer to misbehave.
     """
     if not rows:
-        return "<p class='wl-empty'>No symbols yet — add one below.</p>"
+        return "<p class='wl-empty'>No symbols yet. Add one above, for example <em>TCS</em> or <em>RELIANCE</em>.</p>"
     # SEC-10: every cell is escaped — symbols come from users, names from yfinance.
-    head = "".join(f"<th>{html_text(c)}</th>" for c in WATCHLIST_COLS)
-    body = "".join("<tr>" + "".join(f"<td>{html_text(cell)}</td>" for cell in row) + "</tr>" for row in rows)
-    return f"<table class='wl-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    head = "".join(f"<th class='{_COL_CLASS[i]}'>{html_text(c)}</th>" for i, c in enumerate(WATCHLIST_COLS))
+    body = "".join("<tr>" + "".join(_cell(i, cell) for i, cell in enumerate(row)) + "</tr>" for row in rows)
+    return f"<div class='table-scroll'><table class='wl-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
+
+
+# Column roles: the symbol is set in mono, the name wraps, every figure is right-aligned.
+_COL_CLASS = ["sym", "name", "num", "num", "num", "num", "num"]
+
+
+def _cell(i: int, value) -> str:
+    """One escaped cell; the change column ("▲ +1.20%" / "▼ -0.80%") is tinted gain or loss."""
+    text = html_text(value)
+    if i == 3 and isinstance(value, str) and value[:1] in ("▲", "▼"):
+        text = f"<span class='chg {'up' if value[0] == '▲' else 'dn'}'>{text}</span>"
+    return f"<td class='{_COL_CLASS[i] if i < len(_COL_CLASS) else ''}'>{text}</td>"
 
 
 def build_watchlist_tab(user_state: gr.State):
@@ -38,20 +51,12 @@ def build_watchlist_tab(user_state: gr.State):
     (bumped on every add/remove/refresh) so it re-renders on every change —
     see watchlist_table_html() for why it's plain HTML, not gr.Dataframe.
     """
-    gr.Markdown("## 📌 Watchlist\nTrack live prices and key indicators for your saved symbols.")
+    gr.HTML(page_header("Watchlist", "Live prices and key indicators for the symbols you follow."))
 
     wl_refresh = gr.State(0)
 
-    @gr.render(inputs=[user_state, wl_refresh])
-    def _render_table(user_id, _refresh):
-        rows = wl.table_rows(user_id) if user_id else []
-        gr.HTML(watchlist_table_html(rows), elem_id="wl-table")
-
-    # Status message
-    status = gr.Markdown("")
-
-    # Add / Remove / Refresh row
-    with gr.Row():
+    # Add / Remove / Refresh, above the table they change
+    with gr.Row(elem_classes=["toolbar"]):
         add_box = gr.Textbox(
             placeholder="Add symbol (e.g. TCS, RELIANCE)",
             label="",
@@ -60,12 +65,26 @@ def build_watchlist_tab(user_state: gr.State):
             lines=1,
             max_lines=1,
         )
-        add_btn = gr.Button("➕ Add", variant="primary", scale=1, min_width=80)
-        rem_box = gr.Textbox(
-            placeholder="Remove symbol", label="", show_label=False, scale=4, lines=1, max_lines=1
+        add_btn = gr.Button(
+            "Add", variant="primary", scale=0, min_width=80, elem_classes=["aria-ico", "ico-plus"]
         )
-        rem_btn = gr.Button("➖ Remove", variant="secondary", scale=1, min_width=80)
-        ref_btn = gr.Button("🔄 Refresh", variant="secondary", scale=1, min_width=90)
+        rem_box = gr.Textbox(
+            placeholder="Remove symbol", label="", show_label=False, scale=3, lines=1, max_lines=1
+        )
+        rem_btn = gr.Button(
+            "Remove", variant="secondary", scale=0, min_width=90, elem_classes=["aria-ico", "ico-minus"]
+        )
+        ref_btn = gr.Button(
+            "Refresh", variant="secondary", scale=0, min_width=90, elem_classes=["aria-ico", "ico-refresh"]
+        )
+
+    # Status message
+    status = gr.Markdown("", elem_classes=["status-line"])
+
+    @gr.render(inputs=[user_state, wl_refresh])
+    def _render_table(user_id, _refresh):
+        rows = wl.table_rows(user_id) if user_id else []
+        gr.HTML(watchlist_table_html(rows), elem_id="wl-table")
 
     def _add(user_id, sym_raw, refresh):
         try:
