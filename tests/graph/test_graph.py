@@ -314,9 +314,9 @@ class TestReflectionVerificationLoop:
         # CommunicationLayer was reached, it just handed off the prompt.
         assert resumed["pending_synthesis_prompt"]
 
-    def test_soft_judge_issue_loops_back_then_answers_with_a_note(self):
-        # The judge keeps raising a soft issue: Reflection gets its passes, then the
-        # answer is shown with a note (graph/caveats.py) instead of asking yes/no.
+    def test_soft_judge_issue_answers_with_a_note_without_another_pass(self):
+        # The judge raises a soft issue: the answer is shown with a note (graph/caveats.py)
+        # instead of asking yes/no, and Reflection/the judge are not run a second time.
         qa = _StubClient(
             json.dumps(
                 {
@@ -355,7 +355,7 @@ class TestReflectionVerificationLoop:
             assert "__interrupt__" not in resumed  # the judge could not confirm: note, not a stop
 
         node_order = [e["node"] for e in resumed["research_journal"]]
-        assert node_order.count("Verification") >= 2
+        assert node_order.count("Verification") == 1
         assert resumed["loop_count"] <= resumed["max_loops"]
         assert node_order[-1] == "CommunicationLayer"
         # intent="equity" defers the LLM call (see module's other tests) —

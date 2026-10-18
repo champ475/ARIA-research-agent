@@ -15,6 +15,7 @@ network or the local filesystem (no <img src="file:///etc/passwd">, no
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from typing import NoReturn
@@ -119,6 +120,17 @@ def sanitise_html(html_body: str) -> str:
 def report_filename(sym: str | None, rtype: str | None, ext: str) -> str:
     """A download filename that can't carry path separators or '..'."""
     return f"{_safe_name(sym, 'report')}_{_safe_name(rtype, 'report')}.{ext}"
+
+
+@functools.cache
+def pdf_available() -> bool:
+    """False when WeasyPrint's native libraries are missing (a local Windows run). The
+    answer then offers Markdown only, instead of a PDF link that returns a 503."""
+    try:
+        import weasyprint  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 def render_report(content: str) -> tuple[bytes, bytes | None]:

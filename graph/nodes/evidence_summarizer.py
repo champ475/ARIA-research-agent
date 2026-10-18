@@ -21,6 +21,16 @@ from graph.journal import log_decision
 from graph.nodes.execute_task import from_cacheable
 from graph.state import Evidence, GraphState
 
+# Company-profile fields that tell Reflection and the judge nothing about whether the
+# evidence answers the question (they were most of a quote_info entry in the traces).
+_NOISE_KEYS = frozenset(
+    {
+        "address1", "address2", "city", "state", "zip", "country", "phone", "fax", "website",
+        "longBusinessSummary", "companyOfficers", "irWebsite", "executiveTeam", "auditRisk",
+        "boardRisk", "compensationRisk", "shareHolderRightsRisk", "overallRisk", "maxAge",
+        "governanceEpochDate", "compensationAsOfEpochDate", "uuid", "messageBoardId",
+    }
+)  # fmt: skip
 _MAX_KEYS_PER_ENTRY = 40  # bounds one entry's own summary dict (e.g. get_info()'s 100+ fields)
 
 
@@ -40,7 +50,11 @@ def _summarize_payload(payload) -> dict:
     if isinstance(payload, dict):
         # Nested frames (fetch_financials' statements) are summarised too:
         # the summary lives in checkpointed state (TEST-04).
-        return {k: _frame_shape(v) if isinstance(v, pd.DataFrame) else v for k, v in payload.items()}
+        return {
+            k: _frame_shape(v) if isinstance(v, pd.DataFrame) else v
+            for k, v in payload.items()
+            if k not in _NOISE_KEYS
+        }
     if isinstance(payload, list):
         return {"count": len(payload)}
     return {"value": payload}

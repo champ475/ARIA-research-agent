@@ -238,12 +238,7 @@ class TestLLMJudgeStage:
         )
         node = build_verification_node(stub)
         result = node(
-            {
-                "evidence": [_evidence()],
-                "tasks": [_task()],
-                "objective": "Is TCS cheap right now",
-                "evidence_summary": {},
-            }
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
         )
         assert result["verification_issues"][0]["issue_type"] == "unsupported"
 
@@ -318,12 +313,7 @@ class TestVerificationLoopCount:
         )
         node = build_verification_node(stub)
         result = node(
-            {
-                "evidence": [_evidence()],
-                "tasks": [_task()],
-                "objective": "Is TCS cheap right now",
-                "evidence_summary": {},
-            }
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
         )
         assert result["loop_count"] == 1
 
@@ -334,45 +324,3 @@ class TestVerificationLoopCount:
             {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
         )
         assert "loop_count" not in result
-
-
-class TestJudgeRestatingTheQuestion:
-    """Live traces 2026-10-18: 14 of 34 judge calls flagged the user's own question as an
-    uncited claim. That is not a statement in any answer, so it is not an issue."""
-
-    def _run(self, issues, objective):
-        stub = _StubClient(json.dumps({"issues": issues}))
-        node = build_verification_node(stub)
-        return node(
-            {"evidence": [_evidence()], "tasks": [_task()], "objective": objective, "evidence_summary": {}}
-        )
-
-    def test_claim_equal_to_the_objective_is_dropped_and_the_turn_is_clean(self):
-        result = self._run(
-            [{"claim": "Analyse INFY", "issue_type": "missing_citation", "evidence_ids": ["a"]}],
-            "Analyse INFY",
-        )
-        assert result["verification_issues"] == []
-        assert result["judge_status"] == "ok"
-        assert "loop_count" not in result
-
-    def test_punctuation_and_case_do_not_hide_it(self):
-        result = self._run(
-            [{"claim": "which stock should i buy", "issue_type": "missing_citation", "evidence_ids": []}],
-            "Which stock should I buy?",
-        )
-        assert result["verification_issues"] == []
-
-    def test_a_real_gap_is_kept(self):
-        result = self._run(
-            [
-                {
-                    "claim": "ICICI Bank fundamentals are missing",
-                    "issue_type": "unsupported",
-                    "evidence_ids": [],
-                }
-            ],
-            "Compare HDFC Bank and ICICI Bank",
-        )
-        assert [i["claim"] for i in result["verification_issues"]] == ["ICICI Bank fundamentals are missing"]
-        assert result["loop_count"] == 1

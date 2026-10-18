@@ -174,3 +174,19 @@ def test_reframed_question_without_a_company_takes_the_direct_path(query):
 
     out = build_query_analyzer_node(Stub())({"query": query, "history": [], "advice_mode": "reframe"})
     assert out["complexity"] == "simple"
+
+
+def test_a_not_found_name_and_its_fragment_are_reported_once():
+    from graph.entity_resolution import blocking_resolutions, clarification_text
+
+    state = {
+        "intent": "equity",
+        "entities": [],
+        "entity_resolutions": [
+            {"query": "XYZ", "status": "not_found", "candidates": []},
+            {"query": "XYZ Widgets Ltd", "status": "not_found", "candidates": []},
+        ],
+    }
+    text = clarification_text(blocking_resolutions(state))
+    assert text.count("couldn't find a company") == 1
+    assert "XYZ Widgets Ltd" in text

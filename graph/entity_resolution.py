@@ -301,8 +301,19 @@ def blocking_resolutions(state: dict) -> list[dict]:
     if missing:
         return missing
     if not state.get("entities"):
-        return [u for u in unresolved if u["status"] == "not_found"]
+        return _without_fragments([u for u in unresolved if u["status"] == "not_found"])
     return []
+
+
+def _without_fragments(not_found: list[dict]) -> list[dict]:
+    """One phrase ("XYZ Widgets Ltd") can be found twice, as the whole name and as a
+    fragment ("XYZ"). Keep the longest, so the reply says it once."""
+    names = [normalise_name(u["query"]) for u in not_found]
+    return [
+        u
+        for u, n in zip(not_found, names, strict=True)
+        if not any(n != other and n and n in other for other in names)
+    ]
 
 
 def _option(c: dict) -> str:

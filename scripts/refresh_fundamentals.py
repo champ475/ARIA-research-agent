@@ -41,6 +41,10 @@ log = logging.getLogger("refresh_fundamentals")
 
 BATCH = 50
 
+# Yahoo files solar-equipment makers under Technology, so "IT stocks" screens listed them
+# (live smoke 2026-10-18: EMMVEE). The industry decides where the word alone cannot.
+INDUSTRY_SECTOR = {"Solar": "Energy"}
+
 
 def universe() -> list[tuple[str, str, str]]:
     """(symbol, name, isin) for every EQ-series instrument."""
@@ -63,7 +67,7 @@ def snapshot_row(symbol: str, name: str, isin: str, info: dict[str, Any]) -> dic
         "symbol": symbol,
         "isin": isin or None,
         "name": info.get("longName") or info.get("shortName") or name or symbol,
-        "sector": info.get("sector") or None,
+        "sector": INDUSTRY_SECTOR.get(info.get("industry") or "", info.get("sector")) or None,
         "industry": info.get("industry") or None,
         "lender": sector_profile(info) == LENDER,
         "price": m["price"],

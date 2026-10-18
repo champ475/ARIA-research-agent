@@ -8,7 +8,8 @@ from tests.conftest import import_app_without_side_effects
 app = import_app_without_side_effects()
 
 
-def test_links_to_our_routes():
+def test_links_to_our_routes(monkeypatch):
+    monkeypatch.setattr("utils.report_files.pdf_available", lambda: True)
     token = "a" * 32
     line = chat_svc.download_links(
         "/download/report/12.pdf", "/download/report/12.md", f"/download/file/{token}"
