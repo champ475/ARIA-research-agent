@@ -156,10 +156,70 @@ Full guide with more prompts and how alerts behave: [docs/USAGE.md](docs/USAGE.m
 
 ## How it works
 
-```text
-question ─► understand ─► plan ─► research (parallel) ─► summarise ─► verify ─► answer
-            intent,       pick     prices, fundamentals,  distil      check      streamed,
-            company       tools    news, funds, screens   evidence    claims     with citations
+### System architecture
+
+```mermaid
+flowchart TB
+    user(["User (browser)"])
+
+    subgraph web["Web app: FastAPI + Gradio"]
+        direction TB
+        auth["Auth and sessions<br/>login, signup, downloads, health"]
+        ui["Chat UI<br/>Chat, Watchlist, Portfolio,<br/>Alerts, Settings, Admin"]
+        svc["Services layer"]
+        auth --- ui
+        ui --> svc
+    end
+
+    subgraph engine["Research engine: LangGraph"]
+        direction TB
+        guard["Input guard and<br/>advice boundary"]
+        pipeline["Understand, plan, research,<br/>verify, answer"]
+        tools["Tools<br/>equity, technicals, funds,<br/>screener, portfolio, charts"]
+        llm["LLM client<br/>Groq, Gemini, your own key,<br/>optional local model"]
+        guard --> pipeline
+        pipeline <--> tools
+        pipeline <--> llm
+    end
+
+    subgraph worker["Worker: background jobs"]
+        direction TB
+        jobs["Alert checks, nightly data<br/>refresh, clean-up, watchdog"]
+    end
+
+    db[("Postgres<br/>accounts, chats, portfolios,<br/>alerts, reports, market cache")]
+    data["Market and news data<br/>Yahoo Finance, NSE, BSE,<br/>AMFI, news feeds"]
+    tg["Telegram"]
+
+    user --> web
+    svc --> guard
+    svc --> db
+    tools --> data
+    tools --> db
+    jobs --> db
+    jobs --> data
+    jobs --> tg
+    tg -.-> user
+```
+
+### Inside one answer
+
+```mermaid
+flowchart LR
+    q(["Your question"]) --> a["Understand<br/>intent and company"]
+    a --> p["Plan<br/>choose tools"]
+    p --> r1["Prices and<br/>technicals"]
+    p --> r2["Fundamentals<br/>and peers"]
+    p --> r3["News and<br/>sentiment"]
+    p --> r4["Funds and<br/>screens"]
+    r1 --> s["Summarise<br/>evidence"]
+    r2 --> s
+    r3 --> s
+    r4 --> s
+    s --> v{"Verify<br/>claims"}
+    v -- "gap found" --> p
+    v -- "supported" --> w["Write answer<br/>streamed, with sources"]
+    w --> out(["Answer with<br/>citations and confidence"])
 ```
 
 1. **Understand.** Works out the intent and resolves company names against the full NSE and BSE instrument list. It never trusts a guessed ticker.
