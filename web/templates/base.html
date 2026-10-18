@@ -1,56 +1,126 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"{% if theme == "light" %} data-theme="light"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title }} · ARIA</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
   <style>
+    /* "Night Ledger": the app's tokens (ui/theme.css), dark first. Names kept for the page templates. */
     :root {
-      --bg: #f6f8fa; --card: #ffffff; --text: #1f2328; --muted: #57606a;
-      --border: #d0d7de; --accent: #0969da; --accent-text: #ffffff; --error-bg: #ffebe9; --error: #a40e26;
-      --ok-bg: #dafbe1; --ok: #116329;
+      --bg: #101119; --card: #171925; --sunken: #0c0d14; --text: #e7e8f2; --muted: #9599b3;
+      --border: #2d3146; --border-strong: #3b4060; --accent: #8ab4ff; --accent-line: #5b9bff;
+      --accent-fill: #2563eb; --accent-fill-hover: #1d4fd7; --accent-text: #ffffff; --accent-soft: #172340;
+      --error-bg: #3a1a22; --error: #ffb4b4; --ok-bg: #12261e; --ok: #7ee2a8; --danger-fill: #b42323;
+      --ui: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --display: "Fraunces", Georgia, "Times New Roman", serif;
+      --mono: "Geist Mono", ui-monospace, Consolas, monospace;
+      color-scheme: dark;
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0d1117; --card: #161b22; --text: #e6edf3; --muted: #9da7b3;
-        --border: #30363d; --accent: #4493f8; --accent-text: #0d1117; --error-bg: #3c1618; --error: #ffa198;
-        --ok-bg: #12261e; --ok: #7ee2a8;
-      }
+    :root[data-theme="light"] {
+      --bg: #f7f7fb; --card: #ffffff; --sunken: #f0f1f7; --text: #15162a; --muted: #575b78;
+      --border: #d7d9e6; --border-strong: #c3c6d8; --accent: #1d4ed8; --accent-line: #2563eb;
+      --accent-fill: #2563eb; --accent-fill-hover: #1d4ed8; --accent-text: #ffffff; --accent-soft: #e6eeff;
+      --error-bg: #fdecec; --error: #a41d1d; --ok-bg: #e3f6eb; --ok: #11663a; --danger-fill: #b42323;
+      color-scheme: light;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--text);
-           font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-    main { max-width: 420px; margin: 0 auto; padding: 48px 16px; }
-    main.wide { max-width: 760px; }
-    .brand { text-align: center; margin-bottom: 24px; }
-    .brand h1 { font-size: 26px; margin: 0; color: var(--accent); }
-    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
-    label { display: block; font-weight: 600; font-size: 14px; margin: 14px 0 6px; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 16px/1.55 var(--ui); -webkit-font-smoothing: antialiased;
+    }
+    .shell { min-height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    /* Brand side: wordmark, one line of voice, a faint chart */
+    .side {
+      position: relative; overflow: hidden;
+      display: flex; flex-direction: column; justify-content: space-between; gap: 32px;
+      padding: 40px clamp(24px, 5vw, 64px);
+      background: var(--sunken); border-right: 1px solid var(--border);
+    }
+    .wordmark { font: 600 26px/1 var(--display); letter-spacing: 0.02em; color: var(--text); text-decoration: none; }
+    .wordmark span { color: var(--accent-line); }
+    .voice { position: relative; z-index: 1; max-width: 30ch; }
+    .voice h1 { font: 500 clamp(30px, 3.4vw, 44px)/1.12 var(--display); letter-spacing: -0.015em; margin: 0 0 14px; text-wrap: balance; }
+    .voice p { margin: 0; color: var(--muted); font-size: 15px; max-width: 42ch; }
+    .tape { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 13px/1.4 var(--mono); color: var(--muted); position: relative; z-index: 1; }
+    .tape b { color: var(--text); font-weight: 500; }
+    .chart { position: absolute; inset: auto 0 72px 0; width: 100%; height: 24%; color: var(--muted); opacity: 0.22; pointer-events: none; }
+    .chart .last { color: var(--accent-line); opacity: 1; }
+    /* Form side */
+    main { display: flex; align-items: center; justify-content: center; padding: 48px 24px; }
+    .panel { width: 100%; max-width: 400px; }
+    main.wide .panel { max-width: 720px; }
+    .card { background: transparent; }
+    .card h2 { font: 500 28px/1.2 var(--display) !important; letter-spacing: -0.01em; margin: 0 0 6px !important; }
+    .card > p, .card li { color: var(--text); }
+    label { display: block; font-weight: 500; font-size: 14px; margin: 18px 0 6px; color: var(--text); }
     input[type=email], input[type=password], input[type=text] {
-      width: 100%; padding: 10px 12px; font-size: 16px; color: var(--text); background: var(--bg);
-      border: 1px solid var(--border); border-radius: 8px; }
-    input:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-    .check { display: flex; gap: 10px; align-items: flex-start; margin-top: 16px; font-size: 14px; font-weight: 400; }
-    .check input { margin-top: 4px; width: 18px; height: 18px; }
-    button { width: 100%; margin-top: 20px; padding: 11px; font-size: 16px; font-weight: 600; cursor: pointer;
-             color: var(--accent-text); background: var(--accent); border: 0; border-radius: 8px; }
-    .alt { text-align: center; margin-top: 18px; font-size: 14px; color: var(--muted); }
-    a { color: var(--accent); }
-    .msg { padding: 10px 12px; border-radius: 8px; margin-bottom: 8px; font-size: 14px; }
+      width: 100%; padding: 11px 14px; font: 16px var(--ui); color: var(--text); background: var(--sunken);
+      border: 1px solid var(--border-strong); border-radius: 10px; transition: border-color .15s, box-shadow .15s;
+    }
+    input[type=email]:focus, input[type=password]:focus, input[type=text]:focus {
+      outline: none; border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+    .check { display: flex; gap: 10px; align-items: flex-start; margin-top: 18px; font-size: 14px; font-weight: 400; color: var(--muted); }
+    .check input { margin-top: 3px; width: 18px; height: 18px; accent-color: var(--accent-fill); flex: none; }
+    button {
+      width: 100%; margin-top: 22px; padding: 12px; font: 600 15px var(--ui); cursor: pointer;
+      color: var(--accent-text); background: var(--accent-fill); border: 0; border-radius: 10px;
+      transition: background-color .15s;
+    }
+    button:hover { background: var(--accent-fill-hover); }
+    button.danger { background: var(--danger-fill); color: #ffffff; }
+    .alt { margin-top: 18px; font-size: 14px; color: var(--muted); }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    .msg { padding: 10px 12px; border-radius: 10px; margin: 12px 0 4px; font-size: 14px; }
     .msg.error { background: var(--error-bg); color: var(--error); }
     .msg.ok { background: var(--ok-bg); color: var(--ok); }
+    #pw-hint { color: var(--muted) !important; }
     .legal { font-size: 15px; }
-    .legal h1, .legal h2 { font-size: 20px; }
+    .legal h1, .legal h2 { font: 500 22px/1.3 var(--display); }
+    .foot { margin-top: 32px; font-size: 12px; color: var(--muted); }
+    @media (max-width: 899px) {
+      .shell { grid-template-columns: minmax(0, 1fr); }
+      .side { padding: 22px 20px; border-right: 0; border-bottom: 1px solid var(--border); gap: 14px; justify-content: flex-start; }
+      .voice h1 { font-size: 24px; margin-bottom: 4px; }
+      .voice p, .tape, .chart { display: none; }
+      main { align-items: flex-start; padding: 28px 20px 40px; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
   </style>
 </head>
 <body>
-<main class="{{ main_class or '' }}">
-  <div class="brand">
-    <h1>⚡ ARIA</h1>
-    <p>Research &amp; education for Indian markets — not investment advice</p>
-  </div>
-  {% block content %}{% endblock %}
-</main>
+<div class="shell">
+  <aside class="side" aria-label="About ARIA">
+    <a class="wordmark" href="/" aria-label="ARIA home">AR<span>I</span>A</a>
+    <div class="voice">
+      <h1>A research desk for Indian markets.</h1>
+      <p>Analyse NSE and BSE companies, compare mutual funds, screen the market and set alerts, with every number sourced.
+         Education, not investment advice.</p>
+    </div>
+    <svg class="chart" viewBox="0 0 440 160" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+      {% set candles = [(96,88,100,84),(88,92,97,85),(92,84,95,80),(84,86,90,79),(86,78,89,75),(78,82,85,74),(82,74,84,70),(74,77,80,69),(77,70,79,66),(70,72,76,64),(72,64,74,60),(64,68,71,59),(68,60,70,55),(60,63,66,54),(63,55,64,50),(55,58,61,49),(58,49,60,45),(49,52,56,44),(52,44,54,39),(44,40,47,34)] %}
+      {% for o, c, h, l in candles %}
+        {% set x = 12 + loop.index0 * 21.5 %}
+        <g{% if loop.last %} class="last"{% endif %} stroke="currentColor" stroke-width="1.2">
+          <line x1="{{ x }}" x2="{{ x }}" y1="{{ l }}" y2="{{ h + 14 }}"/>
+          <rect x="{{ x - 5 }}" width="10" y="{{ [o, c] | min }}" height="{{ ([o, c] | max) - ([o, c] | min) + 6 }}" rx="1.5"
+                fill="{{ 'currentColor' if c > o else 'none' }}"/>
+        </g>
+      {% endfor %}
+    </svg>
+    <div class="tape" aria-hidden="true"><span><b>NSE</b> · BSE</span><span>Mutual funds</span><span>Screener</span><span>Alerts</span></div>
+  </aside>
+  <main class="{{ main_class or '' }}">
+    <div class="panel">
+      {% block content %}{% endblock %}
+      <p class="foot">Not SEBI-registered. ARIA explains and researches; it doesn't give personal buy or sell advice.</p>
+    </div>
+  </main>
+</div>
 </body>
 </html>
