@@ -457,6 +457,28 @@ _NOT_ABOUT_ONE_COMPANY = re.compile(
 )
 
 
+_FOLLOW_UP_LEAD = re.compile(
+    r"^\s*(?:and|also|then|now|what\s+about|how\s+about|which\s+(?:one|has|is|of\s+(?:them|these|the\s+two)))\b",
+    re.IGNORECASE,
+)
+_SHORT_FOLLOW_UP_WORDS = 4  # "RSI?", "and the PE" — a bare metric reads as a follow-up
+
+
+def is_follow_up(query: str) -> bool:
+    """True when a company-less message continues the previous company's thread
+    ("its debt", "and the PE?", "RSI?"). A general question ("what does a high P/E
+    mean?", "which stock should I buy?") names no company and points at none, so
+    the earlier company must not be injected into it (live smoke 2026-10-18)."""
+    from graph.data_questions import DATA_WORDS, DEFINITIONAL
+
+    q = query or ""
+    if _COMPANY_POINTER.search(q) or _FOLLOW_UP_LEAD.search(q):
+        return True
+    if DEFINITIONAL.search(q) or _NOT_ABOUT_ONE_COMPANY.search(q):
+        return False
+    return len(q.split()) <= _SHORT_FOLLOW_UP_WORDS and bool(DATA_WORDS.search(q))
+
+
 def lacks_company(query: str, intent: str | None) -> bool:
     """True when a company question names none: it points at one ("its debt",
     "the stock") and says nothing broader, so the answer is to ask which."""

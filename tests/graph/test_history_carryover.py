@@ -93,6 +93,39 @@ def test_analyzer_asks_which_company(history, query, entities, ambiguous):
     assert all(sym in text for sym in ambiguous)
 
 
+# Live smoke 2026-10-18: a general question after a company chat must not inherit the company.
+GENERAL_QUESTIONS = [
+    "What does a high P/E ratio mean?",
+    "What does a high P/E ratio mean? weekly",
+    "Which stock should I buy?",
+    "Which stock will double in a month?",
+    "Explain RSI",
+    "What is a mutual fund",
+    "Explain what a SIP is",
+]
+
+
+@pytest.mark.parametrize("query", GENERAL_QUESTIONS)
+def test_general_question_does_not_inherit_the_company(query):
+    class Stub:
+        def ask(self, prompt, **kw):
+            return json.dumps({"intent": "chat", "objective": query, "complexity": "simple", "companies": []})
+
+    history = h((U, "Analyse TCS"), (A, "TCS is up."))
+    out = build_query_analyzer_node(Stub())({"query": query, "history": history})
+    assert out["entities"] == []
+    assert out["complexity"] == "simple"
+
+
+@pytest.mark.parametrize(
+    "query", [c[1] for c in CASES if c[2]] + ["RSI?", "and the PE", "which has the better ROE"]
+)
+def test_follow_up_shapes_still_carry(query):
+    from graph.entity_resolution import is_follow_up
+
+    assert is_follow_up(query)
+
+
 def test_badge_never_reaches_the_analyzer_prompt():
     seen = []
 
@@ -104,3 +137,28 @@ def test_badge_never_reaches_the_analyzer_prompt():
     history = h((U, "How is TCS doing?"), (A, "*🔀 Routed to: Equity*\n\nTCS is up."))
     build_query_analyzer_node(Stub())({"query": "its RSI", "history": history})
     assert "Routed to" not in seen[0] and "TCS is up." in seen[0]
+
+
+def test_zero_evidence_general_chat_answers_directly():
+    from graph.nodes.communication_layer import build_communication_layer_node
+
+    asked = []
+
+    class Stub:
+        def ask(self, prompt, **kw):
+            asked.append(prompt)
+            return "A high P/E means investors pay more per rupee of earnings."
+
+    state = {
+        "query": "What does a high P/E ratio mean?",
+        "objective": "What does a high P/E ratio mean?",
+        "intent": "chat",
+        "complexity": "moderate",
+        "entities": [],
+        "evidence": [],
+        "conclusions": [],
+        "history": [],
+    }
+    out = build_communication_layer_node(Stub())(state)
+    assert "couldn't find enough data" not in (out.get("final_report") or "")
+    assert out.get("pending_synthesis_prompt") or out.get("final_report")

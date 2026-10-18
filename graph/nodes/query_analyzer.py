@@ -44,6 +44,7 @@ from graph.entity_resolution import (
     add_llm_mentions,
     ambiguous_reference,
     history_carry,
+    is_follow_up,
     lacks_company,
     match_clarification_reply,
     missing_company_entry,
@@ -209,10 +210,12 @@ def build_query_analyzer_node(
         unresolved = list(resolved.unresolved)
         if resolved.mentioned:
             entities = resolved.entities
-        else:
+        elif is_follow_up(query):
             entities, ambiguous = history_carry(history)
             if ambiguous:  # LLM-10: "its RSI" after comparing two companies
                 unresolved.append(ambiguous_reference(ambiguous))
+        else:
+            entities = []  # a general question: no company from earlier in the chat
         intent = _correct_intent(classification["intent"], query, entities)
         if not entities and not unresolved and lacks_company(query, intent):
             # "what about its debt?" with nothing to refer to: ask, don't fetch for "market".

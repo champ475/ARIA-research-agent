@@ -233,7 +233,11 @@ def build_communication_layer_node(
         advice = REFRAME_INSTRUCTION if state.get("advice_mode") == "reframe" else ""
         evidence_block = render_evidence_block(evidence, SYNTHESIS_EVIDENCE_CHAR_BUDGET, intents, query)
 
-        if not conclusions and state.get("complexity") == "simple":
+        # A general chat question that still reached research and collected nothing
+        # (no company, no tools planned) is a concept question: answer it directly
+        # rather than reporting a data gap that was never a gap.
+        general_chat = intent == "chat" and not entities and not evidence
+        if not conclusions and (state.get("complexity") == "simple" or general_chat):
             # Trivial path: Planner deliberately generated no tasks (RFC's
             # "avoid unnecessary tool execution"), so there was never any
             # evidence to build conclusions from — this isn't a research
