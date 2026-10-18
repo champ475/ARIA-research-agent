@@ -56,10 +56,33 @@ METRICS = {
 }
 
 
+LABELS = {
+    "dividendYield": "dividend yield",
+    "trailingPE": "P/E",
+    "currentPrice": "price",
+    "marketCap": "market cap",
+}
+
+
+def _shown(value: float, kind: str) -> str:
+    if kind == "pct":
+        return f"{value:g}%"
+    if kind == "inr":
+        return f"₹{value / 1e7:,.0f} cr" if value >= 1e9 else f"₹{value:,.2f}"
+    return f"{value:g}"
+
+
 def fact(symbol: str, field: str, with_entity: bool = True) -> dict:
     metric, kind, tol = METRICS[field]
     value = fixture(symbol)["info"][field]
-    out = {"metric": metric, "value": value, "kind": kind, **tol}
+    out = {
+        "metric": metric,
+        "value": value,
+        "kind": kind,
+        **tol,
+        "label": f"{symbol} {LABELS[field]}",
+        "shown": _shown(value, kind),
+    }
     if with_entity:
         out["entity"] = ALIASES[symbol]
     return out

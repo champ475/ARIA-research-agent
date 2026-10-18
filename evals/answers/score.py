@@ -176,7 +176,7 @@ def score_turn(case: dict, spec: dict, turn: dict) -> dict:
         vals = fact_values(text, fact, [a for a in all_aliases if a not in own])
         found += bool(vals)
         wrong += [
-            f"{'/'.join(fact.get('entity') or ['-'])} {fact['metric']}: said {v.raw}, reference {fact['value']}"
+            f"{fact.get('label') or fact['metric']}: said {v.raw}, reference {fact.get('shown') or fact['value']}"
             for v in vals
             if not _fact_ok(v, fact)
         ]
@@ -287,12 +287,23 @@ def markdown(report_: dict, baseline: dict | None) -> str:
         base = (baseline or {}).get("metrics", {}).get(k, "")
         lines.append(f"| {k} | {base} | {now} |")
     head = f"**Answer eval** ({report_['cases']} cases, {report_['turns']} answers)\n\n"
-    fails = report_["failures"][:25]
+    fails = report_["failures"]
     tail = ""
     if fails:
-        tail = "\n\nFailing answers:\n" + "\n".join(
-            f"- `{f['id']}`#{f['turn']}: "
-            + "; ".join(f"{k}={v}" for k, v in f.items() if k not in ("id", "turn", "q"))[:300]
-            for f in fails
+        tail = (
+            f"\n\n<details><summary>Failing answers ({len(fails)})</summary>\n\n"
+            + "\n".join(_failure_line(f) for f in fails)
+            + "\n\n</details>"
         )
     return head + "\n".join(lines) + tail
+
+
+def _failure_line(f: dict) -> str:
+    parts = []
+    for k, v in f.items():
+        if k in ("id", "turn", "q"):
+            continue
+        if isinstance(v, list):
+            v = "; ".join(str(x)[:160] for x in v)
+        parts.append(f"**{k}**: {v}" if v is not True else f"**{k}**")
+    return f"- `{f['id']}`#{f['turn']} “{f['q']}” — " + " · ".join(parts)

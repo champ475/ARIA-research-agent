@@ -19,7 +19,7 @@
       "turn": 0,
       "q": "What is ITC's dividend yield?",
       "wrong": [
-        "- (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 0.0%, reference 6.07"
+        "ITC dividend yield: said 0.0%, reference 6.07%"
       ],
       "checks_failed": [
         "not dividend yield[^.\\n|]{0,30}\\b0\\.0+\\s?%"
@@ -30,7 +30,7 @@
       "turn": 0,
       "q": "What is Infosys's dividend yield?",
       "wrong": [
-        "- (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 0.05 %, reference 4.31"
+        "INFY dividend yield: said 0.05 %, reference 4.31%"
       ],
       "checks_failed": [
         "not 0\\.05\\s?%"
@@ -41,7 +41,7 @@
       "turn": 0,
       "q": "Dividend yield of Kotak Mahindra Bank",
       "wrong": [
-        "- (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 0.0%, reference 0.15"
+        "KOTAKBANK dividend yield: said 0.0%, reference 0.15%"
       ]
     },
     {
@@ -66,9 +66,9 @@
       "turn": 0,
       "q": "Compare TCS, Infosys and Wipro on valuation and growth",
       "wrong": [
-        "TCS/Tata Consultancy (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 2.81%, reference 1.95",
-        "Infosys/INFY (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 0.05%, reference 4.31",
-        "Wipro (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 4.6%, reference 4.34"
+        "TCS dividend yield: said 2.81%, reference 1.95%",
+        "INFY dividend yield: said 0.05%, reference 4.31%",
+        "WIPRO dividend yield: said 4.6%, reference 4.34%"
       ],
       "notes": [
         "unconfirmed"
@@ -79,10 +79,10 @@
       "turn": 0,
       "q": "Which has a higher dividend yield, TCS or Wipro?",
       "wrong": [
-        "TCS/Tata Consultancy (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 2.81%, reference 1.95",
-        "TCS/Tata Consultancy (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 2.81%, reference 1.95",
-        "Wipro (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 4.6%, reference 4.34",
-        "Wipro (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 4.6%, reference 4.34"
+        "TCS dividend yield: said 2.81%, reference 1.95%",
+        "TCS dividend yield: said 2.81%, reference 1.95%",
+        "WIPRO dividend yield: said 4.6%, reference 4.34%",
+        "WIPRO dividend yield: said 4.6%, reference 4.34%"
       ]
     },
     {
@@ -90,10 +90,10 @@
       "turn": 0,
       "q": "Compare Reliance and L&T on dividend yield",
       "wrong": [
-        "Reliance/RELIANCE (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 0.0%, reference 0.5",
-        "Reliance/RELIANCE (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 0.0%, reference 0.5",
-        "L&T/Larsen/LT (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 0.0%, reference 1.05",
-        "L&T/Larsen/LT (?<!median )(?<!average )(?<!sector )(?<!industry )(?<!peer )(?:div(?:idend)?\\.?\\s*yield): said 0.0%, reference 1.05"
+        "RELIANCE dividend yield: said 0.0%, reference 0.5%",
+        "RELIANCE dividend yield: said 0.0%, reference 0.5%",
+        "LT dividend yield: said 0.0%, reference 1.05%",
+        "LT dividend yield: said 0.0%, reference 1.05%"
       ],
       "checks_failed": [
         "not dividend yield[^.\\n|]{0,30}\\b0\\.0+\\s?%"
@@ -410,9 +410,9 @@
       ]
     }
   ],
-  "sha": "9bb0dd6",
+  "sha": "24a4b0b",
   "mode": "replay",
-  "seconds": 6.0,
+  "seconds": 3.2,
   "results": [
     {
       "id": "eq-itc-div",
