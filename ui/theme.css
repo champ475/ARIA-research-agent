@@ -260,6 +260,7 @@ footer { display: none !important; }
 .gradio-container .prose table:not(.wl-table) th { color: var(--aria-muted); font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; border-bottom-color: var(--aria-border-strong) !important; white-space: nowrap; }
 .gradio-container .prose table:not(.wl-table) td:not(:first-child) { font-family: var(--aria-font-mono); font-size: 13px; }
 .gradio-container .prose table:not(.wl-table) tr:last-child td { border-bottom: 0 !important; }
+.gradio-container .prose table tr { border: 0 !important; }
 /* The plain-HTML data tables sit in prose too; keep Gradio's prose cell borders off them. */
 .gradio-container .prose .wl-table :is(th, td) { border-left: 0 !important; border-right: 0 !important; border-top: 0 !important; }
 
@@ -267,7 +268,8 @@ footer { display: none !important; }
 #app-bar {
     position: sticky;
     top: 0;
-    z-index: 20;
+    /* above Gradio's own floating layers (the chatbot's icon strip is z-index 20) */
+    z-index: 40;
     align-items: center !important;
     gap: 6px !important;
     min-height: var(--aria-bar-h);
@@ -374,7 +376,7 @@ body:not(.dark) #theme-btn::before { -webkit-mask-image: var(--i-moon); mask-ima
 .tab-wrapper {
     position: sticky;
     top: var(--aria-bar-h);
-    z-index: 15;
+    z-index: 35;
     background: var(--aria-bg);
     border-bottom: 1px solid var(--aria-border);
     padding: 0 20px !important;
@@ -502,6 +504,7 @@ body:not(.dark) #theme-btn::before { -webkit-mask-image: var(--i-moon); mask-ima
 .chg { display: inline-block; padding: 2px 8px; border-radius: var(--aria-r-sm); font-family: var(--aria-font-mono); font-size: 13px; }
 .chg.up { color: var(--aria-gain); background: var(--aria-gain-soft); }
 .chg.dn { color: var(--aria-loss); background: var(--aria-loss-soft); }
+.chg.flat { color: var(--aria-muted); background: var(--aria-surface-2); }
 .state-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; padding: 2px 9px; border-radius: var(--aria-r-pill); }
 .state-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .state-pill.on { color: var(--aria-accent-fg); background: var(--aria-accent-soft); }
@@ -687,7 +690,8 @@ body:not(.dark) #theme-btn::before { -webkit-mask-image: var(--i-moon); mask-ima
 #chatbot-chat .message-buttons button:hover { color: var(--aria-text) !important; }
 
 /* Empty chat: the welcome note (WELCOME_MD in Gradio's placeholder). */
-#chatbot-chat .placeholder-content { display: flex; align-items: flex-start; justify-content: center; min-height: 100%; padding: 6vh 4px 12px; }
+/* border-box: padding inside the box's height, or the note always overflows and Gradio scrolls past its heading */
+#chatbot-chat .placeholder-content { box-sizing: border-box; display: flex; align-items: flex-start; justify-content: center; min-height: 100%; padding: 4vh 4px 8px; }
 #chatbot-chat .placeholder-content .md, #chatbot-chat .placeholder-content > div {
     max-width: 560px;
     color: var(--aria-text-2);
@@ -779,6 +783,8 @@ body:not(.dark) #theme-btn::before { -webkit-mask-image: var(--i-moon); mask-ima
     padding: 14px !important;
     background: var(--aria-surface) !important;
 }
+/* Once hidden again (Skip / Send), Gradio keeps an empty wrapper: no frame for it. */
+#feedback-chat:has(.form.hidden) { display: none !important; }
 #feedback-note-chat { color: var(--aria-muted); font-size: 13px; }
 
 /* Suggestion chips: quiet pills just above the composer */
@@ -919,10 +925,13 @@ body:not(.dark) #theme-btn::before { -webkit-mask-image: var(--i-moon); mask-ima
     min-width: 272px !important;
     max-width: 272px !important;
     gap: 8px !important;
+    /* nowrap: with a fixed height, Gradio's column wrap would push a long chat list into a hidden second column */
+    flex-wrap: nowrap !important;
     transition: width var(--aria-med) var(--aria-ease), min-width var(--aria-med) var(--aria-ease), max-width var(--aria-med) var(--aria-ease);
     overflow-x: hidden;
     overflow-y: auto;
 }
+.chat-sidebar > * { flex-shrink: 0 !important; }
 .chat-sidebar.collapsed {
     width: 56px !important;
     min-width: 56px !important;
@@ -1108,6 +1117,14 @@ body:not(.dark) #theme-btn::before { -webkit-mask-image: var(--i-moon); mask-ima
     .tf-radio { overflow-x: auto; max-width: 100%; }
     .toolbar > .form { flex: 1 1 100% !important; min-width: 100% !important; }
     .toolbar > button { flex: 1 1 auto !important; }
+}
+/* Short windows (laptops at 125% zoom): a tighter welcome note so its heading stays in view. */
+@media (max-height: 820px) {
+    #chatbot-chat .placeholder-content { padding-top: 8px; }
+    #chatbot-chat .placeholder-content h3 { font-size: 26px; margin-bottom: 6px; }
+    #chatbot-chat .placeholder-content ul { margin: 8px 0 10px; }
+    #chatbot-chat .placeholder-content li { padding: 6px 0 6px 26px; font-size: 14px; }
+    #chatbot-chat .placeholder-content p { font-size: 14px; margin: 0; }
 }
 /* Narrow phones: the plan pill gives way to the wordmark (Settings shows the same). */
 @media (max-width: 519px) {

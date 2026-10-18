@@ -94,7 +94,7 @@ def build_portfolio_tab(user_state: gr.State):
 
     with gr.Accordion("Edit or remove", open=False):
         with gr.Row():
-            lot_id = gr.Number(label="Lot #", precision=0, minimum=1, scale=1)
+            lot_id = gr.Number(label="Lot #", precision=0, scale=1)  # unknown lots are refused by the service
             ed_qty = gr.Textbox(label="New quantity", max_lines=1, max_length=30, scale=1)
             ed_price = gr.Textbox(label="New avg price (₹)", max_lines=1, max_length=30, scale=1)
             ed_date = gr.Textbox(label="Buy date", placeholder="YYYY-MM-DD", max_lines=1, scale=1)

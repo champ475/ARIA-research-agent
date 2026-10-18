@@ -40,7 +40,9 @@ def _cell(i: int, value) -> str:
     """One escaped cell; the change column ("▲ +1.20%" / "▼ -0.80%") is tinted gain or loss."""
     text = html_text(value)
     if i == 3 and isinstance(value, str) and value[:1] in ("▲", "▼"):
-        text = f"<span class='chg {'up' if value[0] == '▲' else 'dn'}'>{text}</span>"
+        # an unchanged price ("▲ +0.00%") is neither a gain nor a loss
+        tone = "flat" if value.endswith("0.00%") else ("up" if value[0] == "▲" else "dn")
+        text = f"<span class='chg {tone}'>{text}</span>"
     return f"<td class='{_COL_CLASS[i] if i < len(_COL_CLASS) else ''}'>{text}</td>"
 
 

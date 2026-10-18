@@ -312,7 +312,7 @@ def _inr(v: Decimal | float, signed: bool = False) -> str:
 
 def to_markdown(holdings: list[dict], summary: dict) -> str:
     if not holdings:
-        return "Your portfolio is empty. Add holdings in the **📊 Portfolio** tab (or import a broker CSV)."
+        return "Your portfolio is empty. Add holdings in the **Portfolio** tab (or import a broker CSV)."
     lines = [
         f"**Invested** {_inr(summary['total_invested'])} · **Value** {_inr(summary['total_value'])} · "
         f"**P&L** {_inr(summary['total_pnl'], signed=True)} ({summary['total_pnl_pct']:+.2f}%)",

@@ -63,7 +63,9 @@ def build_alerts_tab(user_state: gr.State, tab: gr.Tab):
     status = gr.Markdown("", elem_id="alerts-status", elem_classes=["status-line"])
 
     with gr.Row(elem_classes=["toolbar"]):
-        alert_id = gr.Number(label="Alert #", precision=0, minimum=1, scale=1, elem_id="alert-id")
+        alert_id = gr.Number(
+            label="Alert #", precision=0, scale=1, elem_id="alert-id"
+        )  # 0 / unknown ids are refused by _act
         pause_btn = gr.Button(
             "Pause", size="sm", elem_id="alert-pause", elem_classes=["aria-ico", "ico-pause"]
         )
