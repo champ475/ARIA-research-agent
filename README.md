@@ -1,197 +1,211 @@
-# ARIA — Autonomous Research & Investment Analyst
+<div align="center">
 
-An autonomous financial research engine for Indian stocks and mutual funds (NSE/BSE). ARIA covers stock research, IC-style reports, mutual fund comparison, stock screening, a portfolio tracker, goal-based financial planning, and price/technical alerts sent straight to your phone.
+# ARIA
 
-You ask a question in plain language; a LangGraph research engine (see [docs/RFC_AGENTIC_RESEARCH_GRAPH.md](docs/RFC_AGENTIC_RESEARCH_GRAPH.md)) decomposes it into a plan, runs parallel evidence collection across equity/reports/mutual funds/screener/alerts/planning, verifies claims before synthesis, and answers with citations you can trace back to the underlying data.
+**Autonomous Research & Investment Analyst for Indian markets**
+
+Ask about any NSE/BSE stock or mutual fund in plain English. ARIA researches it, checks its own work, and answers with sources you can trace.
+
+[![CI](https://github.com/champ475/ARIA-research-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/champ475/ARIA-research-agent/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/champ475/ARIA-research-agent?include_prereleases)](https://github.com/champ475/ARIA-research-agent/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
+![Docker](https://img.shields.io/badge/docker-compose-2496ED.svg)
+
+[Quick start](#quick-start) · [Features](#features) · [Usage](docs/USAGE.md) · [Deployment](docs/DEPLOYMENT.md) · [FAQ](#faq) · [Contributing](CONTRIBUTING.md)
+
+</div>
+
+---
+
+> **ARIA is a research tool, not financial advice.** It is education-only: it will not tell you to buy, sell or hold a security, and it never promises returns. AI output can be wrong. See [LEGAL.md](LEGAL.md).
+
+## What is ARIA?
+
+ARIA is a self-hosted web app that works like a research analyst for Indian equity markets. You type a question. A multi-agent engine plans the research, pulls prices, fundamentals, news and fund data, verifies every claim against the evidence, and writes the answer. Each number links back to where it came from.
+
+```text
+You:   what is the PE ratio of TCS
+
+ARIA:  The P/E ratio of TCS is 24.3 [^pe].
+
+       Cited calculations
+       [^pe] P/E Ratio
+       24.3 = current price (₹4,127.50) / trailing EPS (₹169.85)
+
+You:   what about its RSI
+
+ARIA:  TCS's 14-day RSI is 58.2: neither overbought nor oversold.
+```
+
+Follow-ups work like a normal chat. "Its RSI" resolves to the company you were just discussing.
+
+![ARIA answering "Analyse TCS": price summary, chart in words, disclaimer, sources and a candlestick chart with RSI and MACD](docs/images/chat.jpg)
+
+<sub>Screenshot from the offline demo mode (canned LLM, sample market data), so the figures are illustrative.</sub>
 
 ## Features
 
-- **📈 Equity research** — fundamentals (lender-aware: no ROCE or D/E for banks/NBFCs), technicals (RSI/MACD/Bollinger/moving averages), news and headline sentiment, charts, same-industry peer comparison, a 0–100 risk profile, and MA-crossover/RSI backtests with trading costs — streamed live token-by-token.
-- **📄 IC-style reports** — initiating coverage, result updates, sector thematics, quick notes — downloadable as PDF/Markdown.
-- **💰 Mutual funds** — NAV lookup, category comparison (large/mid/small cap, ELSS, debt, hybrid, index) with returns and risk metrics, SIP-vs-lumpsum explained.
-- **🔍 Screener** — filter every NSE-listed stock (nightly snapshot) by PE/PB/ROE/ROCE/D-E/dividend yield/growth/market cap/sector ("between", %, ₹ crore all understood; the answer shows the filters it applied and anything it didn't understand), top gainers/losers, large deals, CSV export, save screens for reuse.
-- **🔔 Price & technical alerts** — 14 condition types, delivered to your own Telegram chat the moment they fire (checked every 5 min, even while your machine is off).
-- **🎯 Goal-based planning** — multi-turn intake (age, capital, horizon, goal, risk tolerance), remembered across sessions, then a real allocation grounded in actual fund/stock data.
-- **📊 Portfolio** — add holdings (or import a Zerodha/Groww holdings CSV), live P&L and allocation, and alerts on portfolio P&L.
-- **📌 Watchlist** — a quick-glance tracked-symbol list, separate from alerts.
-- **🔐 Your account** — email verification, password reset, "log out other devices", download all your data as JSON, delete your account.
-- **♿ Accessible** — light and dark themes (follows your system, with a toggle), WCAG 2.1 AA contrast, keyboard focus, and charts described in words.
-- **⚙️ Bring your own LLM key** — 5 free questions/day on the app's keys, then plug in any OpenAI-compatible provider (OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...) for unlimited use, encrypted at rest.
-- **Follows the conversation** — like ChatGPT, a follow-up ("what about its RSI?") resolves against what you were just discussing, no need to repeat the ticker.
-- **Cites its numbers** — every ratio/claim links back to the exact evidence it came from, with an explicit confidence level when the underlying data was thin.
+| | |
+|---|---|
+| **Equity research** | Fundamentals (lender-aware: no ROCE or D/E for banks and NBFCs), technicals (RSI, MACD, Bollinger Bands, moving averages), news and sentiment, charts, peer comparison, a 0–100 risk profile, and MA-crossover and RSI backtests with trading costs. Answers stream live. |
+| **IC-style reports** | Initiating coverage, result updates, sector thematics and quick notes. Download as PDF or Markdown, any time. |
+| **Mutual funds** | NAV lookup, category comparison (large, mid and small cap, ELSS, debt, hybrid, index) with returns and risk metrics, SIP vs lumpsum explained. |
+| **Stock screener** | Filter every NSE-listed stock by P/E, P/B, ROE, ROCE, D/E, dividend yield, growth, market cap and sector. Top gainers and losers, large deals, CSV export, saved screens. |
+| **Price and technical alerts** | 14 condition types, delivered to your own Telegram chat. Checked every 5 minutes in market hours. |
+| **Goal-based planning** | ARIA asks about your age, capital, horizon, goal and risk tolerance, remembers them, and builds an allocation grounded in real fund and stock data. |
+| **Portfolio and watchlist** | Add holdings or import a Zerodha or Groww holdings CSV. Live P&L, allocation, and alerts on portfolio P&L. |
+| **Cited and honest** | Every ratio links to its evidence. Thin data lowers the stated confidence. Unverified claims are withheld or flagged. |
+| **Your account, your data** | Email verification, password reset, log out other devices, export all your data as JSON, delete your account. |
+| **Bring your own LLM key** | 5 free questions a day on the operator's keys, then any OpenAI-compatible provider (OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama and more). Keys are encrypted at rest. |
+| **Accessible** | Light and dark themes, WCAG 2.1 AA contrast, keyboard navigation, charts described in words. |
 
-## Setup
+See [docs/USAGE.md](docs/USAGE.md) for example prompts for every feature.
 
-**1. Install**
+## Quick start
+
+### With Docker (recommended)
+
+You need [Docker](https://docs.docker.com/get-docker/) with Compose. Nothing else: Compose starts the app, a background worker and a Postgres database.
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/champ475/ARIA-research-agent.git
+cd ARIA-research-agent
 cp .env.example .env
 ```
 
-**2. Get your free API keys and fill them into `.env`:**
-
-| Key | Where to get it | Required? |
-|---|---|---|
-| `SECRET_KEY` | Any random string you make up | Yes — encrypts users' own LLM keys before storing them |
-| `DATABASE_URL` | [neon.tech](https://neon.tech) — create a free project, copy the connection string | Yes (skip if using Docker Compose — see below) |
-| `GROQ_API_KEY_1`, `GEMINI_API_KEY` | [console.groq.com](https://console.groq.com), [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Optional — powers the built-in free trial (see below); skip both if you'd rather everyone bring their own key from day one |
-| `GROQ_API_KEY_2`, `_3` | Same as above, extra keys | Optional — lets more trial users chat before hitting free-tier limits |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` | See **Setting up Alerts** below | Only if you want alert notifications |
-
-**Free trial vs. bring your own key:** every signup gets 5 free messages/day on your Groq/Gemini keys above. Beyond that (or from message one, if you skip those keys), each user pastes their own key under the **⚙️ Settings** tab in-app — any OpenAI-compatible provider works (OpenAI, Groq, OpenRouter, Together, Fireworks, Ollama, ...), so you're never on the hook for a stranger's usage.
-
-**3. Create the database schema, then run it**
+Open `.env` and set two things:
 
 ```bash
-python scripts/migrate.py   # applies migrations; safe to re-run, needed after every update
-python app.py               # the web app (FastAPI + Gradio, see server.py)
+# Any random string of 32+ characters
+SECRET_KEY=...        # python -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# At least one LLM key for answers (both are free)
+GROQ_API_KEY_1=...    # https://console.groq.com/keys
+GEMINI_API_KEY=...    # https://aistudio.google.com/apikey
 ```
 
-The app checks its configuration and the schema version at startup and refuses to start, with a readable list of what to fix, if anything is wrong. Health endpoints: `/healthz` (process up) and `/readyz` (database, schema, an LLM provider).
-
-**Background jobs** (alert checks in market hours, housekeeping, the Telegram link listener, the nightly fundamentals snapshot and fund metrics) live in `worker.py`. In dev (`APP_ENV=dev`, the default) the app runs them in-process. Anywhere else, run `python worker.py` next to the app. Each job holds a Postgres advisory lock, so extra workers or app replicas never double-run anything. If `DATABASE_URL` points at a connection pooler (Neon's `-pooler` host), set `JOBS_DATABASE_URL` to the direct host: advisory locks need a real session.
-
-To make yourself an operator (the **🛠 Admin** tab: look up users, see turns and alerts, disable accounts, feature flags), run `python scripts/make_admin.py you@example.com`.
-
-Open **http://localhost:7860**, sign up with an email and password, and start chatting. (In dev, the email-confirmation link is printed to the app log instead of mailed; set `MAIL_BACKEND=smtp` and `SMTP_*` to send real mail, e.g. with a Gmail app password.)
-
-### Or run it with Docker
-
-No local Python, Postgres, or Neon account needed — Compose bundles a Postgres container for you. Still need `SECRET_KEY` in `.env` (and `GROQ_API_KEY_1`/`GEMINI_API_KEY` if you want to offer the free trial — see above).
+Start it:
 
 ```bash
-cp .env.example .env   # fill in SECRET_KEY at minimum
 docker compose up --build
 ```
 
-Open **http://localhost:7860**. Data persists in a named Docker volume (`aria_pg_data`) across restarts. Compose also starts a `worker` service for the background jobs.
+Open **http://localhost:7860**, sign up, and ask a question. Your data lives in a Docker volume and survives restarts.
 
-### Or deploy it for free on Hugging Face Spaces
+> In the default `dev` mode the email-confirmation link is printed in the app log (`docker compose logs app`) instead of being mailed.
 
-No server to manage, no card required. Nothing in this app depends on the host's disk surviving a restart: reports and CSVs are generated on demand from Postgres. Background jobs need either a `python worker.py` process somewhere, or the GitHub Actions alert checker below, which runs whether or not the Space is awake.
+### Without Docker
 
-1. Create a new Space at [huggingface.co/new-space](https://huggingface.co/new-space) — pick **Docker** as the SDK.
-2. Push this repo's contents to the Space's git remote (shown on the Space's page after creation), or connect it to sync from your GitHub fork. The existing `Dockerfile` runs as-is — no changes needed.
-3. Under the Space's **Settings → Variables and secrets**, add the same values from your `.env`: `SECRET_KEY` and `DATABASE_URL` at minimum, plus `GROQ_API_KEY_1`/`GEMINI_API_KEY` if you want to offer the free trial, and `TELEGRAM_BOT_TOKEN`/`TELEGRAM_BOT_USERNAME` if you want alerts.
-4. The Space builds and starts automatically — open its URL, sign up, and start chatting.
+You need Python 3.11+ and a Postgres database (a free [Neon](https://neon.tech) project works).
 
-Free-tier Spaces sleep after a period of inactivity and cold-start on the next visit (a few seconds) — this only affects the chat UI itself, never alert delivery (see **Setting up Alerts** below for why).
+```bash
+git clone https://github.com/champ475/ARIA-research-agent.git
+cd ARIA-research-agent
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env                              # set DATABASE_URL, SECRET_KEY, an LLM key
+python scripts/migrate.py                         # create the database schema
+python app.py                                     # http://localhost:7860
+```
 
-## Setting up Alerts (optional, one-time)
+The app checks its configuration at start-up and, if anything is wrong, exits with one readable list of what to fix.
 
-One Telegram bot serves every user — each person links their own chat in-app, there's no per-user bot setup. You (the operator) set this up once:
+### Try it offline (no keys, no network)
 
-1. **Create a Telegram bot** — message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`, follow the prompts, copy the token it gives you into `TELEGRAM_BOT_TOKEN` and the username it gives you (without the `@`) into `TELEGRAM_BOT_USERNAME`.
-2. **Push this repo to a public GitHub repo** (public keeps GitHub Actions free at this checking frequency).
-3. **Add two repo secrets** — on GitHub, go to *Settings → Secrets and variables → Actions*, add `DATABASE_URL` and `TELEGRAM_BOT_TOKEN` using the same values from your `.env`.
+Want to look around before getting any API keys? Run with the built-in fake LLM and recorded market data:
 
-That's it on your end — the checker runs automatically every 5 minutes during NSE market hours (9:15 AM–3:30 PM IST, weekdays).
+```bash
+ARIA_FAKE_LLM=1 ARIA_FAKE_DATA=1 python app.py
+```
 
-**Each user connects their own chat** (no setup needed from you beyond the above): in-app, under **⚙️ Settings → 🔔 Telegram Alerts**, click "Connect Telegram" — it opens a link that starts a chat with your bot and links it to their account automatically. Alerts they create fire to that chat, and only that chat.
+Answers are canned, so this is for exploring the interface only.
 
-## What to expect
+## Configuration
 
-Type in plain English, no command syntax. Example:
+All settings live in `.env`, and `.env.example` documents every one. The ones most people touch:
 
-> **You:** what is the PE ratio of TCS
->
-> **ARIA:** The P/E ratio of TCS is 24.3 [^pe].
->
-> ---
-> ### 🧮 Cited calculations
-> **[^pe] P/E Ratio**
-> 24.3 = current price (₹4,127.50) / trailing EPS (₹169.85)
+| Setting | Needed? | What it does |
+|---|---|---|
+| `SECRET_KEY` | Yes | 32+ random characters. Encrypts users' own LLM keys. |
+| `DATABASE_URL` | Yes (not with Docker) | Postgres connection string. |
+| `GROQ_API_KEY_1` … `_5`, `GEMINI_API_KEY` | One or more | Powers the free daily questions. Skip them and every user brings their own key. |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` | For alerts | One bot serves all users. Setup in [docs/ALERTS.md](docs/ALERTS.md). |
+| `MAIL_BACKEND`, `SMTP_*` | For real email | Defaults to printing emails to the log. |
+| `LOCAL_LLM_BASE_URL` | Optional | Last-resort local model (llama.cpp, Ollama, LM Studio). |
 
-> **You:** what about its RSI
->
-> **ARIA:** *(follow-up resolves "its" back to TCS automatically)* TCS's 14-day RSI is 58.2 — neither overbought nor oversold.
+**Free questions vs your own key.** Every signup gets 5 free questions a day on the operator's Groq and Gemini keys. After that, or from the start if the operator set no keys, each user pastes their own key under **Settings** in the app.
 
-Ask for a chart, a comparison, a report, an alert, or a fund lookup and ARIA routes it to the right specialist itself — you never pick a mode or tab.
+## Using ARIA
 
-## How to use each feature
+Type what you want. There are no commands and no modes to pick. ARIA works out whether you are asking about a stock, a fund, a screen, an alert or a plan.
 
-Just type what you want in the chat — ARIA routes it to the right specialist automatically.
+```text
+Analyse TCS
+Compare HDFC Bank vs ICICI Bank
+Generate an IC report for RELIANCE
+Stocks with PE below 20 and ROE above 15
+Alert me if TCS drops below 3500
+Compare large cap funds
+Help me plan for retirement in 20 years
+```
 
-### 📈 Equity Research
-> "Analyse TCS"
-> "Show me a chart for RELIANCE"
-> "Compare HDFC Bank vs ICICI Bank"
-> "What's the RSI and MACD on INFY?"
-> "Backtest a moving average crossover on TATAMOTORS"
+The app has five tabs: **Chat**, **Watchlist**, **Portfolio**, **Alerts** and **Settings**. Operators also get an **Admin** tab.
 
-Responses stream in live, flag a **DATA CONFIDENCE** level (High/Medium/Low) whenever underlying data is incomplete, and carry footnote citations (`[^pe]`, `[^roce]`, etc.) back to the exact number they're based on — so a verdict answered off thin data reads with less conviction than one backed by a full data set.
+Full guide with more prompts and how alerts behave: [docs/USAGE.md](docs/USAGE.md).
 
-### 📄 Reports
-> "Generate an IC report for RELIANCE"
-> "Write a result update for TCS"
-> "Sector thematic on IT stocks"
-> "Show my saved reports"
-> "Download report #12"
+## How it works
 
-Every report's full text lives in your account, not on the server's disk — say "download report #&lt;id&gt;" anytime to get the PDF/Markdown again, regenerated on the spot.
+```text
+question ─► understand ─► plan ─► research (parallel) ─► summarise ─► verify ─► answer
+            intent,       pick     prices, fundamentals,  distil      check      streamed,
+            company       tools    news, funds, screens   evidence    claims     with citations
+```
 
-### 💰 Mutual Funds
-> "Compare large cap funds"
-> "Best ELSS funds for tax saving"
-> "Should I do SIP or lumpsum for a 10-year goal?"
-> "NAV of Parag Parikh Flexi Cap"
+1. **Understand.** Works out the intent and resolves company names against the full NSE and BSE instrument list. It never trusts a guessed ticker.
+2. **Plan and research.** Chooses the tools the question needs and runs them in parallel.
+3. **Verify.** Checks the numbers in the draft against the collected evidence. Bad claims are withheld or flagged, and ARIA asks you before going ahead on thin data.
+4. **Answer.** Writes the response, streams it, and attaches sources and a confidence level.
 
-### 🔍 Screener
-> "Top gainers today"
-> "Stocks with PE below 20 and ROE above 15"
-> "Show bulk deals today"
-> "Save screener as my value screener"
+Built with Python, [LangGraph](https://github.com/langchain-ai/langgraph), [Gradio](https://www.gradio.app/), FastAPI and Postgres. Market data comes from Yahoo Finance, NSE, AMFI and public news feeds. Design details: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-### 🔔 Alerts
-> "Alert me if TCS drops below 3500"
-> "Notify me when RELIANCE RSI crosses below 30"
-> "Alert me on a MACD bullish crossover for INFY"
-> "Notify me on a golden cross for HDFC Bank"
-> "Show my alerts"
-> "Cancel my TCS alert"
-> "Pause my RELIANCE alert"
+## FAQ
 
-By default an alert fires **once** — you get a Telegram message, and it switches itself off so you don't get spammed. Ask for a **recurring** alert instead (with a cooldown, default 24h) if you want it to keep firing each time the condition re-triggers.
+**Is it free?** The software is MIT licensed. Data sources are free public ones. LLM calls use free-tier Groq and Gemini keys, or your own key.
 
-**Conditions you can set alerts on:** price above/below a level, % price move, RSI crossing a level, MACD bullish/bearish crossover, moving-average golden/death cross, Bollinger Band breakout, volume spike, new 52-week high/low, bulk deal activity, and portfolio P&L threshold.
+**Which markets does it cover?** Indian equities on NSE and BSE, and Indian mutual funds. No US stocks, crypto or derivatives.
 
-### 🎯 Financial Planning
-> "Help me plan for retirement in 20 years"
-> "I have ₹10L to invest for a house down payment in 5 years"
-> "Build me an investment strategy — I'm 28, moderate risk"
+**Does it give buy or sell recommendations?** No. ARIA is education-only. Requests for personal picks are reframed, and every answer carries a disclaimer. See [docs/ADVICE_POLICY.md](docs/ADVICE_POLICY.md).
 
-ARIA asks a few questions to fill in your profile (age, capital, horizon, goal, risk tolerance — remembered across sessions), then designs a multi-asset allocation grounded in real fund/stock data rather than a generic template.
+**Can I trust the numbers?** They come from public sources and are cited, but free data can be delayed, incomplete or wrong, and AI can misread it. Check anything important at the source.
 
-### 📌 Watchlist
-Use the Watchlist tab to add/remove stocks you're tracking — separate from alerts, just a quick-glance list.
+**Where does my data go?** To your own Postgres database. If you use your own LLM key, your questions go to that provider. See [docs/PRIVACY.md](docs/PRIVACY.md).
 
-## Running it in production
+**Do alerts work when my computer is off?** Yes, if you host the worker somewhere that stays up, or use the included GitHub Actions checker. See [docs/ALERTS.md](docs/ALERTS.md).
 
-ARIA isn't hosted as a public service; `docker compose` (app + worker + Postgres, plus an optional Prometheus/Grafana `observability` profile) is the reference deployment. To operate an instance:
+**Can I run it for other people?** Yes. Read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [LEGAL.md](LEGAL.md) first, and adjust the terms to your setup.
 
-- [docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md): dev, staging and prod settings.
-- [docs/RELEASING.md](docs/RELEASING.md): tagged releases, rollback, migration rules.
-- [docs/RUNBOOK.md](docs/RUNBOOK.md): what to do for each ops alert, plus backups and restore.
-- [docs/SLO.md](docs/SLO.md): service-level objectives and the weekly report.
-- [docs/PRIVACY.md](docs/PRIVACY.md) and [docs/ADVICE_POLICY.md](docs/ADVICE_POLICY.md): data handling and the education-only boundary.
+## Documentation
 
-## Security
-
-Found a vulnerability? See [docs/SECURITY.md](docs/SECURITY.md); please report it privately.
+| | |
+|---|---|
+| [Usage guide](docs/USAGE.md) | Example prompts for every feature |
+| [Alerts setup](docs/ALERTS.md) | Telegram bot and background checks |
+| [Deployment](docs/DEPLOYMENT.md) | Docker, Hugging Face Spaces, workers, admin access |
+| [Docs index](docs/README.md) | Operations, security, privacy, data sources |
+| [Architecture](ARCHITECTURE.md) | Design decisions and trade-offs |
+| [Changelog](CHANGELOG.md) | What changed in each release |
 
 ## Contributing
 
-Bug reports, feature requests, and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, test running, and how to add a new agent or tool.
+Bug reports, ideas and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), which covers the dev setup, tests and project layout. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Found a security problem? Report it privately: [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Data sources
 
 Data: Yahoo Finance (via yfinance), NSE, BSE, AMFI, mfapi.in, Google News and publisher RSS. These are free public sources, used for non-commercial, education-only research. Each one's terms, permitted use and attribution are in [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md). Before any commercial use, read that register's status column: NSE and Yahoo data need a licence.
 
-## Legal
-
-ARIA is a research tool, not financial advice — see [LEGAL.md](LEGAL.md) for the full terms of use and privacy notice every user agrees to at signup (not investment advice, no SEBI registration, AI output may be wrong, third-party data has no accuracy guarantee, where your data goes if you bring your own LLM key). If you're operating an instance for other people, read it and make sure it actually reflects your setup before shipping it as-is.
-
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © Arnav Mendiratta. Terms of use and privacy notice for people using an instance: [LEGAL.md](LEGAL.md).

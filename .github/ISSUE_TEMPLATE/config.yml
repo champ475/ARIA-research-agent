@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/champ475/ARIA-research-agent/security/advisories/new
+    about: Report security problems privately. Please don't open a public issue.
+  - name: Read the usage guide
+    url: https://github.com/champ475/ARIA-research-agent/blob/main/docs/USAGE.md
+    about: Example prompts and how each feature behaves.

@@ -1,82 +1,104 @@
 # Contributing to ARIA
 
+Thanks for helping. Bug reports, ideas, docs fixes and pull requests are all welcome. By taking part you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Ways to help
+
+- **Report a bug or suggest a feature** with an [issue](https://github.com/champ475/ARIA-research-agent/issues/new/choose). For a wrong answer, include the question, what ARIA said, and the `Error ID` if it showed one.
+- **Report a security problem** privately. See [docs/SECURITY.md](docs/SECURITY.md).
+- **Send a pull request.** For anything bigger than a small fix, open an issue first so we can agree on the approach.
+
 ## Dev setup
 
-```bash
-git clone <your-fork-url>
-cd ARIA_investment_agent
-pip install -r requirements.txt
-cp .env.example .env   # fill in GROQ_API_KEY_1, GEMINI_API_KEY, DATABASE_URL
-python app.py
-```
-
-Or skip the Postgres signup and use `docker compose up --build` (see README).
-
-## Running tests
+You need Python 3.11+ and Docker (the integration tests start a throwaway Postgres in it).
 
 ```bash
-python -m pytest tests/ -q
+git clone https://github.com/<your-fork>/ARIA-research-agent.git
+cd ARIA-research-agent
+python -m venv venv && source venv/bin/activate    # Windows: venv\Scripts\activate
+pip install -r requirements-dev.txt
+cp .env.example .env                                # set DATABASE_URL, SECRET_KEY, an LLM key
+python scripts/migrate.py                           # use a dev database, never one with real data
+python app.py                                       # http://localhost:7860
+python worker.py                                    # background jobs (dev runs them in-app by default)
 ```
 
-Tests that touch a live database are skipped unless `DATABASE_URL` is set
-and `RUN_DB_TESTS=1` — CI runs without either, so those are opt-in locally.
+No keys? Run fully offline with a fake LLM and recorded market data:
+
+```bash
+ARIA_FAKE_LLM=1 ARIA_FAKE_DATA=1 ARIA_NO_DOTENV=1 python app.py
+```
+
+## Checks
+
+CI runs all of these. Run them before pushing:
+
+```bash
+python -m pytest tests/ -q               # unit + integration (integration uses TEST_DATABASE_URL, else Docker, else skips)
+ruff check . && ruff format --check .    # lint and format
+mypy                                     # types
+lint-imports                             # layering rules
+make eval                                # golden-set answer-quality eval (replay, no network)
+```
+
+`pre-commit install` runs the lint, format and type checks on every commit. Browser tests are opt-in: `python -m playwright install chromium`, then `E2E=1 python -m pytest tests/e2e`.
+
+Never point tests at a database with real data.
 
 ## Project layout
 
-- `agents/graph_orchestrator.py` — the orchestration entry point (`GraphOrchestrator`),
-  a drop-in `process_stream()`/`classify()`/`generate_suggestions()`/`load_history()`
-  adapter over the LangGraph engine in `graph/`. Also resolves each user's
-  LLM provider (bring-your-own key vs. the free-trial quota) before every turn.
-- `agents/llm_client.py` — `LLMClient`: trial path (Groq→Gemini fallback) with
-  no `provider_config`, or a single BYO provider (no fallback) with one.
-- `agents/providers/openai_compatible.py` — the one BYO adapter, works with
-  any OpenAI-compatible `base_url` (OpenAI, Groq, OpenRouter, Together,
-  Fireworks, Ollama, ...).
-- `tools/data/` — external data fetchers (yfinance, NSE bhavcopy, news,
-  AMFI NAV) and the Parquet cache.
-- `tools/analysis/` — pure computation: technicals, fundamentals, risk,
-  backtesting, sentiment.
-- `graph/` — the LangGraph research engine (see
-  `docs/RFC_AGENTIC_RESEARCH_GRAPH.md`): `graph/tool_catalogue.py` wraps
-  `tools/` for Planner's tool selection, `graph/nodes/` holds each pipeline
-  stage (QueryAnalyzer, Planner, ResearchExecutor, EvidenceSummarizer,
-  Reflection, Verification, ConclusionBuilder, CommunicationLayer).
-- `utils/` — DB access, auth, ticker-alias resolution, IST time helpers,
-  `crypto.py` (encrypts users' own LLM keys before storage).
-- `config.py` — single source of truth for token budgets, sector universe,
-  and technical-analysis defaults. Change limits here, not inline in nodes.
+| Path | What it is |
+|---|---|
+| `app.py`, `server.py` | Entry points: FastAPI app with the Gradio UI mounted at `/` |
+| `worker.py` | Background jobs (alerts, refreshes, clean-up) |
+| `ui/` | One module per tab. Renders and wires events only |
+| `services/` | What the tabs need: the only layer the UI calls for data. No Gradio inside |
+| `agents/` | `GraphOrchestrator` and the LLM client (provider routing, key rotation, metering) |
+| `graph/` | The LangGraph research engine: analyse, plan, research, verify, answer |
+| `tools/` | Data fetchers (`tools/data/`), analysis (`tools/analysis/`), screener, portfolio, charts |
+| `web/` | Server-rendered auth pages, downloads, ops endpoints |
+| `utils/` | Database, auth, HTTP and resilience helpers, metrics, tracing |
+| `prompts/` | Versioned prompt files |
+| `migrations/` | Alembic revisions: the only place the schema changes |
+| `evals/` | Golden-set answer-quality evaluation |
+| `tests/` | Unit, integration, edge-case and e2e tests |
+| `docs/` | User and operator docs |
 
-## Adding a new domain or tool
+## Conventions that matter
 
-1. New data fetcher → `tools/data/`; new computation → `tools/analysis/`.
-   Keep tools pure (input → output), no LLM calls inside them.
-2. New tool → register a `ToolSpec` in `graph/tool_catalogue.py` (name,
-   evidence_type, depends_on, cost, fn, description) — Planner selects
-   tools by reading each `description` against the objective, so no
-   separate routing step is needed.
-3. If the new capability needs its own response-formatting logic (like
-   report/screener's file-output branches), add it to
-   `graph/nodes/communication_layer.py`.
-4. Respect the token budgets in `config.py` (`TOKENS_FAST` /
-   `TOKENS_AGENT` / `TOKENS_SYNTHESIS`) — don't hardcode a `max_tokens`.
-5. All timestamps use `pytz` Asia/Kolkata (`utils/helpers.py` has the
-   helper) — NSE market-hours logic depends on this being consistent.
+These are enforced by tests or CI, so a PR that breaks them will fail:
+
+- **Layering.** `ui/` never imports `utils.db` or `tools`. Add a function to `services/` and call that.
+- **Schema.** Change the database only with a new Alembic revision in `migrations/versions/`. Never run DDL in app code.
+- **Config.** Add settings to `config.Settings` (typed, validated at boot). No `os.getenv` in app code.
+- **Logging.** `logging.getLogger(__name__)`. No `print()` in app code.
+- **External calls.** HTTP goes through `utils/http.py`; libraries without timeouts go through `utils/resilience.py::guarded_call`.
+- **Prompts.** Prompt text lives in `prompts/<name>.vN.md`, loaded with `prompts.get(name)`. Changing a prompt means re-recording its eval fixtures.
+- **Errors.** Raise the types in `utils/errors.py`. Never put `str(e)` in user-facing text.
+- **Advice boundary.** ARIA is education-only. Never prompt for personal picks. Every answer goes through `graph/guardrails.py::finalize`.
+- **Tenant isolation.** A new `utils/db.py` function taking `user_id` needs a case in `tests/integration/test_tenant_isolation.py`.
+- **Tickers.** Never trust an LLM-produced ticker. Resolve against the instrument master (`graph/entity_resolution.py`).
+- **Timestamps.** Use the IST helpers in `utils/helpers.py`.
+
+## Adding a tool
+
+1. A data fetcher goes in `tools/data/`, a computation in `tools/analysis/`. Keep tools pure: no LLM calls inside.
+2. Register a `ToolSpec` in `graph/tool_catalogue.py`. The planner picks tools by reading their descriptions, so a clear description is the routing.
+3. Mark it `cacheable` only if its cache key covers every input that changes its output. Tools that write data are never cacheable and run only through `graph/write_policy.py`.
+4. Use the token budgets in `config.py`; don't hard-code `max_tokens`.
+5. A new outside data source needs a row in `docs/DATA_SOURCES.md`.
+6. Add tests next to the existing ones in `tests/`.
 
 ## Architecture decisions
 
-Significant decisions (system boundaries, persistence model, provider
-choice) are logged in `ARCHITECTURE.md`, newest entry first. If your PR
-changes one of those, add an entry rather than editing history.
-
-## Code style
-
-No enforced formatter/linter is wired up yet — match the surrounding
-file's style. Keep functions small and prefer explicit code over new
-abstractions for one-off logic.
+Significant decisions (system boundaries, persistence, provider choice, trust contracts) are logged in [ARCHITECTURE.md](ARCHITECTURE.md), newest first. If your change reverses one, add a new entry. Don't edit the old one.
 
 ## Pull requests
 
-- Keep PRs scoped to one change; unrelated cleanups belong in a separate PR.
-- Run the test suite before opening a PR.
-- Describe *why* the change is needed, not just what changed — the diff
-  already shows the "what".
+- One change per PR. Unrelated clean-ups go in their own PR.
+- Add or update tests, and update the docs your change touches.
+- Explain *why* in the description. The diff already shows *what*.
+- Add a line to [CHANGELOG.md](CHANGELOG.md) under "Unreleased" for user-visible changes.
+- Keep CI green.
+
+The PR template has the full checklist.
