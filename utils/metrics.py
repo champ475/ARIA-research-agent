@@ -48,6 +48,12 @@ LLM_FALLBACKS = Counter(
     ["node"],
     registry=REGISTRY,
 )
+LLM_EMPTY_REPLIES = Counter(
+    "aria_llm_empty_replies",
+    "LLM replies with no content (usually the token cap spent on reasoning)",
+    ["provider", "finish"],
+    registry=REGISTRY,
+)
 TOOL_CALLS = Counter("aria_tool_calls", "Research tool calls", ["cache"], registry=REGISTRY)
 PARSE_FAILURES = Counter(
     "aria_parse_failures", "Unusable structured LLM replies", ["node"], registry=REGISTRY
@@ -109,6 +115,13 @@ def observe_llm_call(
             LLM_FALLBACKS.labels(node or "other").inc()
     except Exception:
         log.debug("[metrics] could not record LLM call", exc_info=True)
+
+
+def observe_empty_reply(provider: str, finish: str | None) -> None:
+    try:
+        LLM_EMPTY_REPLIES.labels(provider, (finish or "unknown")[:20]).inc()
+    except Exception:
+        log.debug("[metrics] could not record empty reply", exc_info=True)
 
 
 def observe_gate(gate: str) -> None:

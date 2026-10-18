@@ -132,7 +132,7 @@ def test_screener_and_csv(page: Page, base_url, email):
 # 9 ─────────────────────────────────────────────────────────────────────────────
 def test_create_list_and_cancel_an_alert(page: Page, base_url, email, db):
     new_user(page, base_url, email)
-    ask(page, "Alert me if TCS goes above 99999")
+    ask(page, "Alert me if TCS goes above 99999 anyway")
     assert ERROR not in wait_answer(page)
     uid = _user_id(db, email)
     rows = db.execute("SELECT id, symbol, threshold FROM alerts WHERE user_id=%s", (uid,)).fetchall()
@@ -148,7 +148,7 @@ def test_create_list_and_cancel_an_alert(page: Page, base_url, email, db):
 def test_alerts_tab_create_in_chat_then_edit_and_delete(page: Page, base_url, email, db):
     """UX-06: an alert made in chat shows in the Alerts tab, can be paused, edited and deleted."""
     new_user(page, base_url, email)
-    ask(page, "Alert me if TCS goes above 99999")
+    ask(page, "Alert me if TCS goes above 99999 anyway")
     assert ERROR not in wait_answer(page)
     uid = _user_id(db, email)
     aid = db.execute("SELECT id FROM alerts WHERE user_id=%s", (uid,)).fetchone()["id"]
@@ -319,3 +319,15 @@ def test_two_tabs_keep_separate_conversations(page: Page, base_url, email):
     a, b = page.locator("#chatbot-chat").inner_text(), other.locator("#chatbot-chat").inner_text()
     assert "TCS" in a and "WIPRO" not in a
     assert "WIPRO" in b and "Analyse TCS" not in b
+
+
+def test_the_box_is_empty_and_has_the_cursor_after_an_answer(page: Page, base_url, email):
+    """Live run 2026-10-18: the text stayed in the box and the next message went out glued to it."""
+    new_user(page, base_url, email)
+    ask(page, "Analyse TCS")
+    wait_answer(page, "Here is what the research shows")
+    box = page.locator("#msg-chat textarea")
+    expect(box).to_have_value("")
+    expect(box).to_be_focused()
+    page.keyboard.type("and the RSI?")  # no click needed
+    expect(box).to_have_value("and the RSI?")

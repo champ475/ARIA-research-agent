@@ -40,6 +40,9 @@ ASK_SCORE = 75.0
 SUGGEST_SCORE = 60.0
 _MARGIN = 5.0
 _MAX_CANDIDATES = 5
+# A bare group word ("Tata", "Adani") starts many company names; list more of them
+# so the big ones (TCS, Tata Motors) are not cut off by the symbol order.
+_MAX_GROUP_CANDIDATES = 8
 
 # Symbols that changed. Old symbol -> (current symbol, note shown to the user).
 RENAMED: dict[str, tuple[str, str]] = {
@@ -58,6 +61,10 @@ RENAMED: dict[str, tuple[str, str]] = {
 # is now both TMCV (named "Tata Motors Limited") and TMPV (the old TATAMOTORS
 # listing, renamed Tata Motors Passenger Vehicles) — people mean either.
 AMBIGUOUS_EXACT_NAMES = frozenset({"tata motors"})
+
+# Business groups people name on their own ("Tell me about Tata"). Each starts
+# several listed names, so a bare mention is always a question: which one?
+COMPANY_GROUPS = frozenset({"tata", "birla", "adani", "bajaj", "jindal", "godrej", "hdfc"})
 
 # Words that are never a company mention on their own: indices, market and
 # fund jargon, ratios. Used by the query-level mention extractor
@@ -234,7 +241,8 @@ def _found(query: str, inst: Instrument, method: str, note: str | None = None) -
 
 
 def _ambiguous(query: str, cands: list[Candidate], method: str, note: str | None = None) -> Resolution:
-    return Resolution(query, "ambiguous", candidates=tuple(_rank(cands)[:_MAX_CANDIDATES]), note=note, method=method)
+    limit = _MAX_GROUP_CANDIDATES if method == "name_prefix" else _MAX_CANDIDATES
+    return Resolution(query, "ambiguous", candidates=tuple(_rank(cands)[:limit]), note=note, method=method)
 
 
 def _aliases() -> dict[str, str]:

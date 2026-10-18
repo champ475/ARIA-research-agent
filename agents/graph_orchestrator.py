@@ -77,6 +77,7 @@ from agents.conversation_memory import ConversationMemory, strip_badge, strip_so
 from agents.llm_client import LLMProvidersExhausted
 from config import TOKENS_SYNTHESIS, TRIAL_DAILY_LIMIT, TRIAL_DAILY_TOKENS
 from graph.analysis_tools import analysis_notes
+from graph.caveats import verification_note
 from graph.checkpointer import get_turn_checkpointer
 from graph.confirmation import REASK_TEXT as CONFIRM_REPROMPT
 from graph.confirmation import classify_reply
@@ -275,6 +276,24 @@ def shared_graph(provider_config: dict | None) -> Any:
         return graph
 
 
+def warm_up() -> None:
+    """Build the trial-path graph once, in the background, at start-up. The first
+    build imports the provider SDKs and compiles the graph (~8 s), which the first
+    user turn after every restart used to wait for (live smoke test 2026-10-18)."""
+    from config import APP_ENV, ARIA_FAKE_LLM
+
+    if ARIA_FAKE_LLM or APP_ENV == "test":
+        return
+
+    def _build() -> None:
+        try:
+            shared_graph(None)
+        except Exception:
+            log.warning("[orchestrator] warm-up failed (the first turn will build the graph)", exc_info=True)
+
+    threading.Thread(target=_build, name="aria-warm-up", daemon=True).start()
+
+
 def clear_graph_cache() -> None:
     with _graphs_lock:
         _graphs.clear()
@@ -297,7 +316,9 @@ def suggestions_for(domain: str, last_query: str) -> list[str]:
     user just asked about when there is one."""
     chips = list(_SUGGESTIONS.get(domain, _DEFAULT_SUGGESTIONS))
     m = _TICKER_RE.search(last_query or "")
-    if domain == "equity" and m:
+    if domain == "equity":
+        if not m:  # "Show the technicals" of what? Offer starting points instead.
+            return list(_DEFAULT_SUGGESTIONS)
         sym = m.group(0)
         chips = [f"{sym} technicals", f"Compare {sym} with peers", f"{sym} latest news", f"Alert me on {sym}"]
     return chips
@@ -662,7 +683,9 @@ class GraphOrchestrator:
             secondary = result.get("secondary_intents") or []
             tab_used = "+".join([intent] + [s for s in secondary if s != intent])
 
-            gaps_note = entity_notes_text(result) + data_gaps_note(result.get("tasks"))
+            gaps_note = (
+                entity_notes_text(result) + data_gaps_note(result.get("tasks")) + verification_note(result)
+            )
             # DATA-06: market figures say when they're from (and, on a closed
             # day, that they're the last session's).
             header = closed_today_header(result)
@@ -674,11 +697,16 @@ class GraphOrchestrator:
             pending_prompt = result.get("pending_synthesis_prompt")
             if pending_prompt:
                 from agents.llm_client import LLMClient
+                from graph.nodes.communication_layer import _DIRECT_SYSTEM
                 from graph.nodes.communication_layer import _SYSTEM as _COMM_SYSTEM
                 from tools.analysis.fundamental import cited_footnotes
 
                 synthesis_client = LLMClient(
-                    system_prompt=_COMM_SYSTEM, provider_config=self._provider_config, node="communication"
+                    system_prompt=_DIRECT_SYSTEM
+                    if result.get("pending_synthesis_system") == "direct"
+                    else _COMM_SYSTEM,
+                    provider_config=self._provider_config,
+                    node="communication",
                 )
                 chunks: list[str] = []
                 cut_off = False

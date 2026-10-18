@@ -30,11 +30,18 @@ def current_session(request: Request) -> SessionInfo | None:
     """Who this request's cookie belongs to, or None. A
     database outage reads as logged out (the request is refused), never as
     someone else."""
-    try:
-        return session_info(session_token(request))
-    except Exception:
-        log.exception("[session] could not resolve the session cookie")
-        return None
+    token = session_token(request)
+    for attempt in (1, 2):
+        try:
+            return session_info(token)
+        except Exception:
+            # A connection the server dropped while idle is replaced by the pool:
+            # the second attempt usually succeeds. Only then is it an outage.
+            if attempt == 1:
+                log.warning("[session] lookup failed, retrying once", exc_info=True)
+                continue
+            log.exception("[session] could not resolve the session cookie")
+    return None
 
 
 def current_user_id(request: Request) -> int | None:

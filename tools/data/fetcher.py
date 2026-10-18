@@ -174,6 +174,30 @@ def get_recommendations(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+_FX_TTL = 3600
+_fx_cache: dict[str, tuple[float, float]] = {}
+
+
+def get_fx(from_currency: str, to_currency: str) -> float | None:
+    """Units of `to_currency` per unit of `from_currency` (last daily close), or
+    None when it can't be fetched. Cached for an hour."""
+    pair = f"{from_currency}{to_currency}".upper()
+    now = time.time()
+    hit = _fx_cache.get(pair)
+    if hit and now - hit[1] < _FX_TTL:
+        return hit[0]
+    try:
+        hist = _yf(yf.Ticker(f"{pair}=X").history, period="5d", interval="1d")
+        rate = float(hist["Close"].dropna().iloc[-1])
+    except Exception as e:
+        log.warning(f"FX {pair} unavailable: {e}")
+        return None
+    if not rate > 0:
+        return None
+    _fx_cache[pair] = (rate, now)
+    return rate
+
+
 def get_macro() -> dict:
     out = {}
     for name, ticker in MACRO_TICKERS.items():

@@ -166,13 +166,67 @@ class TestLLMJudgeStage:
         assert result["verification_issues"][0]["stage"] == "llm_judge"
         assert result["verification_issues"][0]["issue_type"] == "unsupported"
 
-    def test_falls_back_to_no_issues_on_unparseable_output(self):
+    def test_unparseable_output_is_unavailable_not_clean(self):
+        # Smoke test 2026-10-17: an empty judge reply used to count as "clean".
         stub = _StubClient("not json")
         node = build_verification_node(stub)
         result = node(
             {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
         )
         assert result["verification_issues"] == []
+        assert result["judge_status"] == "unavailable"
+        assert "unavailable" in result["research_journal"][0]["decision"]
+
+    def test_empty_reply_is_unavailable_not_clean(self):
+        node = build_verification_node(_StubClient(""))
+        result = node(
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
+        )
+        assert result["judge_status"] == "unavailable"
+
+    def test_a_valid_empty_issue_list_is_clean(self):
+        node = build_verification_node(_StubClient(json.dumps({"issues": []})))
+        result = node(
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
+        )
+        assert result["judge_status"] == "ok"
+        assert "clean" in result["research_journal"][0]["decision"]
+
+    def test_judge_issues_are_soft_and_earlier_stages_are_hard(self):
+        stub = _StubClient(
+            json.dumps({"issues": [{"claim": "c", "issue_type": "unsupported", "evidence_ids": []}]})
+        )
+        soft = build_verification_node(stub)(
+            {"evidence": [_evidence()], "tasks": [_task()], "objective": "x", "evidence_summary": {}}
+        )
+        assert soft["verification_issues"][0]["severity"] == "soft"
+        hard = build_verification_node(_StubClient(json.dumps({"issues": []})))(
+            {
+                "evidence": [_evidence(payload={"pe": float("nan")}, evidence_type="fundamental_ratio")],
+                "tasks": [_task()],
+                "objective": "x",
+                "evidence_summary": {},
+            }
+        )
+        assert hard["verification_issues"][0]["severity"] == "hard"
+
+    def test_empty_objective_falls_back_to_the_query(self):
+        class _Spy(_StubClient):
+            def ask(self, prompt, **kwargs):
+                self.prompt = prompt
+                return super().ask(prompt, **kwargs)
+
+        spy = _Spy(json.dumps({"issues": []}))
+        build_verification_node(spy)(
+            {
+                "evidence": [_evidence()],
+                "tasks": [_task()],
+                "objective": "",
+                "query": "what about its debt?",
+                "evidence_summary": {},
+            }
+        )
+        assert "Objective: what about its debt?" in spy.prompt
 
     def test_invalid_issue_type_normalized_to_unsupported(self):
         stub = _StubClient(

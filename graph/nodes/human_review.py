@@ -25,7 +25,7 @@ from __future__ import annotations
 from langgraph.types import interrupt
 
 from graph.journal import log_decision
-from graph.state import GraphState
+from graph.state import GraphState, VerificationIssue
 
 _COMPLEX_TASK_THRESHOLD = 5
 
@@ -62,15 +62,45 @@ def research_confirmation(state: GraphState) -> dict:
     return log_decision("ResearchConfirmation", "user approved", f"{len(tasks)} task(s), complexity=complex")
 
 
+def _hard_issues(issues: list[VerificationIssue]) -> list[VerificationIssue]:
+    """Issues that withhold evidence and ask the user. A missing severity counts
+    as hard; the LLM judge's issues are soft and only add a note to the answer."""
+    return [i for i in issues if i.get("severity", "hard") != "soft"]
+
+
+def _gate_message(hard: list[VerificationIssue]) -> str:
+    claims = "; ".join(str(i.get("claim", "")).strip().rstrip(".") for i in hard[:3] if i.get("claim"))
+    more = f" (and {len(hard) - 3} more)" if len(hard) > 3 else ""
+    if not claims:
+        return f"{len(hard)} issue(s) could not be fully verified. Show the report anyway?"
+    return f"I couldn't confirm: {claims}{more}. Show the answer anyway?"
+
+
 def verification_gate(state: GraphState) -> dict:
     issues = state.get("verification_issues") or []
     if not issues:
         return log_decision("VerificationGate", "no unresolved issues, pass through", "clean")
+    hard = _hard_issues(issues)
+    if not state.get("evidence"):
+        # Nothing was collected, so there is no report to show: skip the yes/no
+        # and let the answer say what is missing.
+        return log_decision(
+            "VerificationGate", "no evidence collected, nothing to show", f"{len(issues)} issue(s)"
+        )
+    if not hard:
+        # The judge could not confirm something: the answer carries a note
+        # (graph/caveats.py) instead of stopping to ask.
+        return log_decision(
+            "VerificationGate",
+            "soft issues only, answer shown with a note",
+            f"{len(issues)} unconfirmed claim(s) from the judge",
+        )
+    issues = hard
 
     approved = interrupt(
         {
             "type": "verification_gate",
-            "message": f"{len(issues)} issue(s) could not be fully verified. Show the report anyway?",
+            "message": _gate_message(issues),
             "issues": issues,
         }
     )

@@ -52,7 +52,7 @@ _COLUMNS = {
         "consistency_1y",
     ],
     "mf_nav": ["scheme_name", "nav", "nav_date"],
-    "top_movers": ["symbol", "ltp", "price", "pct", "pchange", "change", "pct_change", "volume"],
+    "top_movers": ["symbol", "ltp", "price", "perchange", "pct", "pchange", "change", "pct_change", "volume"],
     "bulk_deals": [
         "date",
         "symbol",

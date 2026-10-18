@@ -52,6 +52,9 @@ from tools.charts.builder import candlestick
 log = logging.getLogger(__name__)
 
 _SYSTEM = prompts.get("communication.system") + prompts.get("safety.untrusted_notice")
+# Questions answered with no research (definitions, concepts): the main prompt above says
+# "use ONLY these conclusions", which made the model apologise when there were none.
+_DIRECT_SYSTEM = prompts.get("communication.direct") + prompts.get("safety.untrusted_notice")
 
 
 _HISTORY_TURNS_IN_PROMPT = 6  # last N history messages included verbatim, same budget as query_analyzer.py
@@ -190,7 +193,16 @@ def build_communication_layer_node(
     client: LLMClient | None = None,
     provider_config: dict | None = None,
 ) -> Callable[[GraphState], dict]:
+    injected = client is not None  # tests pass one stub for every path
     client = client or LLMClient(_SYSTEM, provider_config, node="communication")
+    direct_clients: list[LLMClient] = []
+
+    def _direct_client() -> LLMClient:
+        if injected:
+            return client
+        if not direct_clients:
+            direct_clients.append(LLMClient(_DIRECT_SYSTEM, provider_config, node="communication"))
+        return direct_clients[0]
 
     def communication_layer(state: GraphState) -> dict:
         blocking = blocking_resolutions(state)
@@ -233,6 +245,7 @@ def build_communication_layer_node(
                 return {
                     "final_report": "",
                     "pending_synthesis_prompt": prompt,
+                    "pending_synthesis_system": "direct",
                     "pending_fundamental_payload": None,
                     "chart_html": None,
                     "confidence_summary": {},
@@ -240,7 +253,7 @@ def build_communication_layer_node(
                         "CommunicationLayer", "deferred to streaming, no research needed", "complexity=simple"
                     ),
                 }
-            report = _grounded_ask(client, prompt)
+            report = _grounded_ask(_direct_client(), prompt)
             return {
                 "final_report": report,
                 "pending_synthesis_prompt": None,
@@ -253,7 +266,10 @@ def build_communication_layer_node(
             }
 
         if not conclusions:
-            report = f"I wasn't able to verify enough evidence to answer: {objective or query}"
+            report = (
+                f"I couldn't find enough data to answer: {objective or query}\n\n"
+                "Try naming the company or fund exactly (for example its NSE symbol), or ask again in a moment."
+            )
             return {
                 "final_report": report,
                 "pending_synthesis_prompt": None,

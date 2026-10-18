@@ -59,6 +59,17 @@ class TestResearchConfirmation:
         assert result["research_journal"][0]["node"] == "ResearchConfirmation"
 
 
+_EVIDENCE = [{"id": "e1"}]
+
+
+def _hard(claim="x"):
+    return {"claim": claim, "issue_type": "unsupported", "evidence_ids": [], "severity": "hard"}
+
+
+def _soft(claim="x"):
+    return {"claim": claim, "issue_type": "missing_citation", "evidence_ids": [], "severity": "soft"}
+
+
 class TestVerificationGate:
     def test_passes_through_when_no_issues(self):
         with patch("graph.nodes.human_review.interrupt") as mock_interrupt:
@@ -66,29 +77,56 @@ class TestVerificationGate:
         mock_interrupt.assert_not_called()
         assert "final_report" not in result
 
-    def test_asks_when_issues_present(self):
-        issues = [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}]
+    def test_asks_when_a_hard_issue_is_present(self):
         with patch("graph.nodes.human_review.interrupt", return_value=True) as mock_interrupt:
-            verification_gate({"verification_issues": issues})
+            verification_gate({"verification_issues": [_hard()], "evidence": _EVIDENCE})
         mock_interrupt.assert_called_once()
 
-    def test_approved_leaves_state_untouched(self):
+    def test_issue_without_severity_counts_as_hard(self):
         issues = [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}]
+        with patch("graph.nodes.human_review.interrupt", return_value=True) as mock_interrupt:
+            verification_gate({"verification_issues": issues, "evidence": _EVIDENCE})
+        mock_interrupt.assert_called_once()
+
+    def test_soft_issues_do_not_ask(self):
+        with patch("graph.nodes.human_review.interrupt") as mock_interrupt:
+            result = verification_gate({"verification_issues": [_soft(), _soft("y")], "evidence": _EVIDENCE})
+        mock_interrupt.assert_not_called()
+        assert "final_report" not in result
+
+    def test_nothing_collected_does_not_ask(self):
+        with patch("graph.nodes.human_review.interrupt") as mock_interrupt:
+            verification_gate({"verification_issues": [_hard()], "evidence": []})
+        mock_interrupt.assert_not_called()
+
+    def test_message_names_the_claims(self):
+        issues = [_hard("ICICIBANK pe is NaN"), _hard("HDFCBANK roe=9")]
+        with patch("graph.nodes.human_review.interrupt", return_value=True) as mock_interrupt:
+            verification_gate({"verification_issues": issues, "evidence": _EVIDENCE})
+        message = mock_interrupt.call_args.args[0]["message"]
+        assert "ICICIBANK pe is NaN" in message and "HDFCBANK roe=9" in message
+        assert message.endswith("Show the answer anyway?")
+
+    def test_only_hard_issues_reach_the_user(self):
+        with patch("graph.nodes.human_review.interrupt", return_value=True) as mock_interrupt:
+            verification_gate({"verification_issues": [_hard("bad"), _soft("meh")], "evidence": _EVIDENCE})
+        payload = mock_interrupt.call_args.args[0]
+        assert [i["claim"] for i in payload["issues"]] == ["bad"]
+        assert "meh" not in payload["message"]
+
+    def test_approved_leaves_state_untouched(self):
         with patch("graph.nodes.human_review.interrupt", return_value=True):
-            result = verification_gate({"verification_issues": issues})
+            result = verification_gate({"verification_issues": [_hard()], "evidence": _EVIDENCE})
         assert "final_report" not in result
         assert "conclusions" not in result
 
     def test_declined_withholds_report(self):
-        issues = [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}]
         with patch("graph.nodes.human_review.interrupt", return_value=False):
-            result = verification_gate({"verification_issues": issues})
+            result = verification_gate({"verification_issues": [_hard()], "evidence": _EVIDENCE})
         assert result["conclusions"] == []
         assert "withheld" in result["final_report"]
 
     def test_writes_journal_entry(self):
         with patch("graph.nodes.human_review.interrupt", return_value=True):
-            result = verification_gate(
-                {"verification_issues": [{"claim": "x", "issue_type": "unsupported", "evidence_ids": []}]}
-            )
+            result = verification_gate({"verification_issues": [_hard()], "evidence": _EVIDENCE})
         assert result["research_journal"][0]["node"] == "VerificationGate"

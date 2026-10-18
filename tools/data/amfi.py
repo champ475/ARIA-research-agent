@@ -144,7 +144,7 @@ def get_mf_comparison(funds: list[str]) -> str:
     """Compare multiple mutual funds side by side."""
     nav_df = get_all_nav()
     if nav_df.empty:
-        return "Could not fetch fund data."
+        return "No fund data available right now."
 
     from tools.data.mf_data import metrics_for
 
@@ -174,7 +174,7 @@ def get_mf_comparison(funds: list[str]) -> str:
         })
 
     if not rows:
-        return "Could not find fund data for the requested funds."
+        return "No fund data found for the requested funds: check the fund names."
 
     df = pd.DataFrame(rows)
     return "## Mutual Fund Comparison\n\n" + df.to_string(index=False)

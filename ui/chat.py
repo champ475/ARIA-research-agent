@@ -70,6 +70,17 @@ CAPABILITIES_MD = """
 - cover markets outside India, derivatives strategies, crypto, or tax filing;
 - be right every time: numbers come with their sources — check what matters before acting.
 """
+# Shown in the empty chat window (Gradio's Chatbot placeholder): what to ask, in the user's words.
+WELCOME_MD = (
+    "### Ask ARIA about Indian stocks and funds\n"
+    "Try one of these, or type your own:\n\n"
+    "- *How is Reliance doing?*\n"
+    "- *Compare HDFC Bank and ICICI Bank*\n"
+    "- *IT stocks with PE under 25 and ROE above 15%*\n"
+    "- *Compare Parag Parikh Flexi Cap and HDFC Flexi Cap*\n"
+    "- *What does a high P/E ratio mean?*\n\n"
+    "Name the company or fund you mean; I'll ask if it could be more than one."
+)
 CHAT_PLACEHOLDER = (
     "Ask anything — stock analysis, IC/result-update reports, mutual funds, "
     "screening, portfolio, market overview…"
@@ -77,7 +88,19 @@ CHAT_PLACEHOLDER = (
 
 # ── Core respond function (orchestrator-routed) ───────────────────────────────
 
-_INPUT_BUSY = gr.update(value="", interactive=False)  # locked while a turn is in flight
+# Gradio only pushes a textbox value to the browser when it differs from the last value the server
+# sent. "" after "" is dropped, so the text the user typed stayed in the box through the whole turn
+# (live smoke test 2026-10-18: "yes" and the previous question were still there, and the next
+# message went out glued to it). A single space while busy makes the final "" a real change.
+# Client-side step run before the event's function (args[3] is the message): it passes the inputs through unchanged and, a
+# moment later, empties the textbox the way typing would (native setter plus an input event, which
+# Gradio's bound value follows).
+CLEAR_BOX_JS = (
+    "(...args) => { window.__ariaSent = args[3]; setTimeout(() => { const t = document.querySelector('#__BOX__ textarea'); "
+    "if (t) { const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; "
+    "set.call(t, ''); t.dispatchEvent(new Event('input', {bubbles: true})); } }, 30); return args; }"
+)
+_INPUT_BUSY = gr.update(value=" ", interactive=False)  # locked while a turn is in flight
 _INPUT_READY = gr.update(value="", interactive=True)  # unlocked once the turn is done
 _SEND_BUSY = gr.update(interactive=False)
 _SEND_READY = gr.update(interactive=True)
@@ -154,8 +177,10 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     new_sugg = suggestions
     text = ""
     tab_used: str | None = None
+    marks = {"start": time.monotonic()}  # where the wall time goes, for the turn-end log
     try:
         orch = chat_svc.get_orchestrator(user_id, session_id)
+        marks["orchestrator"] = time.monotonic()
         tab_used = "equity"
         # Equity Q&A streams token-by-token; every other specialist yields
         # exactly once with its finished result, so this loop renders
@@ -193,7 +218,9 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
                 suggestions,
             ) + make_btn_updates(suggestions)
 
+        marks["answer"] = time.monotonic()
         new_sugg = orch.generate_suggestions(text, clean)
+        marks["suggestions"] = time.monotonic()
         text = chat_svc.routing_badge(tab_used) + text
         # OPS-02: links to /download/... routes, which any replica can serve.
         # Links live in the answer itself: a separate component's update raced
@@ -233,7 +260,8 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
     ]
     chart_update = gr.update(value=chart_fig, visible=chart_fig is not None)
     btn_updates = make_btn_updates(new_sugg)
-    log.info(f"[respond] turn end ms={int((time.monotonic() - started) * 1000)}")
+    marks["end"] = time.monotonic()
+    log.info(f"[respond] turn end ms={int((marks['end'] - started) * 1000)}{_phase_ms(marks)}")
     yield (
         _INPUT_READY,
         _SEND_READY,
@@ -241,6 +269,24 @@ def respond(user_id: int, message: str, history: list, suggestions: list, sessio
         chart_update,
         new_sugg,
     ) + btn_updates
+
+
+def _phase_ms(marks: dict[str, float]) -> str:
+    """ " orchestrator_ms=… answer_ms=… suggestions_ms=… persist_ms=…": how long each stage of the
+    turn took (set-up and history load, the graph and streamed answer, the follow-up chips,
+    saving the turn). Stages that did not run are left out."""
+    stages = ("start", "orchestrator", "answer", "suggestions", "end")
+    present = [s for s in stages if s in marks]
+    parts = []
+    for before, after in zip(present, present[1:], strict=False):
+        name = {
+            "orchestrator": "orchestrator",
+            "answer": "answer",
+            "suggestions": "suggestions",
+            "end": "persist",
+        }[after]
+        parts.append(f" {name}_ms={round((marks[after] - marks[before]) * 1000)}")
+    return "".join(parts)
 
 
 def respond_exclusive(user_id, message, history, suggestions, session_id, tf):
@@ -558,6 +604,7 @@ def build_chat_tab(user_state: gr.State):
                 # SEC-10: stated explicitly so a Gradio default change can't
                 # turn off sanitising of LLM- and user-supplied markup.
                 sanitize_html=True,
+                placeholder=WELCOME_MD,
                 height=480,
                 render_markdown=True,
                 elem_id=f"chatbot-{tab_id}",
@@ -719,17 +766,29 @@ def build_chat_tab(user_state: gr.State):
     onboarding_done.click(_onboarding_dismiss, [user_state], [onboarding_box])
 
     chat_kwargs = {"show_progress": "hidden", "concurrency_id": "chat", "concurrency_limit": CHAT_CONCURRENCY}
-    msg_box.submit(_respond, chat_inputs, outputs, **chat_kwargs).then(
-        _confirm_visible, [user_state, session_state], [confirm_row]
+    # The browser clears the box itself the moment the message is read (the server-side clear is
+    # dropped when Gradio sees no change, see _INPUT_BUSY). A turn the server refuses puts the text back.
+    send_kwargs = {**chat_kwargs, "js": CLEAR_BOX_JS.replace("__BOX__", f"msg-{tab_id}")}
+    # The box is disabled while a turn runs, which drops the cursor; put it back for the next message.
+    # After the turn: make sure the box is empty (a second, deterministic clear) and give it the cursor.
+    refocus = (
+        "() => { setTimeout(() => { const t = document.querySelector('#msg-" + tab_id + " textarea'); "
+        "if (!t) return; if (t.value && t.value === window.__ariaSent) { const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; "
+        "set.call(t, ''); t.dispatchEvent(new Event('input', {bubbles: true})); } t.focus(); }, 250); }"
     )
-    send_btn.click(_respond, chat_inputs, outputs, **chat_kwargs).then(
+    msg_box.submit(_respond, chat_inputs, outputs, **send_kwargs).then(
         _confirm_visible, [user_state, session_state], [confirm_row]
-    )
+    ).then(None, None, None, js=refocus)
+    send_btn.click(_respond, chat_inputs, outputs, **send_kwargs).then(
+        _confirm_visible, [user_state, session_state], [confirm_row]
+    ).then(None, None, None, js=refocus)
     for btn, answer in ((yes_btn, "yes"), (no_btn, "no")):
         # A click is the typed answer: fill the box, run the same turn path.
         btn.click(lambda a=answer: a, None, [msg_box]).then(
             _respond, chat_inputs, outputs, **chat_kwargs
-        ).then(_confirm_visible, [user_state, session_state], [confirm_row])
+        ).then(_confirm_visible, [user_state, session_state], [confirm_row]).then(
+            lambda: gr.update(value=""), None, [msg_box], show_progress="hidden"
+        )
     clear_btn.click(
         _clear,
         [user_state],

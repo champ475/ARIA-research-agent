@@ -4,6 +4,8 @@ Recomputes ALL ratios from raw financials — never blindly trusts upstream yfin
 Provides full calculation transparency for explainability.
 """
 
+import re
+
 import pandas as pd
 
 from tools.analysis.sector_profile import LENDER, LENDER_NOTE, SUPPRESSED, sector_profile
@@ -13,7 +15,7 @@ from utils.helpers import fmt_num, pct, safe_float, safe_val
 # We recompute from balance sheet wherever possible.
 
 
-def compute(info: dict, financials: dict) -> dict:
+def compute(info: dict, financials: dict, fx: float | None = None) -> dict:
     d = {}
 
     def _f(k):
@@ -64,6 +66,23 @@ def compute(info: dict, financials: dict) -> dict:
     d["current_assets"] = raw.get("current_assets")
     d["current_liab"] = _raw_or("current_liab", "totalCurrentLiabilities")
     d["cash"] = _raw_or("cash", "totalCash")
+
+    # ── Statement currency ────────────────────────────────────────────────────
+    # Some companies (Infosys) report in USD while the share price and market cap
+    # are in INR: statement amounts must be converted before they meet a price,
+    # or P/S and EV/EBITDA come out 100x too high. Ratios of two statement
+    # numbers (margins, ROE, D/E) don't change, so they are left as they are.
+    fin_cur, px_cur = info.get("financialCurrency"), info.get("currency")
+    mismatch = bool(fin_cur and px_cur and fin_cur != px_cur)
+    d["financial_currency"] = fin_cur
+    if mismatch:
+        for key in _STATEMENT_AMOUNTS:
+            d[key] = d[key] * fx if (fx and d.get(key) is not None) else None
+        d["currency_note"] = (
+            f"Statements are reported in {fin_cur}; amounts shown in {px_cur} at {fx:.2f}."
+            if fx
+            else f"Statements are reported in {fin_cur} and could not be converted to {px_cur}, so amounts are not shown."
+        )
 
     # ── D/E ratio — recomputed from balance sheet ─────────────────────────────
     # yfinance sometimes reports D/E as % (multiply by 100).
@@ -166,6 +185,17 @@ def compute(info: dict, financials: dict) -> dict:
     d["ev_ebitda"] = _f("enterpriseToEbitda")
     d["peg"] = _f("pegRatio")
     d["ev"] = _f("enterpriseValue")
+    if mismatch:
+        # Yahoo divides an INR market cap by USD revenue; recompute from converted amounts.
+        mcap, ev = d["mktcap"], d["ev"]
+        d["ps"] = round(mcap / d["revenue"], 2) if mcap and d.get("revenue") else None
+        d["ev_ebitda"] = round(ev / d["ebitda"], 2) if ev and d.get("ebitda") else None
+    # A multiple this high is bad data (or a company with almost no sales or EBITDA),
+    # not a number to put in front of a user as a fact.
+    if d["ps"] is not None and d["ps"] > _MAX_PLAUSIBLE["ps"]:
+        d["ps"] = None
+    if d["ev_ebitda"] is not None and d["ev_ebitda"] > _MAX_PLAUSIBLE["ev_ebitda"]:
+        d["ev_ebitda"] = None
 
     # ── Growth ────────────────────────────────────────────────────────────────
     d["rev_growth"] = _f("revenueGrowth")
@@ -218,6 +248,24 @@ def compute(info: dict, financials: dict) -> dict:
     d["margins_trend"] = _margins_trend(financials)
 
     return d
+
+
+# Amounts that come from the financial statements (in the statements' currency).
+_STATEMENT_AMOUNTS = (
+    "revenue",
+    "net_income",
+    "ebitda",
+    "ebit",
+    "fcf",
+    "operating_cf",
+    "total_assets",
+    "total_equity",
+    "total_debt",
+    "current_assets",
+    "current_liab",
+    "cash",
+)
+_MAX_PLAUSIBLE = {"ps": 100.0, "ev_ebitda": 500.0}
 
 
 # ── Raw extractor from balance sheet / income statement ───────────────────────
@@ -452,6 +500,30 @@ def cited_footnotes(llm_out: str, d: dict) -> str:
         lines.append(f"**[^{k}] {label}**  \n{d.get(field, 'N/A')}")
         lines.append("")
     return "\n".join(lines)
+
+
+_SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+_MARKER = re.compile(r"\s?\[\^(\w+)\]")
+
+
+def number_footnotes(text: str) -> str:
+    """`[^pe]` is Markdown footnote syntax Gradio does not render. Replace each
+    marker with a superscript number in order of first use, in the answer and in the
+    "Cited calculations" list alike; markers with no list to point to are dropped."""
+    if "[^" not in (text or ""):
+        return text
+    has_list = "Cited calculations" in text
+    order: list[str] = []
+
+    def number(m: re.Match) -> str:
+        if not has_list:
+            return ""
+        key = m.group(1)
+        if key not in order:
+            order.append(key)
+        return str(order.index(key) + 1).translate(_SUPERSCRIPT)
+
+    return _MARKER.sub(number, text)
 
 
 def calc_breakdown(d: dict) -> str:

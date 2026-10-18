@@ -84,6 +84,16 @@ def test_sessions_and_chat_history(db, two_users):
     assert [x["id"] for x in db.session_search(a, "chat", ["portfolio"])] == [sid]
 
 
+def test_chat_exchange_is_owner_only(db, two_users):
+    a, b = two_users
+    sid = db.session_create(a, "chat", title="mine")
+    db.chat_save_exchange(b, sid, "chat", "injected", "reply", title="hijacked")
+    assert db.chat_load(a, sid) == [] and db.session_list(a, "chat")[0]["title"] == "mine"
+    db.chat_save_exchange(a, sid, "chat", "q", "a", meta={"turn_id": "t", "route": "equity"}, title="renamed")
+    assert [m["content"] for m in db.chat_load(a, sid)] == ["q", "a"]
+    assert db.session_list(a, "chat")[0]["title"] == "renamed"
+
+
 def test_owner_can_still_touch_and_save(db, two_users):
     a, _ = two_users
     sid = db.session_create(a, "chat")
@@ -315,6 +325,7 @@ COVERED = {
     "feedback_for": test_feedback,
     "session_delete": test_sessions_and_chat_history,
     "chat_save": test_sessions_and_chat_history,
+    "chat_save_exchange": test_chat_exchange_is_owner_only,
     "chat_load": test_sessions_and_chat_history,
     "report_save": test_reports,
     "report_list": test_reports,

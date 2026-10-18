@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from graph.advice_policy import CAUTION_NOTE, FOOTER_MARKER, FOOTERS, REFUSALS, REWRITE_NOTE
+from tools.analysis.fundamental import number_footnotes
 
 _I = re.IGNORECASE
 
@@ -49,7 +50,9 @@ _MANIPULATION = re.compile(
     _I,
 )
 _GUARANTEE = re.compile(
-    r"\bguarantee(?:d|s)?\s+(?:\d+\s*%\s*)?(?:returns?|profits?|gains?|income|money)"
+    r"\bguarantee(?:d|s)?\s+(?:(?:me|us|my|our|that)\s+)*(?:\d+\s*%\s*)?"
+    r"(?:(?:monthly|weekly|daily|yearly|annual|fixed|assured|steady)\s+)?(?:returns?|profits?|gains?|income|money)"
+    r"|\bguarantee\s+(?:that\s+)?(?:i|we|you)\b[^.?!]{0,30}\b(?:make|earn|get|receive|profit)\b"
     r"|\b(?:\d+\s*%\s*)guaranteed\b"
     r"|\bassured\s+(?:\d+\s*%\s*)?(?:returns?|profits?|gains?)"
     r"|\bsure[\s-]*shot\b|\bdouble\s+(?:my|our)\s+money\b|\bcan'?t\s+lose\b|\bno[\s-]+risk\s+(?:returns?|profits?)"
@@ -68,7 +71,11 @@ _PERSONAL_CALL = re.compile(
     r"|\bmulti[\s-]*baggers?\b|\bintraday\s+(?:calls?|tips?)\b"
     r"|\bwhich\s+(?:stocks?|shares?|funds?)\s+(?:should|to|can|do)\s+i\s+(?:buy|invest|pick)"
     r"|\bbest\s+(?:stocks?|shares?)\s+to\s+buy\b|\bgive\s+me\s+(?:a\s+)?(?:stock|tip|call|pick)s?\b"
-    r"|\bwill\s+[\w&.-]+(?:\s+[\w&.-]+)?\s+(?:go\s+up|go\s+down|rise|fall|crash|double)\b",
+    r"|\bwill\s+[\w&.-]+(?:\s+[\w&.-]+)?\s+(?:go\s+up|go\s+down|rise|fall|crash|double)\b"
+    r"|\bwhich\s+(?:stocks?|shares?|funds?)\s+(?:will|would|is\s+going\s+to|are\s+going\s+to)\s+"
+    r"(?:double|triple|multiply|go\s+up|rise|rally|zoom|jump)\b"
+    r"|\bis\s+[\w&.' -]{1,30}?\s+(?:a\s+)?(?:good\s+|great\s+|safe\s+)?(?:buy|sell)\b"
+    r"|\bis\s+it\s+(?:a\s+)?(?:good|right|safe)\s+(?:time|moment|day)\s+to\s+(?:buy|sell|invest|enter|exit)\b",
     _I,
 )
 _CAUTION = re.compile(
@@ -163,6 +170,10 @@ def answer_kind(state: dict, text: str) -> str | None:
         return "report"
     if intents & {"equity", "mf", "screener"}:
         return "research" if state.get("tasks") else None
+    # A market or general answer that was built from fetched data is research too
+    # (it carried no footer when the model had called the turn "chat").
+    if (state.get("tasks") or state.get("evidence")) and "alert" not in intents:
+        return "research"
     if _VIEW.search(text or ""):
         return "research"
     return None
@@ -183,4 +194,4 @@ def finalize(text: str, state: dict) -> str:
     kind = answer_kind(state, cleaned)
     if kind and FOOTER_MARKER not in cleaned:
         cleaned = cleaned.rstrip() + "\n\n---\n" + FOOTERS[kind]
-    return cleaned
+    return number_footnotes(cleaned)

@@ -107,3 +107,15 @@ def test_calendar_file_is_well_formed():
         assert (s.open is None) == (s.close is None)
         if s.open and s.close:
             assert s.open < s.close
+
+
+def test_last_close_is_the_finished_sessions_close():
+    sat = IST.localize(datetime(2026, 10, 17, 19, 30))  # Saturday evening
+    assert mc.last_close(sat) == IST.localize(datetime(2026, 10, 16, 15, 30))
+    after_close = IST.localize(datetime(2026, 10, 15, 18, 0))  # Thursday evening
+    assert mc.last_close(after_close) == IST.localize(datetime(2026, 10, 15, 15, 30))
+
+
+def test_last_close_is_none_while_a_session_is_open_or_not_yet_over():
+    assert mc.last_close(IST.localize(datetime(2026, 10, 15, 11, 0))) is None
+    assert mc.last_close(IST.localize(datetime(2026, 10, 15, 8, 0))) is not None  # yesterday's close

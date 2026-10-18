@@ -116,3 +116,21 @@ def test_clarification_and_notes_text():
         }
     )
     assert "Eternal" in notes and "“FOO”" in notes
+
+
+class TestLlmMentionInsideAResolvedName:
+    """Live run 2026-10-18: "Relaince industries analysis" asked "Which Relaince do you mean?"."""
+
+    def test_a_word_of_a_resolved_name_is_not_asked_about(self):
+        from graph.entity_resolution import add_llm_mentions, resolve_mentions
+
+        query = "Relaince industries analysis"
+        result = add_llm_mentions(resolve_mentions(query), ["Relaince"], query)
+        assert result.entities == ["RELIANCE"] and result.unresolved == []
+
+    def test_a_different_company_the_model_found_is_still_added(self):
+        from graph.entity_resolution import add_llm_mentions, resolve_mentions
+
+        query = "Reliance results and its biggest IT rival"  # the model names a company the words only imply
+        result = add_llm_mentions(resolve_mentions(query), ["Infosys"], query)
+        assert set(result.entities) == {"RELIANCE", "INFY"}

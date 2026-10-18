@@ -108,6 +108,8 @@ Useful everywhere:
 - Lower `DB_POOL_MAX` per replica.
 - Kill a runaway query with `pg_cancel_backend`.
 
+**`PoolTimeout: couldn't get a connection after N sec` after the app sat idle.** Neon suspends an idle compute and its pooler drops idle connections (about 5 minutes), so the first request afterwards has to wait for a new connection. ARIA recycles idle connections after `DB_POOL_MAX_IDLE` (180 s) and old ones after `DB_POOL_MAX_LIFETIME` (1800 s), waits `DB_POOL_ACQUIRE_TIMEOUT` (20 s) for one, and the session lookup retries once before it treats the request as logged out (`web/session.py::current_session`). If it still happens, check Neon's status and the compute's cold-start time; a longer `DB_POOL_ACQUIRE_TIMEOUT` is the first knob. A single log line `[session] lookup failed, retrying once` is normal after a quiet period.
+
 **Statement timeout on Neon.** Neon's `-pooler` host (PgBouncer) refuses `statement_timeout` as a connect option, so ARIA doesn't send it there (`utils/db.py::connection_kwargs`). Set it once per role instead, in the Neon SQL editor:
 `ALTER ROLE neondb_owner SET statement_timeout = '5s';` Check it with `SHOW statement_timeout;` on a new connection. Migrations and backups are unaffected: Alembic's DDL here runs well under 5 s, and `pg_dump` sets its own timeout to 0.
 

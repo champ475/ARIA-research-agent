@@ -38,6 +38,9 @@ DEFINITIONAL = re.compile(
     _I,
 )
 
+# "how is the market", "is Nifty up": the index levels are the answer.
+MARKET_LEVEL = re.compile(r"\b(?:market|markets|nifty|sensex|bank\s*nifty|indices|index)\b", _I)
+
 NO_LIVE_DATA_INSTRUCTION = prompts.get("data.no_live_data")
 
 _ORDER = {"simple": 0, "moderate": 1, "complex": 2}
