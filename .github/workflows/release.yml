@@ -94,7 +94,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: start the image with the offline test stack
         run: docker compose -f compose.test.yml up -d --no-build --wait --wait-timeout 180
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -111,7 +111,7 @@ jobs:
       - if: failure()
         run: docker compose -f compose.test.yml logs --no-color > test-results/compose.log 2>&1 || true
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-smoke-${{ env.VERSION }}
           path: test-results/

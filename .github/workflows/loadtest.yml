@@ -42,7 +42,7 @@ jobs:
           --health-cmd "pg_isready -U aria -d aria_load" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -59,7 +59,7 @@ jobs:
           python loadtests/run.py --database-url postgresql://aria:aria@localhost:5432/aria_load
           --users 20 --duration 240 --baseline-seconds 30 --version "$VERSION-chaos"
           --chaos "40:slow_llm:30,100:flaky_llm:30,160:upstream_500:30" --out test-results/load-chaos
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: load-report-${{ env.VERSION }}

@@ -18,8 +18,8 @@ yfinance>=0.2.40
 pandas>=2.0.0,<3.0.0
 numpy>=2.0.0,<3.0.0
 pyarrow>=26.0.0
-requests>=2.31.0
-beautifulsoup4>=4.12.0
+requests>=2.34.2
+beautifulsoup4>=4.15.0
 feedparser>=6.0.11
 
 # ── PDF processing ────────────────────────────────────────────────────────────
@@ -32,13 +32,13 @@ nh3>=0.2.17                  # HTML sanitiser for report PDF rendering (SEC-02)
 ta>=0.11.0
 
 # ── Charts ────────────────────────────────────────────────────────────────────
-plotly>=5.18.0
+plotly>=7.1.0
 
 # ── UI and web ────────────────────────────────────────────────────────────────
 gradio>=6.16.0
 fastapi>=0.115.0                 # server.py and web/ routes (also a gradio dependency)
 starlette>=0.40.0                # pure-ASGI middleware (server.py, web/security_headers.py)
-uvicorn>=0.30.0                  # serve()
+uvicorn>=0.54.0                  # serve()
 jinja2>=3.1.0                    # web/ server-rendered pages
 
 # ── Sentiment ─────────────────────────────────────────────────────────────────
@@ -58,4 +58,4 @@ urllib3>=2.0.0                   # utils/http.py retry policy
 langsmith>=0.1.0                 # utils/tracing.py (only touched when tracing is on)
 cachetools>=5.5.0                # bounded TTL caches: sessions (SEC-04), orchestrators (REL-03)
 prometheus-client>=0.26.0        # /metrics for dashboards and alerts (OBS-03)
-pytz>=2024.1
+pytz>=2026.5
