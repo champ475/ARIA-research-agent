@@ -8,7 +8,7 @@ There are 15 companies, frozen from Yahoo Finance by `scripts/freeze_fundamental
 | Lenders | HDFCBANK, ICICIBANK, SBIN, KOTAKBANK, BAJFINANCE |
 | Others | RELIANCE, ITC, LT, MARUTI, SUNPHARMA |
 
-Each `<SYMBOL>.json` holds the quote fields we use, the last two fiscal years of the annual statements, and a `reference` block. `tests/tools/test_golden_fundamentals.py` checks `tools/analysis/fundamental.py` against that block to within ±2%. `../ohlcv/{TCS,HDFCBANK,RELIANCE}.csv` hold one year of daily bars for the indicator checks.
+Each `<SYMBOL>.json` holds the quote fields we use, the last two fiscal years of the annual statements, and a `reference` block. On 18 Oct 2026, `--merge-info` added the dividend and analyst fields (`dividendYield`, `dividendRate`, `trailingAnnualDividendYield`, `payoutRatio`, `targetMeanPrice`, `numberOfAnalystOpinions`) without touching the statements. The time of that merge is `info_merged_at`. The answer eval (`evals/answers/`) serves these files as its market data, and its reference facts are read from them. `tests/tools/test_golden_fundamentals.py` checks `tools/analysis/fundamental.py` against that block to within ±2%. `../ohlcv/{TCS,HDFCBANK,RELIANCE}.csv` hold one year of daily bars for the indicator checks.
 
 ## How the reference values are computed
 

@@ -1,5 +1,5 @@
 # Developer shortcuts. Windows users without make: run the commands directly.
-.PHONY: eval eval-record eval-baseline test lint lock lock-check loadtest
+.PHONY: eval eval-record eval-baseline eval-answers eval-answers-record eval-answers-baseline test lint lock lock-check loadtest
 
 eval:  ## golden-set eval against the baseline (replay; no network) — PRD LLM-01
 	python evals/runner.py --replay --compare evals/baseline.json
@@ -9,6 +9,15 @@ eval-record:  ## record missing LLM responses with the configured providers (res
 
 eval-baseline:  ## accept the current replay results as the new baseline (review the diff first)
 	python evals/runner.py --replay --out evals/baseline.json
+
+eval-answers:  ## answer-level eval: whole graph on recorded replies and frozen data — PRD v3 EVAL-01
+	python evals/answers/run.py --compare evals/answers/baseline.json
+
+eval-answers-record:  ## record missing replies with the real LLM (FAMILY=tax to limit; resumable)
+	python evals/answers/run.py --record $(if $(FAMILY),--family $(FAMILY),)
+
+eval-answers-baseline:  ## accept the current answer-eval results as the baseline (review the diff first)
+	python evals/answers/run.py --out evals/answers/baseline.json
 
 test:
 	python -m pytest tests/ -q
