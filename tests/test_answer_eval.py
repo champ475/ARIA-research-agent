@@ -80,7 +80,7 @@ def test_table_and_transposed_table_facts():
         "| Company | P/E | Div. yield |\n|---|---|---|\n| TCS | 17.0 | 1.95% |\n| Infosys | 15.7 | 0.05% |"
     )
     s = score.score_turn(case, case["turns"][0], _turn(table))
-    assert s["facts_found"] == 2 and len(s["wrong"]) == 1 and "Infosys" in s["wrong"][0]
+    assert s["facts_found"] == 2 and len(s["wrong"]) == 1 and s["wrong"][0].startswith("INFY dividend yield")
     transposed = "| Metric | TCS | Infosys |\n|---|---|---|\n| Dividend yield | 1.95% | 4.31% |"
     s = score.score_turn(case, case["turns"][0], _turn(transposed))
     assert s["facts_found"] == 2 and not s["wrong"]
