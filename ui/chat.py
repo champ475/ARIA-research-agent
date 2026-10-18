@@ -72,8 +72,8 @@ CAPABILITIES_MD = """
 """
 # Shown in the empty chat window (Gradio's Chatbot placeholder): what to ask, in the user's words.
 WELCOME_MD = (
-    "### Ask ARIA about Indian stocks and funds\n"
-    "Try one of these, or type your own:\n\n"
+    "### What would you like to research today?\n"
+    "Ask about any NSE or BSE company, a mutual fund, a screen or a money goal. For example:\n\n"
     "- *How is Reliance doing?*\n"
     "- *Compare HDFC Bank and ICICI Bank*\n"
     "- *IT stocks with PE under 25 and ROE above 15%*\n"
@@ -81,10 +81,7 @@ WELCOME_MD = (
     "- *What does a high P/E ratio mean?*\n\n"
     "Name the company or fund you mean; I'll ask if it could be more than one."
 )
-CHAT_PLACEHOLDER = (
-    "Ask anything — stock analysis, IC/result-update reports, mutual funds, "
-    "screening, portfolio, market overview…"
-)
+CHAT_PLACEHOLDER = "Ask about a stock, a fund, a screen or a goal…"
 
 # ── Core respond function (orchestrator-routed) ───────────────────────────────
 
@@ -433,16 +430,18 @@ def _build_chat_sidebar(
 
         # Expanded content — full "New chat" button + session list.
         with gr.Column(visible=True, elem_classes=["sidebar-expanded-panel"]) as expanded_panel:
-            new_chat_btn = gr.Button("＋ New chat", size="sm", elem_classes=["new-chat-btn"])
+            new_chat_btn = gr.Button(
+                "New chat", size="sm", elem_classes=["new-chat-btn", "aria-ico", "ico-plus"]
+            )
             search_box = gr.Textbox(
-                placeholder="Search chats (Enter)",
+                placeholder="Search chats",
                 show_label=False,
                 label="Search chats",
                 max_lines=1,
                 max_length=80,
                 elem_id="chat-search",
             )
-            gr.Markdown("**Chats**", elem_classes=["sidebar-title"])
+            gr.Markdown("Recent", elem_classes=["sidebar-title"])
 
             # session_state is in the render inputs so the active chat gets a
             # highlighted row and the list re-renders the moment it changes.
@@ -556,15 +555,15 @@ def onboarding_card(info: dict) -> str:
         left = max(0, TRIAL_DAILY_LIMIT - int(info.get("used_today") or 0))
         trial = (
             f"**{left} of {TRIAL_DAILY_LIMIT}** free questions left today. "
-            "Add your own LLM key in **⚙️ Settings** for unlimited use."
+            "Add your own LLM key in **Settings** for unlimited use."
         )
     telegram = (
-        "✅ Telegram is connected: alerts reach your phone."
+        "Telegram is connected: alerts reach your phone."
         if info.get("telegram")
-        else "To get alerts on your phone: **⚙️ Settings → Connect Telegram** (one tap)."
+        else "To get alerts on your phone: **Settings → Connect Telegram** (one tap)."
     )
     return (
-        "### 👋 Welcome to ARIA\n"
+        "### Welcome to ARIA\n"
         "1. **Research any NSE/BSE company**: try *“Analyse TCS”* or *“Compare TCS with peers”*.\n"
         "2. **Set alerts** on prices, % moves or indicators: *“Alert me if INFY falls 5%”*.\n"
         "3. **Plan and compare funds**: *“Best ELSS for tax saving”* or *“Plan ₹50L for retirement”*.\n\n"
@@ -596,8 +595,6 @@ def build_chat_tab(user_state: gr.State):
             with gr.Group(visible=False, elem_id="onboarding") as onboarding_box:
                 onboarding_md = gr.Markdown("", elem_id="onboarding-card")
                 onboarding_done = gr.Button("Got it — let's start", size="sm", variant="primary")
-            with gr.Accordion("What ARIA can and can't do", open=False, elem_id="capabilities"):
-                gr.Markdown(CAPABILITIES_MD)
             chatbot = gr.Chatbot(
                 label="",
                 show_label=False,
@@ -624,26 +621,18 @@ def build_chat_tab(user_state: gr.State):
                     feedback_skip = gr.Button("Skip", size="sm")
             feedback_note = gr.Markdown("", elem_id=f"feedback-note-{tab_id}")
 
-            # Timeframe selector — only applies when the orchestrator routes to equity
-            with gr.Row(elem_classes=["tf-radio"]):
-                tf_radio = gr.Radio(
-                    choices=["1D", "1W", "1M", "3M", "6M", "2Y"],
-                    value="1D",
-                    label="Chart timeframe (equity queries)",
-                    interactive=True,
-                    scale=1,
+            # VAL-08: shown only while the research graph waits for a yes/no.
+            with gr.Row(visible=False, elem_id=f"confirm-row-{tab_id}") as confirm_row:
+                yes_btn = gr.Button(
+                    "Yes, go ahead", variant="primary", size="sm", elem_classes=["aria-ico", "ico-check"]
                 )
+                no_btn = gr.Button("No, cancel", variant="secondary", size="sm")
 
-            gr.Markdown("**Suggested:**", elem_id=f"sugg-label-{tab_id}")
-            with gr.Row():
+            # Follow-up suggestions sit right above the box they fill.
+            with gr.Row(elem_classes=["sugg-row"]):
                 sug_btns = [
                     gr.Button(CHAT_DEFAULTS[i], size="sm", elem_classes=["sugg-btn"]) for i in range(4)
                 ]
-
-            # VAL-08: shown only while the research graph waits for a yes/no.
-            with gr.Row(visible=False, elem_id=f"confirm-row-{tab_id}") as confirm_row:
-                yes_btn = gr.Button("✅ Yes, go ahead", variant="primary", size="sm")
-                no_btn = gr.Button("✖ No, cancel", variant="secondary", size="sm")
 
             with gr.Row(elem_id=f"input-row-{tab_id}"):
                 msg_box = gr.Textbox(
@@ -658,9 +647,33 @@ def build_chat_tab(user_state: gr.State):
                     max_length=MAX_CHAT_CHARS,  # UI hint; respond() enforces it (VAL-01)
                 )
                 send_btn = gr.Button(
-                    "Send ⚡", variant="primary", scale=1, min_width=80, elem_classes=["send-btn"]
+                    "Send",
+                    variant="primary",
+                    scale=0,
+                    min_width=0,
+                    elem_classes=["send-btn", "aria-ico", "ico-send"],
                 )
-                clear_btn = gr.Button("Clear chat", scale=1, min_width=60, elem_classes=["clear-btn"])
+
+            # Under the composer: chart timeframe (used when the answer is about a
+            # stock), what ARIA can and can't do (UX-01), and clearing the chat.
+            with gr.Row(elem_id="composer-tools"):
+                tf_radio = gr.Radio(
+                    choices=["1D", "1W", "1M", "3M", "6M", "2Y"],
+                    value="1D",
+                    label="Chart timeframe (equity queries)",
+                    interactive=True,
+                    scale=0,
+                    elem_classes=["tf-radio"],
+                )
+                with gr.Accordion("What ARIA can and can't do", open=False, elem_id="capabilities"):
+                    gr.Markdown(CAPABILITIES_MD)
+                clear_btn = gr.Button(
+                    "Clear chat",
+                    size="sm",
+                    scale=0,
+                    min_width=0,
+                    elem_classes=["clear-btn", "ghost-btn", "aria-ico", "ico-trash"],
+                )
 
         _build_chat_sidebar(
             tab_id,

@@ -7,6 +7,7 @@ import gradio as gr
 
 from services import alerts as svc
 from ui.auth import request_user
+from ui.theme import page_header
 from utils.escaping import html_text
 
 ALERT_COLS = ["#", "Symbol", "Condition", "Status", "Last fired", "Last checked", "Delivery"]
@@ -16,7 +17,7 @@ def alerts_table_html(rows: list[dict]) -> str:
     """Plain, escaped HTML table (gr.Dataframe paints one row — see watchlist_table_html)."""
     if not rows:
         return (
-            "<p class='wl-empty'>No alerts yet. Ask in chat, e.g. "
+            "<p class='wl-empty'>No alerts yet. Ask in the chat, for example "
             "<em>“Alert me if INFY falls 5%”</em> or <em>“Alert me if TCS goes above 4000”</em>.</p>"
         )
     head = "".join(f"<th>{html_text(c)}</th>" for c in ALERT_COLS)
@@ -31,14 +32,26 @@ def alerts_table_html(rows: list[dict]) -> str:
             r["last_checked"],
             r["delivery"],
         )
-        body += "<tr>" + "".join(f"<td>{html_text(c)}</td>" for c in cells) + "</tr>"
-    return f"<table class='wl-table' id='alerts-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+        tds = [f"<td>{html_text(c)}</td>" for c in cells]
+        tds[0] = f"<td class='num'>{html_text(cells[0])}</td>"
+        tds[1] = f"<td class='sym'>{html_text(cells[1])}</td>"
+        # Status reads at a glance: active alerts in the accent, paused ones muted.
+        state = "on" if str(r["status"]).lower().startswith("active") else "off"
+        tds[3] = f"<td><span class='state-pill {state}'>{html_text(cells[3])}</span></td>"
+        body += "<tr>" + "".join(tds) + "</tr>"
+    return (
+        "<div class='table-scroll'><table class='wl-table' id='alerts-table'>"
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
+    )
 
 
 def build_alerts_tab(user_state: gr.State, tab: gr.Tab):
-    gr.Markdown(
-        "## 🔔 Alerts\nEverything you've asked ARIA to watch. Create alerts in the **Chat** tab; "
-        "manage them here. Checks run every 5 minutes while the market is open."
+    gr.HTML(
+        page_header(
+            "Alerts",
+            "Everything you've asked ARIA to watch. Create alerts in the <strong>Chat</strong> tab and "
+            "manage them here. Checks run every 5 minutes while the market is open.",
+        )
     )
     refresh = gr.State(0)
 
@@ -47,14 +60,26 @@ def build_alerts_tab(user_state: gr.State, tab: gr.Tab):
         rows = svc.rows(user_id) if user_id else []
         gr.HTML(alerts_table_html(rows), elem_id="alerts-table-wrap")
 
-    status = gr.Markdown("", elem_id="alerts-status")
+    status = gr.Markdown("", elem_id="alerts-status", elem_classes=["status-line"])
 
-    with gr.Row():
-        alert_id = gr.Number(label="Alert #", precision=0, minimum=1, scale=1, elem_id="alert-id")
-        pause_btn = gr.Button("⏸ Pause", size="sm", elem_id="alert-pause")
-        resume_btn = gr.Button("▶ Resume", size="sm", elem_id="alert-resume")
-        delete_btn = gr.Button("🗑 Delete", size="sm", variant="stop", elem_id="alert-delete")
-        refresh_btn = gr.Button("🔄 Refresh", size="sm")
+    with gr.Row(elem_classes=["toolbar"]):
+        alert_id = gr.Number(
+            label="Alert #", precision=0, scale=1, elem_id="alert-id"
+        )  # 0 / unknown ids are refused by _act
+        pause_btn = gr.Button(
+            "Pause", size="sm", elem_id="alert-pause", elem_classes=["aria-ico", "ico-pause"]
+        )
+        resume_btn = gr.Button(
+            "Resume", size="sm", elem_id="alert-resume", elem_classes=["aria-ico", "ico-play"]
+        )
+        delete_btn = gr.Button(
+            "Delete",
+            size="sm",
+            variant="stop",
+            elem_id="alert-delete",
+            elem_classes=["aria-ico", "ico-trash"],
+        )
+        refresh_btn = gr.Button("Refresh", size="sm", elem_classes=["aria-ico", "ico-refresh"])
     with gr.Accordion("Change the number", open=False):
         gr.Markdown("A price in ₹, a percent, an RSI level or a volume multiple, whatever the alert watches.")
         with gr.Row():
@@ -67,7 +92,13 @@ def build_alerts_tab(user_state: gr.State, tab: gr.Tab):
                 label="Repeat",
                 scale=2,
             )
-            save_btn = gr.Button("💾 Save", variant="primary", scale=1, elem_id="alert-save")
+            save_btn = gr.Button(
+                "Save",
+                variant="primary",
+                scale=1,
+                elem_id="alert-save",
+                elem_classes=["aria-ico", "ico-save"],
+            )
 
     def _who(user_id, request):
         return request_user(request) or user_id

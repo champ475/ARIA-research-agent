@@ -47,6 +47,9 @@ def render(request: Request, template: str, status_code: int = 200, **ctx: Any) 
     response = HTMLResponse("", status_code=status_code)
     ctx["csrf"] = csrf.issue(request, response)
     ctx.setdefault("title", "ARIA")
+    # UX-03: the app's light/dark choice (mirrored into a cookie by ui/theme.py APP_JS),
+    # applied server-side so these pages carry no script. Dark unless "light".
+    ctx["theme"] = "light" if request.cookies.get("aria_theme") == "light" else "dark"
     response.body = _env.get_template(template).render(**ctx).encode("utf-8")
     response.headers["content-length"] = str(len(response.body))
     response.headers["Cache-Control"] = "no-store"

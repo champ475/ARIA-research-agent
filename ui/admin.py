@@ -9,6 +9,7 @@ import gradio as gr
 
 from services import admin as svc
 from ui.auth import request_user
+from ui.theme import page_header, section_header
 from utils.escaping import html_text, md_cell
 from utils.flags import FLAGS
 
@@ -63,8 +64,10 @@ def user_card(u: dict | None) -> str:
 
 
 def build_admin_tab(user_state: gr.State, tab: gr.Tab):
-    gr.Markdown(
-        "## 🛠 Admin\nFor operators. Everything you look up or change here is written to the audit log."
+    gr.HTML(
+        page_header(
+            "Admin", "For operators. Everything you look up or change here is written to the audit log."
+        )
     )
     note = gr.Markdown("", elem_id="admin-note")
 
@@ -78,14 +81,14 @@ def build_admin_tab(user_state: gr.State, tab: gr.Tab):
     user_state.change(_show, [user_state], [tab], show_progress="hidden")
 
     # ── Look up a user ────────────────────────────────────────────────────────
-    with gr.Row():
+    with gr.Row(elem_classes=["toolbar"]):
         email_box = gr.Textbox(
             label="User email", max_lines=1, max_length=320, scale=3, elem_id="admin-email"
         )
         find_btn = gr.Button("Find", variant="primary", scale=1, elem_id="admin-find")
     card = gr.Markdown("", elem_id="admin-card")
     found_id = gr.State(None)
-    with gr.Row():
+    with gr.Row(elem_classes=["toolbar"]):
         turns_btn = gr.Button("Recent turns", size="sm", elem_id="admin-turns")
         alerts_btn = gr.Button("Their alerts", size="sm", elem_id="admin-alerts")
         disable_btn = gr.Button("Disable account", size="sm", variant="stop", elem_id="admin-disable")
@@ -135,9 +138,9 @@ def build_admin_tab(user_state: gr.State, tab: gr.Tab):
     enable_btn.click(_set_disabled(False), [user_state, found_id], [detail])
 
     # ── Feature flags ─────────────────────────────────────────────────────────
-    gr.Markdown("### Feature flags")
+    gr.HTML(section_header("Feature flags", "Runtime switches; each change is audited."))
     flags_md = gr.Markdown("", elem_id="admin-flags")
-    with gr.Row():
+    with gr.Row(elem_classes=["toolbar"]):
         flag_key = gr.Dropdown(choices=sorted(FLAGS), label="Flag", scale=2, elem_id="admin-flag-key")
         flag_on = gr.Button("Turn on", size="sm", elem_id="admin-flag-on")
         flag_off = gr.Button("Turn off", size="sm", elem_id="admin-flag-off")

@@ -12,7 +12,7 @@ from playwright.sync_api import Page, expect
 from tests.e2e.helpers import ask, new_user, wait_answer
 
 SIZES = [(375, 740), (768, 900), (1280, 800)]
-TABS = ["📌 Watchlist", "📊 Portfolio", "🔔 Alerts", "⚙️ Settings"]
+TABS = ["Watchlist", "Portfolio", "Alerts", "Settings"]
 OUT = Path(__file__).resolve().parents[2] / "test-results" / "mobile"
 
 

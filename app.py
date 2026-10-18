@@ -24,7 +24,7 @@ from ui.auth import identify_user  # noqa: E402
 from ui.chat import CHAT_DEFAULTS, build_chat_tab, queue_kwargs  # noqa: E402
 from ui.portfolio import build_portfolio_tab  # noqa: E402
 from ui.settings import build_settings_tab  # noqa: E402
-from ui.theme import FOOTER_HTML, LOGOUT_JS, THEME_TOGGLE_JS, header_for, header_html  # noqa: E402
+from ui.theme import FOOTER_HTML, build_app_bar, header_for  # noqa: E402
 from ui.watchlist import build_watchlist_tab  # noqa: E402
 from utils.db import ensure_schema  # noqa: E402
 from utils.helpers import now_ist  # noqa: E402
@@ -70,27 +70,22 @@ def build_ui() -> gr.Blocks:
         user_state = gr.State(None)
 
         with gr.Column(elem_id="main-app"):
-            header = gr.HTML(header_html())
-            with gr.Row(elem_id="top-actions"):
-                theme_btn = gr.Button("◐ Light / dark", size="sm", variant="secondary", elem_id="theme-btn")
-                logout_btn = gr.Button("Log out", size="sm", variant="secondary", elem_id="logout-btn")
-            theme_btn.click(None, js=THEME_TOGGLE_JS)
-            logout_btn.click(None, js=LOGOUT_JS)
+            header = build_app_bar()
 
-            # Tabs — one unified chat (orchestrator-routed) + the utility views
+            # One unified chat (orchestrator-routed) + the utility views; tab icons come from CSS.
             with gr.Tabs():
-                with gr.Tab("💬 Chat"):
+                with gr.Tab("Chat"):
                     chat_chatbot, chat_chart, chat_session, chat_sugg_state = build_chat_tab(user_state)
-                with gr.Tab("📌 Watchlist"):
+                with gr.Tab("Watchlist"), gr.Column(elem_classes=["aria-page"]):
                     build_watchlist_tab(user_state)
-                with gr.Tab("📊 Portfolio"):
+                with gr.Tab("Portfolio"), gr.Column(elem_classes=["aria-page"]):
                     build_portfolio_tab(user_state)
-                with gr.Tab("🔔 Alerts") as alerts_tab:
+                with gr.Tab("Alerts") as alerts_tab, gr.Column(elem_classes=["aria-page"]):
                     build_alerts_tab(user_state, alerts_tab)
-                with gr.Tab("⚙️ Settings"):
+                with gr.Tab("Settings"), gr.Column(elem_classes=["aria-page"]):
                     build_settings_tab(user_state)
                 # OBS-05: shown to admins only; each handler checks on the server too
-                with gr.Tab("🛠 Admin", visible=False) as admin_tab:
+                with gr.Tab("Admin", visible=False) as admin_tab, gr.Column(elem_classes=["aria-page"]):
                     build_admin_tab(user_state, admin_tab)
 
             gr.HTML(FOOTER_HTML)

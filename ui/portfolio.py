@@ -6,6 +6,7 @@ import gradio as gr
 
 from services import portfolio as pf
 from ui.auth import request_user
+from ui.theme import page_header
 from ui.watchlist import WATCHLIST_CONCURRENCY
 from utils.escaping import html_text
 from utils.numbers import format_inr
@@ -17,24 +18,31 @@ def portfolio_lots_html(lots: list[dict]) -> str:
     """Plain, escaped HTML table of lots (gr.Dataframe paints one row — see
     watchlist_table_html)."""
     if not lots:
-        return "<p class='wl-empty'>No holdings yet — add one below or import your broker's CSV.</p>"
-    head = "".join(f"<th>{html_text(c)}</th>" for c in PORTFOLIO_LOT_COLS)
+        return "<p class='wl-empty'>No holdings yet. Add one below or import your broker's CSV.</p>"
+    classes = ("num", "sym", "num", "num", "")  # figures right-aligned, symbol in mono
+    head = "".join(
+        f"<th class='{k}'>{html_text(c)}</th>" for k, c in zip(classes, PORTFOLIO_LOT_COLS, strict=True)
+    )
     body = "".join(
         "<tr>"
         + "".join(
-            f"<td>{html_text(cell)}</td>"
-            for cell in (
-                lot["id"],
-                lot["symbol"],
-                f"{lot['qty'].normalize():f}",
-                format_inr(lot["avg_price"]),
-                lot["buy_date"] or "—",
+            f"<td class='{k}'>{html_text(cell)}</td>"
+            for k, cell in zip(
+                classes,
+                (
+                    lot["id"],
+                    lot["symbol"],
+                    f"{lot['qty'].normalize():f}",
+                    format_inr(lot["avg_price"]),
+                    lot["buy_date"] or "—",
+                ),
+                strict=True,
             )
         )
         + "</tr>"
         for lot in lots
     )
-    return f"<table class='wl-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    return f"<div class='table-scroll'><table class='wl-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
 
 
 def portfolio_view(user_id: int | None):
@@ -49,10 +57,17 @@ def build_portfolio_tab(user_state: gr.State):
     """Portfolio tab: holdings at live prices (P&L, weights, allocation
     chart), add / edit / remove lots, and CSV import from a broker holdings
     export (Zerodha, Groww) or a plain sheet."""
-    gr.Markdown(
-        "## 📊 Portfolio\nYour holdings at live prices. Quantities and prices are stored exactly; "
-        "P&L is before tax and charges."
-    )
+    with gr.Row(elem_classes=["toolbar"]):
+        gr.HTML(
+            page_header(
+                "Portfolio",
+                "Your holdings at live prices. Quantities and prices are stored exactly; "
+                "P&amp;L is before tax and charges.",
+            )
+        )
+        ref_btn = gr.Button(
+            "Refresh prices", size="sm", scale=0, min_width=0, elem_classes=["aria-ico", "ico-refresh"]
+        )
     pf_refresh = gr.State(0)
 
     @gr.render(inputs=[user_state, pf_refresh])
@@ -64,28 +79,34 @@ def build_portfolio_tab(user_state: gr.State):
         with gr.Accordion("Lots", open=False):
             gr.HTML(lots_html, elem_id="pf-lots")
 
-    status = gr.Markdown("", elem_id="pf-status")
+    status = gr.Markdown("", elem_id="pf-status", elem_classes=["status-line"])
 
-    with gr.Group():
-        gr.Markdown("**Add a holding**")
-        with gr.Row():
+    with gr.Column(elem_classes=["aria-panel"]):
+        gr.HTML("<span class='eyebrow'>Add a holding</span>")
+        with gr.Row(elem_classes=["toolbar"]):
             add_sym = gr.Textbox(label="Company or NSE symbol", max_lines=1, max_length=60, scale=3)
             add_qty = gr.Textbox(label="Quantity", max_lines=1, max_length=30, scale=1)
             add_price = gr.Textbox(label="Avg buy price (₹)", max_lines=1, max_length=30, scale=1)
             add_date = gr.Textbox(label="Buy date (optional)", placeholder="YYYY-MM-DD", max_lines=1, scale=1)
-            add_btn = gr.Button("➕ Add", variant="primary", scale=1, min_width=80)
+            add_btn = gr.Button(
+                "Add holding", variant="primary", scale=1, min_width=80, elem_classes=["aria-ico", "ico-plus"]
+            )
 
     with gr.Accordion("Edit or remove", open=False):
         with gr.Row():
-            lot_id = gr.Number(label="Lot #", precision=0, minimum=1, scale=1)
+            lot_id = gr.Number(label="Lot #", precision=0, scale=1)  # unknown lots are refused by the service
             ed_qty = gr.Textbox(label="New quantity", max_lines=1, max_length=30, scale=1)
             ed_price = gr.Textbox(label="New avg price (₹)", max_lines=1, max_length=30, scale=1)
             ed_date = gr.Textbox(label="Buy date", placeholder="YYYY-MM-DD", max_lines=1, scale=1)
-        with gr.Row():
-            upd_btn = gr.Button("✎ Update lot", size="sm")
-            del_lot_btn = gr.Button("🗑 Remove lot", size="sm")
+        with gr.Row(elem_classes=["toolbar"]):
+            upd_btn = gr.Button("Update lot", size="sm", elem_classes=["aria-ico", "ico-pen"])
+            del_lot_btn = gr.Button(
+                "Remove lot", size="sm", variant="stop", elem_classes=["aria-ico", "ico-trash"]
+            )
             del_sym = gr.Textbox(label="", placeholder="Symbol", show_label=False, max_lines=1, scale=2)
-            del_sym_btn = gr.Button("🗑 Remove all lots of symbol", size="sm")
+            del_sym_btn = gr.Button(
+                "Remove all lots of symbol", size="sm", variant="stop", elem_classes=["aria-ico", "ico-trash"]
+            )
 
     with gr.Accordion("Import from your broker (CSV)", open=False):
         gr.Markdown(
@@ -96,8 +117,7 @@ def build_portfolio_tab(user_state: gr.State):
         with gr.Row():
             csv_file = gr.File(label="Holdings CSV", file_types=[".csv"], scale=3)
             csv_replace = gr.Checkbox(label="Replace my current holdings", value=False, scale=1)
-            csv_btn = gr.Button("⬆️ Import", variant="primary", scale=1)
-    ref_btn = gr.Button("🔄 Refresh prices", size="sm")
+            csv_btn = gr.Button("Import", variant="primary", scale=1, elem_classes=["aria-ico", "ico-upload"])
 
     def _who(user_id, request):
         return request_user(request) or user_id

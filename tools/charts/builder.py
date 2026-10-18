@@ -1,6 +1,7 @@
 """
 tools/charts/builder.py
-TradingView-style dark theme Plotly charts.
+Plotly charts in ARIA's "Night Ledger" palette: a dark instrument panel in both UI themes
+(Plotly can't read the page's CSS tokens; these mirror the dark values in ui/theme.css).
 Returns a plotly.graph_objects.Figure, or None on insufficient data — never a string.
 Callers feed these straight into gr.Plot().
 """
@@ -11,16 +12,16 @@ from plotly.subplots import make_subplots
 
 from tools.analysis.technical import compute_all
 
-BG = "#131722"
-PANEL = "#1e2130"
-GRID = "#2a2e39"
-TEXT = "#d1d4dc"
-GREEN = "#26a69a"
-RED = "#ef5350"
-BLUE = "#2962ff"
-AMBER = "#f6c90e"
-ORANGE = "#ff6d00"
-PURPLE = "#ab47bc"
+BG = "#171925"  # --aria-surface (dark)
+PANEL = "#1f2232"  # --aria-surface-2
+GRID = "#2d3146"  # --aria-border
+TEXT = "#c3c5d8"  # --aria-text-2
+GREEN = "#4fc98a"  # --aria-gain
+RED = "#f47c7c"  # --aria-loss
+BLUE = "#5b9bff"  # --aria-accent
+AMBER = "#e8b04b"
+ORANGE = "#f08a4b"
+PURPLE = "#a78bfa"
 CHART_CFG = {
     "displayModeBar": True,
     "scrollZoom": True,
@@ -34,7 +35,9 @@ def _layout(title: str, height: int = 650) -> dict:
         title=dict(text=title, font=dict(color=TEXT, size=13), x=0.01),
         paper_bgcolor=BG,
         plot_bgcolor=BG,
-        font=dict(color=TEXT, size=11),
+        font=dict(color=TEXT, size=11, family="Geist, system-ui, sans-serif"),
+        # Category colours (allocation slices, extra series): blue first, then calm, distinct hues.
+        colorway=[BLUE, "#7dd3c0", "#a78bfa", "#e8b04b", "#8ab4ff", "#f08a4b", "#c3c5d8", "#4fc98a"],
         xaxis_rangeslider_visible=False,
         margin=dict(l=60, r=20, t=40, b=20),
         legend=dict(
@@ -43,7 +46,7 @@ def _layout(title: str, height: int = 650) -> dict:
             y=1.01,
             xanchor="right",
             x=1,
-            bgcolor="rgba(19,23,34,0.8)",
+            bgcolor="rgba(23,25,37,0.8)",
             font=dict(size=10),
         ),
         height=height,
@@ -161,7 +164,7 @@ def candlestick(
                 x=df.index,
                 y=df["BB_Upper"],
                 name="BB",
-                line=dict(color="rgba(100,181,246,0.5)", width=1),
+                line=dict(color="rgba(149,153,179,0.5)", width=1),
                 showlegend=False,
             ),
             row=1,
@@ -172,9 +175,9 @@ def candlestick(
                 x=df.index,
                 y=df["BB_Lower"],
                 name="BB Lower",
-                line=dict(color="rgba(100,181,246,0.5)", width=1),
+                line=dict(color="rgba(149,153,179,0.5)", width=1),
                 fill="tonexty",
-                fillcolor="rgba(100,181,246,0.05)",
+                fillcolor="rgba(91,155,255,0.05)",
                 showlegend=False,
             ),
             row=1,
@@ -183,7 +186,7 @@ def candlestick(
     if "VWAP" in indicators and "VWAP" in df.columns:
         fig.add_trace(
             go.Scatter(
-                x=df.index, y=df["VWAP"], name="VWAP", line=dict(color="#00bcd4", width=1.3, dash="dash")
+                x=df.index, y=df["VWAP"], name="VWAP", line=dict(color="#7dd3c0", width=1.3, dash="dash")
             ),
             row=1,
             col=1,
@@ -213,14 +216,14 @@ def candlestick(
         text=f"  ₹{last:.2f}",
         showarrow=False,
         xanchor="left",
-        font=dict(color=color, size=12, family="monospace"),
+        font=dict(color=color, size=12, family="Geist Mono, monospace"),
         row=1,
         col=1,
     )
 
     # ── Volume ────────────────────────────────────────────────────────────────
     vol_colors = [
-        "rgba(38,166,154,0.5)" if float(c) >= float(o) else "rgba(239,83,80,0.5)"
+        "rgba(79,201,138,0.5)" if float(c) >= float(o) else "rgba(244,124,124,0.5)"
         for c, o in zip(df["Close"], df["Open"], strict=False)
     ]
     fig.add_trace(
@@ -252,7 +255,7 @@ def candlestick(
             row=rsi_row,
             col=1,
         )
-        for lvl, _clr in [(70, "rgba(239,83,80,0.3)"), (30, "rgba(38,166,154,0.3)")]:
+        for lvl, _clr in [(70, "rgba(244,124,124,0.3)"), (30, "rgba(79,201,138,0.3)")]:
             fig.add_hline(y=lvl, line_dash="dot", line_color="rgba(255,255,255,0.2)", row=rsi_row, col=1)
 
     # ── MACD ──────────────────────────────────────────────────────────────────
@@ -348,6 +351,8 @@ def portfolio_chart(holdings: list[dict]):
             marker_color=bar_colors,
             text=[f"{p:+.1f}%" for p in pnl_pct],
             textposition="outside",
+            name="P&L",
+            showlegend=False,
         ),
         row=1,
         col=2,

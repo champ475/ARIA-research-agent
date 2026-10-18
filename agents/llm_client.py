@@ -233,7 +233,7 @@ def format_exhausted_message(exc: LLMProvidersExhausted) -> str:
         )
     if exc.is_byo and kind == "auth":
         # UX-02: the fix, not just the fault.
-        return "⚠️ Your API key was rejected by your provider. Update it in **⚙️ Settings**, then ask again."
+        return "⚠️ Your API key was rejected by your provider. Update it in **Settings**, then ask again."
     if exc.is_byo:
         return (
             f"⚠️ Your configured LLM provider failed: {_ERROR_CLASS_TEXT[kind]}\n\n"

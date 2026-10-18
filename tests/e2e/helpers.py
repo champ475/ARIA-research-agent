@@ -71,4 +71,4 @@ def wait_answer(page: Page, contains: str | None = None) -> str:
 
 
 def open_tab(page: Page, name: str) -> None:
-    page.get_by_role("tab", name=name).click()
+    page.get_by_role("tab", name=name, exact=True).click()
