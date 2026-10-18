@@ -98,7 +98,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 def create_app(demo: gr.Blocks | None = None) -> FastAPI:
     """The production ASGI app. `demo` defaults to app.build_ui()."""
     from app import build_ui
-    from ui.theme import APP_CSS, APP_JS
+    from ui.theme import APP_CSS, APP_JS, HEAD_HTML
 
     api = FastAPI(title="ARIA", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
     api.include_router(ops_routes.router)
@@ -110,9 +110,14 @@ def create_app(demo: gr.Blocks | None = None) -> FastAPI:
     demo = demo if demo is not None else build_ui()
     kwargs: dict[str, Any] = {
         "auth_dependency": gradio_auth_dependency,
-        "theme": gr.themes.Base(),
+        # Plain font names: HEAD_HTML loads the faces, so Gradio fetches no fonts of its own.
+        "theme": gr.themes.Base(
+            font=["Geist", "ui-sans-serif", "system-ui", "sans-serif"],
+            font_mono=["Geist Mono", "ui-monospace", "Consolas", "monospace"],
+        ),
         "css": APP_CSS,
         "js": APP_JS,
+        "head": HEAD_HTML,
         # SEC-08: never show raw handler exceptions in Gradio's error toast.
         "show_error": False,
     }

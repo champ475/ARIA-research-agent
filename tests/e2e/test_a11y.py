@@ -14,6 +14,13 @@ AXE = Path(__file__).with_name("vendor") / "axe.min.js"
 TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]
 
 
+def _use_theme(page: Page, scheme: str, base_url: str) -> None:
+    """Pick the theme the way a visitor does: the stored choice (dark is the default),
+    plus the cookie the server-rendered auth pages read."""
+    page.add_init_script(f"try {{ localStorage.setItem('aria-theme', '{scheme}'); }} catch (e) {{}}")
+    page.context.add_cookies([{"name": "aria_theme", "value": scheme, "url": base_url}])
+
+
 def _violations(page: Page) -> list[str]:
     # Scan a settled page: Gradio fades components while an update is pending.
     page.wait_for_function(
@@ -38,7 +45,7 @@ def _violations(page: Page) -> list[str]:
 
 @pytest.mark.parametrize("scheme", ["light", "dark"])
 def test_auth_gate(page: Page, base_url, scheme):
-    page.emulate_media(color_scheme=scheme)
+    _use_theme(page, scheme, base_url)
     for path in ("/login", "/signup"):
         page.goto(base_url + path)
         assert _violations(page) == [], path
@@ -46,20 +53,22 @@ def test_auth_gate(page: Page, base_url, scheme):
 
 @pytest.mark.parametrize("scheme", ["light", "dark"])
 def test_app_tabs(page: Page, base_url, email, scheme):
-    page.emulate_media(color_scheme=scheme)
+    _use_theme(page, scheme, base_url)
     new_user(page, base_url, email)
     page.wait_for_function("() => window.ariaToggleTheme !== undefined")
     assert page.evaluate("document.body.classList.contains('dark')") == (scheme == "dark")
     problems = {"Chat": _violations(page)}
-    for tab in ("📌 Watchlist", "📊 Portfolio", "🔔 Alerts", "⚙️ Settings"):
+    for tab in ("Watchlist", "Portfolio", "Alerts", "Settings"):
         open_tab(page, tab)
         problems[tab] = _violations(page)
     assert all(not v for v in problems.values()), problems
 
 
 def test_theme_toggle_is_remembered_and_icons_are_labelled(page: Page, base_url, email):
-    page.emulate_media(color_scheme="dark")
+    page.emulate_media(color_scheme="light")  # dark by default, even on a light OS
     new_user(page, base_url, email)
+    page.wait_for_function("() => window.ariaToggleTheme !== undefined")
+    assert page.evaluate("document.body.classList.contains('dark')")
     toggle = page.locator("#theme-btn")
     expect(toggle).to_have_attribute("aria-pressed", "true")
     toggle.click()
@@ -73,10 +82,10 @@ def test_theme_toggle_is_remembered_and_icons_are_labelled(page: Page, base_url,
 @pytest.mark.parametrize("scheme", ["light", "dark"])
 def test_admin_tab(page: Page, base_url, email, db, scheme):
     """OBS-05: the Admin tab (admins only) meets the same bar."""
-    page.emulate_media(color_scheme=scheme)
+    _use_theme(page, scheme, base_url)
     new_user(page, base_url, email)
     db.execute("UPDATE users SET is_admin=TRUE WHERE email=%s", (email,))
     page.reload()
-    expect(page.get_by_role("tab", name="🛠 Admin")).to_be_visible(timeout=15_000)
-    open_tab(page, "🛠 Admin")
+    expect(page.get_by_role("tab", name="Admin")).to_be_visible(timeout=15_000)
+    open_tab(page, "Admin")
     assert _violations(page) == []

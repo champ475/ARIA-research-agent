@@ -29,6 +29,11 @@ TEXT_PAIRS = [
     ("on-accent", "accent-hover"),
     ("danger", "bg"),
     ("code", "surface-2"),
+    # price moves (watchlist change chips, chart up/down) read on the page and on cards
+    ("gain", "bg"),
+    ("gain", "surface"),
+    ("loss", "bg"),
+    ("loss", "surface"),
 ]
 
 
