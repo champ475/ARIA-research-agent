@@ -285,7 +285,12 @@ def span(
     try:
         yield outputs
     except BaseException as e:
-        error = f"{type(e).__name__}: {redact(str(e))[:500]}"
+        if type(e).__name__ == "GraphInterrupt":
+            # A yes/no gate pausing the graph is control flow, not a failure: don't make
+            # every gated turn look like an error in the trace dashboard.
+            outputs["interrupted"] = True
+        else:
+            error = f"{type(e).__name__}: {redact(str(e))[:500]}"
         raise
     finally:
         _current_span.reset(token)

@@ -46,13 +46,22 @@ _VALID_PRIORITIES = {"high", "medium", "low"}
 _DEFAULT_PRIORITY = "medium"
 
 
-def _build_prompt(query: str, objective: str, evidence_summary: dict) -> str:
+def _done_tools(tasks: list[dict]) -> str:
+    """ "fetch_ohlcv(TCS), ..." for every finished task, so the model does not ask for
+    data that was already collected (live trace: "weekly price data" after fetch_ohlcv)."""
+    done = [f"{t.get('tool')}({t.get('entity')})" for t in tasks if t.get("status") == "done"]
+    return ", ".join(sorted(set(done)))
+
+
+def _build_prompt(query: str, objective: str, evidence_summary: dict, tasks: list[dict] | None = None) -> str:
     capped = cap_evidence_for_prompt(evidence_summary, EVIDENCE_PROMPT_CHAR_BUDGET)
+    ran = _done_tools(tasks or [])
     return (
         f"Original query:\n{wrap_untrusted('user', query)}\n"
         f"Objective: {objective}\n\n"
         f"Evidence collected so far:\n{wrap_untrusted('evidence', json.dumps(capped, default=str))}\n\n"
-        f"Available tools: {', '.join(sorted(_REFLECTION_TOOL_NAMES))}"
+        + (f"Tools already run (do not ask for these again): {ran}\n" if ran else "")
+        + f"Available tools: {', '.join(sorted(_REFLECTION_TOOL_NAMES))}"
     )
 
 
@@ -120,6 +129,7 @@ def build_reflection_node(
                     state.get("query", ""),
                     state.get("objective") or state.get("query", ""),
                     state.get("evidence_summary", {}),
+                    state.get("tasks", []),
                 ),
                 max_tokens=TOKENS_AGENT,
                 temperature=0.0,
@@ -162,6 +172,17 @@ def build_reflection_node(
         new_tasks: list[Task] = [
             t for t in candidate_tasks if existing_tasks.get(t["id"], {}).get("status") != "done"
         ]
+
+        if not new_tasks:
+            # Every gap names a tool that already ran: no new work, so no loop to spend.
+            return {
+                "missing_info": missing_items,
+                **log_decision(
+                    "Reflection",
+                    "proceed to Verification, gaps already covered by finished tasks",
+                    f"{len(missing_items)} gap(s): {[m['missing'] for m in missing_items]}",
+                ),
+            }
 
         return {
             "missing_info": missing_items,

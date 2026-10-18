@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 
 import prompts
@@ -190,7 +191,19 @@ def _stage2_semantic(evidence: list[Evidence]) -> list[VerificationIssue]:
     return issues
 
 
-def _parse_llm_issues(raw: str) -> list[VerificationIssue] | None:
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _restates_the_question(claim: str, objective: str) -> bool:
+    """The judge sometimes "flags" the user's own question as an uncited claim
+    (live traces: 14 of 34 judge calls, all `missing_citation`, claim == objective).
+    That is not a statement in any answer, so it is not an issue."""
+    c, o = _norm(claim), _norm(objective)
+    return bool(c and o) and (c == o or (len(c) >= 12 and (c in o or o in c)))
+
+
+def _parse_llm_issues(raw: str, objective: str = "") -> list[VerificationIssue] | None:
     """The judge's issues (all soft), or None when the reply was not usable
     JSON. None is not "clean": the caller says the cross-check was unavailable."""
     try:
@@ -205,6 +218,8 @@ def _parse_llm_issues(raw: str) -> list[VerificationIssue] | None:
     issues: list[VerificationIssue] = []
     for entry in raw_issues:
         if not isinstance(entry, dict) or "claim" not in entry:
+            continue
+        if _restates_the_question(entry["claim"], objective):
             continue
         issue_type = entry.get("issue_type", "unsupported")
         if issue_type not in _VALID_ISSUE_TYPES:
@@ -238,7 +253,7 @@ def run_judge_checked(client, objective: str, evidence_summary: dict) -> tuple[l
         max_tokens=TOKENS_AGENT,
         temperature=0.0,
     )
-    issues = _parse_llm_issues(raw)
+    issues = _parse_llm_issues(raw, objective)
     return (issues or [], issues is not None)
 
 

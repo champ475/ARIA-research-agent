@@ -101,7 +101,7 @@ class TestReflectionStructuredOutput:
         )
         node = build_reflection_node(stub)
         result = node(_base_state())
-        assert result["tasks"] == []
+        assert result.get("tasks", []) == []
 
     def test_invalid_priority_falls_back_to_medium(self):
         stub = _StubClient(
@@ -178,7 +178,7 @@ class TestReflectionLoopBudget:
             }
         ]
         result = node(_base_state(tasks=existing))
-        assert result["tasks"] == []
+        assert result.get("tasks", []) == []
 
 
 class TestReflectionProviderExhaustion:
@@ -228,3 +228,41 @@ class TestReflectionRouting:
         node = build_reflection_node(stub)
         result = node(_base_state())
         assert result["research_journal"][0]["node"] == "Reflection"
+
+
+class TestReflectionDoesNotRepeatFinishedWork:
+    def test_gap_naming_a_finished_tool_spends_no_loop(self):
+        stub = _StubClient(
+            json.dumps(
+                {
+                    "missing": [
+                        {
+                            "missing": "weekly price data",
+                            "reason": "needed",
+                            "priority": "high",
+                            "action": "fetch_financials",
+                        }
+                    ]
+                }
+            )
+        )
+        existing = [
+            {
+                "id": "fetch_financials:RELIANCE",
+                "description": "x",
+                "tool": "fetch_financials",
+                "entity": "RELIANCE",
+                "depends_on": [],
+                "status": "done",
+                "result_evidence_ids": ["ev-1"],
+            }
+        ]
+        result = build_reflection_node(stub)(_base_state(tasks=existing))
+        assert result.get("tasks", []) == []
+        assert "loop_count" not in result
+
+    def test_prompt_lists_the_tools_already_run(self):
+        from graph.nodes.reflection import _build_prompt
+
+        tasks = [{"tool": "fetch_ohlcv", "entity": "TCS", "status": "done"}]
+        assert "fetch_ohlcv(TCS)" in _build_prompt("q", "obj", {}, tasks)

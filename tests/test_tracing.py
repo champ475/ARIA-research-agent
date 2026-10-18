@@ -183,3 +183,17 @@ def test_langsmith_sink_works_against_the_installed_runtree_api(monkeypatch):
     assert fake_client.create_run.call_count == 2
     assert child.parent_run_id == root.id and child.trace_id == root.trace_id
     assert sink.url(root).startswith("https://")
+
+
+def test_a_graph_interrupt_is_not_recorded_as_a_span_error(sink):
+    class GraphInterrupt(Exception):  # the gate's pause; langgraph's class has this name
+        pass
+
+    with patch("utils.db.turn_record"), patch("utils.db.turn_set_trace_url"):
+        with tracing.turn("56" * 16, 1, None, "q"):
+            with pytest.raises(GraphInterrupt):
+                with tracing.span("VerificationGate"):
+                    raise GraphInterrupt("verification_gate")
+    gate = next(e for e in sink.ended if e["name"] == "VerificationGate")
+    assert gate["error"] is None
+    assert gate["outputs"] == {"interrupted": True}
