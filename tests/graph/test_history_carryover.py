@@ -162,3 +162,15 @@ def test_zero_evidence_general_chat_answers_directly():
     out = build_communication_layer_node(Stub())(state)
     assert "couldn't find enough data" not in (out.get("final_report") or "")
     assert out.get("pending_synthesis_prompt") or out.get("final_report")
+
+
+@pytest.mark.parametrize("query", ["Which stock will double in a month?", "Which stock should I buy?"])
+def test_reframed_question_without_a_company_takes_the_direct_path(query):
+    class Stub:
+        def ask(self, prompt, **kw):
+            return json.dumps(
+                {"intent": "screener", "objective": query, "complexity": "moderate", "companies": []}
+            )
+
+    out = build_query_analyzer_node(Stub())({"query": query, "history": [], "advice_mode": "reframe"})
+    assert out["complexity"] == "simple"

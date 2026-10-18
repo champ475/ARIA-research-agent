@@ -75,7 +75,8 @@ _PERSONAL_CALL = re.compile(
     r"|\bwhich\s+(?:stocks?|shares?|funds?)\s+(?:will|would|is\s+going\s+to|are\s+going\s+to)\s+"
     r"(?:double|triple|multiply|go\s+up|rise|rally|zoom|jump)\b"
     r"|\bis\s+[\w&.' -]{1,30}?\s+(?:a\s+)?(?:good\s+|great\s+|safe\s+)?(?:buy|sell)\b"
-    r"|\bis\s+it\s+(?:a\s+)?(?:good|right|safe)\s+(?:time|moment|day)\s+to\s+(?:buy|sell|invest|enter|exit)\b",
+    r"|\bis\s+it\s+(?:a\s+)?(?:good|right|safe)\s+(?:time|moment|day)\s+to\s+(?:buy|sell|invest|enter|exit)\b"
+    r"|\b(?:double|triple|multiply)\w*\s+(?:in|within|over)\s+(?:a|one|1|the\s+next)\s+(?:day|week|month|year)\b",
     _I,
 )
 _CAUTION = re.compile(
@@ -179,6 +180,9 @@ def answer_kind(state: dict, text: str) -> str | None:
     return None
 
 
+REFRAME_LEAD = "*I can't tell you whether to buy or sell. Here is what the data shows.*"
+
+
 def finalize(text: str, state: dict) -> str:
     """The answer as the user sees it: unsafe sentences removed (and said
     so), plus the footer for its kind. Idempotent."""
@@ -189,6 +193,9 @@ def finalize(text: str, state: dict) -> str:
     cleaned, removed = check_output(text)
     if removed:
         cleaned = cleaned.rstrip() + "\n\n" + REWRITE_NOTE
+    if state.get("advice_mode") == "reframe" and state.get("entities") and REFRAME_LEAD not in cleaned:
+        # "Is X a buy?" is answered with the data, and says plainly that it is not a call.
+        cleaned = REFRAME_LEAD + "\n\n" + cleaned.lstrip()
     if state.get("advice_caution") and CAUTION_NOTE not in cleaned:
         cleaned = cleaned.rstrip() + "\n\n" + CAUTION_NOTE
     kind = answer_kind(state, cleaned)
