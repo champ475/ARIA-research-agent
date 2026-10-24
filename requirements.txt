@@ -51,7 +51,7 @@ sqlalchemy>=2.0.0                # migrations/env.py
 
 # ── Utils ─────────────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
-pydantic>=2.9.0                  # schemas everywhere (graph/schemas.py, tools/data/contracts.py, config.py)
+pydantic>=2.14.1                  # schemas everywhere (graph/schemas.py, tools/data/contracts.py, config.py)
 pydantic-settings>=2.6.0         # typed, validated configuration (ARCH-03)
 httpx>=0.27.0                    # utils/url_safety.py
 urllib3>=2.0.0                   # utils/http.py retry policy
