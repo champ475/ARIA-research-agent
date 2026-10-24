@@ -23,4 +23,4 @@ pip-audit>=2.7.0
 pre-commit>=3.8.0
 
 # Docs tooling
-openpyxl>=3.1.0       # scripts/capacity_model.py writes docs/capacity_model.xlsx (OPS-05)
+openpyxl>=3.1.5       # scripts/capacity_model.py writes docs/capacity_model.xlsx (OPS-05)
